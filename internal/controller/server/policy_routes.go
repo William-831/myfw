@@ -1,0 +1,216 @@
+package server
+
+import (
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"iptables-tool/internal/controller/compiler"
+	"iptables-tool/internal/controller/policy"
+	"iptables-tool/internal/controller/task"
+)
+
+// registerPolicyRoutes mounts M7's Policy CRUD + Apply endpoints. Apply now
+// goes through the Coordinator's approval flow by default; set
+// auto_approve=true in the request body to keep the synchronous M6 semantics.
+func registerPolicyRoutes(r gin.IRouter, svc *policy.Service, co *task.Coordinator, comp *compiler.Compiler) {
+	g := r.Group("/api/v1/policies")
+	g.POST("", func(c *gin.Context) { createPolicy(c, svc) })
+	g.GET("", func(c *gin.Context) { listPolicies(c, svc) })
+	g.GET("/:id", func(c *gin.Context) { getPolicy(c, svc) })
+	g.PUT("/:id", func(c *gin.Context) { updatePolicy(c, svc) })
+	g.DELETE("/:id", func(c *gin.Context) { deletePolicy(c, svc) })
+
+	g.POST("/:id/apply", func(c *gin.Context) { applyOnePolicy(c, svc, co, comp) })
+	g.POST("/apply-all", func(c *gin.Context) { applyAllPolicies(c, co, comp) })
+}
+
+// --- CRUD ------------------------------------------------------------------
+
+func createPolicy(c *gin.Context, svc *policy.Service) {
+	var in policy.PolicyInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	p, err := svc.Create(c.Request.Context(), in, actor(c))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, p)
+}
+
+func listPolicies(c *gin.Context, svc *policy.Service) {
+	list, err := svc.List(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"policies": list})
+}
+
+func getPolicy(c *gin.Context, svc *policy.Service) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	p, err := svc.Get(c.Request.Context(), id)
+	if err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
+func updatePolicy(c *gin.Context, svc *policy.Service) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var in policy.PolicyInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	p, err := svc.Update(c.Request.Context(), id, in, actor(c))
+	if err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
+func deletePolicy(c *gin.Context, svc *policy.Service) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	if err := svc.Delete(c.Request.Context(), id); err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// --- Apply (now via Coordinator) -------------------------------------------
+
+type applyPolicyReq struct {
+	AutoApprove            bool  `json:"auto_approve"`
+	ConfirmDeadlineSeconds int64 `json:"confirm_deadline_seconds"`
+	WaitForSeconds         int64 `json:"wait_for_seconds"` // only used when auto_approve=true
+}
+
+func applyOnePolicy(c *gin.Context, svc *policy.Service, co *task.Coordinator, comp *compiler.Compiler) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	p, err := svc.Get(c.Request.Context(), id)
+	if err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+
+	var body applyPolicyReq
+	_ = c.ShouldBindJSON(&body)
+
+	nodeIDs, err := comp.TargetNodes(c.Request.Context(), p)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if len(nodeIDs) == 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":   "policy has no matching target nodes",
+			"policy":  p.ID,
+			"targets": p.Targets,
+		})
+		return
+	}
+
+	tasks, err := co.Submit(c.Request.Context(), p.ID, nodeIDs, task.SubmitOpts{
+		Author:          actor(c),
+		AutoApprove:     body.AutoApprove,
+		ConfirmDeadline: time.Duration(body.ConfirmDeadlineSeconds) * time.Second,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// When auto_approve is true the tasks already transitioned through
+	// DISPATCHING/APPLYING/CONFIRM_WAIT. We wait for the result so the
+	// caller gets a synchronous answer like M6 did.
+	if body.AutoApprove {
+		c.JSON(http.StatusOK, gin.H{
+			"policy_id": p.ID,
+			"tasks":     tasks,
+		})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"policy_id": p.ID,
+		"tasks":     tasks,
+		"message":   "tasks created in PENDING_APPROVAL state; approve via POST /api/v1/tasks/:id/approve",
+	})
+}
+
+func applyAllPolicies(c *gin.Context, co *task.Coordinator, comp *compiler.Compiler) {
+	var body applyPolicyReq
+	_ = c.ShouldBindJSON(&body)
+
+	nodeIDs, err := comp.AllTargetedNodes(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if len(nodeIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{"tasks": []any{}, "note": "no enabled policies target any node"})
+		return
+	}
+
+	tasks, err := co.Submit(c.Request.Context(), 0, nodeIDs, task.SubmitOpts{
+		Author:          actor(c),
+		AutoApprove:     body.AutoApprove,
+		ConfirmDeadline: time.Duration(body.ConfirmDeadlineSeconds) * time.Second,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if body.AutoApprove {
+		c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{
+		"tasks":   tasks,
+		"message": "tasks created in PENDING_APPROVAL; approve via POST /api/v1/tasks/:id/approve",
+	})
+}
+
+// --- helpers ---------------------------------------------------------------
+
+func parseID(c *gin.Context) (uint, bool) {
+	raw := c.Param("id")
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || n == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad policy id"})
+		return 0, false
+	}
+	return uint(n), true
+}
+
+func respondPolicyErr(c *gin.Context, err error) {
+	if errors.Is(err, policy.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+}
+
+func actor(c *gin.Context) string { return "admin" }

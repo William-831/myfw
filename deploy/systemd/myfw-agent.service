@@ -1,0 +1,21 @@
+[Unit]
+Description=MYFW Agent
+Documentation=https://github.com/mrblack/iptables-tool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/myfw-agent --config /etc/myfw-agent/agent.yaml
+Restart=on-failure
+RestartSec=3s
+
+# Agent must operate Netfilter directly.
+User=root
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=false
+
+ReadWritePaths=/var/lib/myfw-agent /etc/myfw-agent
+
+[Install]
+WantedBy=multi-user.target

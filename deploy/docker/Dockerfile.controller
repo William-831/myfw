@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build for the MYFW Controller.
+# Produces a small static image. See docs/deployment.md § 4.
+
+# ---- build stage ----
+FROM golang:1.25 AS build
+WORKDIR /src
+
+COPY go.mod go.sum* ./
+RUN go mod download || true
+
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/myfw-controller ./cmd/controller
+
+# ---- runtime stage ----
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/myfw-controller /usr/local/bin/myfw-controller
+COPY --from=build /src/web/dist /var/www/myfw
+
+EXPOSE 8080 9090
+ENTRYPOINT ["/usr/local/bin/myfw-controller"]
+CMD ["--config", "/etc/myfw/config.yaml"]

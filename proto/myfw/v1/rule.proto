@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package myfw.v1;
+
+option go_package = "iptables-tool/api/myfw/v1;myfwv1";
+
+import "myfw/v1/common.proto";
+
+// CompiledRule is the driver-agnostic intermediate representation produced by
+// the Controller's Rule Compiler and consumed by an Agent's Firewall Driver.
+// The Agent translates this into concrete iptables / nftables constructs
+// inside the MYFW namespace (see design.md § 4 / § 6 / § 7).
+message CompiledRule {
+  string id = 1;                 // stable rule id (maps to a policy version)
+  Direction direction = 2;
+  string source = 3;             // IP or CIDR; empty = any
+  string destination = 4;        // IP or CIDR; empty = any
+  Protocol protocol = 5;
+  string port_range = 6;         // "22", "1000-2000"; empty = any
+  Action action = 7;
+  uint32 mark = 8;               // used when action = MARK
+  string nat_to = 9;             // used when action = DNAT/SNAT ("ip" or "ip:port")
+  int32 priority = 10;           // lower = evaluated first
+  string description = 11;
+}
+
+// RuleSet is the full desired state for a node's MYFW namespace at a given
+// policy version. Apply is all-or-nothing against this set.
+message RuleSet {
+  string node_id = 1;
+  int64 version = 2;             // monotonic policy version
+  repeated CompiledRule rules = 3;
+  string expected_hash = 4;      // hash of the normalized set, for drift checks
+}

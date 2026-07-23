@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package myfw.v1;
+
+option go_package = "iptables-tool/api/myfw/v1;myfwv1";
+
+import "myfw/v1/common.proto";
+import "myfw/v1/rule.proto";
+
+// AgentStream is the single long-lived, mTLS-authenticated, bidirectional
+// channel an ACTIVE Agent holds open to the Controller. The Agent dials the
+// Controller (never the reverse) and multiplexes heartbeats, task dispatch,
+// results, and state pushes over this stream. See design.md § 13.
+service AgentStream {
+  rpc Connect(stream AgentToController) returns (stream ControllerToAgent);
+}
+
+// ---- Agent -> Controller ----
+
+message AgentToController {
+  oneof payload {
+    Heartbeat heartbeat = 1;
+    TaskResult task_result = 2;
+    DriftReport drift = 3;
+    StateReport state = 4;
+    SyncRequest sync = 5;
+  }
+}
+
+message Heartbeat {
+  string node_id = 1;
+  int64 ts_unix = 2;
+  string current_hash = 3;       // hash of the live MYFW namespace
+  Capability capability = 4;     // resent on change
+}
+
+message TaskResult {
+  string task_id = 1;
+  bool ok = 2;
+  string message = 3;
+  string result_hash = 4;        // MYFW hash after applying
+  int64 ts_unix = 5;
+}
+
+// DriftReport is emitted by the Watchdog when the live MYFW namespace no
+// longer matches the expected hash (see design.md § 12).
+message DriftReport {
+  string node_id = 1;
+  string expected_hash = 2;
+  string actual_hash = 3;
+  string detail = 4;
+  int64 ts_unix = 5;
+}
+
+// StateReport carries periodic network telemetry (see design.md § 14).
+message StateReport {
+  string node_id = 1;
+  int64 ts_unix = 2;
+  repeated InterfaceStat interfaces = 3;
+  uint64 conntrack_count = 4;
+}
+
+message InterfaceStat {
+  string name = 1;
+  uint64 rx_bytes = 2;
+  uint64 tx_bytes = 3;
+  uint64 rx_packets = 4;
+  uint64 tx_packets = 5;
+}
+
+message AgentStats {
+  float cpu_percent = 1;
+  int64 mem_usage_bytes = 2;
+  int64 mem_total_bytes = 3;
+  int64 connection_count = 4;
+  repeated NetworkStats network_stats = 5;
+  repeated RuleHit rule_hits = 6;
+  Timestamp timestamp = 7;
+}
+
+message NetworkStats {
+  string interface = 1;
+  int64 rx_bytes = 2;
+  int64 tx_bytes = 3;
+  int64 rx_packets = 4;
+  int64 tx_packets = 5;
+}
+
+message RuleHit {
+  string rule_id = 1;
+  int64 hits = 2;
+}
+
+// ---- Controller -> Agent ----
+
+message ControllerToAgent {
+  oneof payload {
+    ApplyTask apply = 1;
+    ConfirmTask confirm = 2;
+    RollbackTask rollback = 3;
+    SyncRequest sync = 4;
+    HeartbeatAck ack = 5;
+  }
+}
+
+// ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace
+// to the given RuleSet, then wait for a ConfirmTask within confirm_deadline
+// (else auto-rollback). See design.md § 11.
+message ApplyTask {
+  string task_id = 1;
+  RuleSet rule_set = 2;
+  int64 confirm_deadline_unix = 3;
+}
+
+message ConfirmTask {
+  string task_id = 1;
+}
+
+message RollbackTask {
+  string task_id = 1;
+}
+
+// SyncRequest asks the Agent to report its full current MYFW state so the
+// Controller can reconcile after a reconnect.
+message SyncRequest {
+  string reason = 1;
+}
+
+message HeartbeatAck {
+  int64 ts_unix = 1;
+}

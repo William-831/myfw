@@ -1,0 +1,66 @@
+# ---- Go ----
+# Build output
+/dist/
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendored deps (we use go modules)
+/vendor/
+
+# ---- Node / Frontend (web/) ----
+node_modules/
+.pnpm-store/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+
+# ---- Local dev artifacts ----
+# SQLite dev databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Dev CA & certificates (self-signed dev only)
+/dev-ca/
+/certs/
+*.pem
+*.crt
+*.key
+*.csr
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- IDE / Editor ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Coverage ----
+coverage.out
+coverage.html
+*.cover
+
+# ---- Misc ----
+tmp/
+.tmp/

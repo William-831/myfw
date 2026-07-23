@@ -1,0 +1,31 @@
+本系统旨在构建一套面向 Linux 服务器环境的统一网络防火墙管理平台，通过 Web 可视化控制台实现对多台 Linux 主机网络访问策略、防火墙规则、NAT 转发以及流量状态的集中化管理。系统定位为个人运维使用的企业级网络管理工具，采用云控制面思想设计，通过控制面（Controller）与执行面（Agent）分离架构实现集中管理与分布式执行。整个系统由中心化 Controller 服务和部署在各 Linux 节点上的 Agent 服务组成，其中 Controller 负责用户认证、Web 接口服务、策略管理、规则编排、审批流程、任务调度、状态持久化以及统一控制逻辑；Agent 负责节点环境探测、防火墙规则执行、网络状态采集、流量数据采集以及执行结果反馈。通过控制面与执行面的解耦设计，使系统具备管理多节点 Linux 主机、防止单节点故障影响整体管理能力，并为未来扩展 Docker、Kubernetes 以及云环境提供基础架构能力。
+
+系统数据持久化层统一采用 OceanBase（OB）数据库作为核心存储引擎，用于保存整个防火墙管理平台的所有业务状态数据，包括服务器节点信息、防火墙策略模型、规则版本、审批记录、操作审计日志、Agent 状态信息、任务执行记录、规则 Hash 校验信息以及流量统计数据。Controller 不保存任何不可恢复的核心状态，所有管理数据均以 OceanBase 作为最终可信数据源。当 Controller 服务运行在 Docker 容器环境中发生异常退出、重启、迁移或者重新部署时，系统可以直接从 OceanBase 加载最新状态，恢复节点关系、策略配置以及未完成任务，避免传统 Web 管理系统依赖本地文件或内存状态导致的数据丢失问题。同时利用 OceanBase 的事务能力保证规则变更、审批流程以及版本记录之间的数据一致性，使防火墙管理平台具备可靠的数据基础。
+
+系统后端整体采用 Go 语言进行开发，Controller 使用 Gin 作为 Web API 服务框架，提供高性能 REST API 接口，同时使用 GORM 作为数据库访问层连接 OceanBase。系统内部采用模块化设计，将功能划分为用户认证模块、节点资产管理模块、防火墙策略管理模块、规则编译模块、任务调度模块、审批管理模块、版本控制模块、审计日志模块以及流量分析模块。前端采用 Vue3 + TypeScript + Element Plus 构建 Web 管理控制台，通过可视化界面展示服务器资产、防火墙状态、网络策略、规则命中情况、实时流量、连接状态以及历史操作记录，使管理员能够以类似云安全组的方式管理 Linux 网络访问策略，同时保留专家模式用于查看底层防火墙真实结构。
+
+系统核心设计采用 Firewall Driver 防火墙驱动抽象层，将上层网络安全策略与底层 Linux 防火墙技术完全解耦。Controller 不直接生成 iptables 命令，而是维护统一的网络策略模型，通过 Rule Compiler 将用户配置的安全策略转换为标准化防火墙规则对象，然后由 Agent 根据当前节点环境选择对应 Firewall Driver 执行。Firewall Driver 定义统一接口，包括规则创建、规则删除、链管理、规则同步、配置读取、状态检测、备份恢复以及 Hash 校验等能力。目前系统第一阶段支持 IptablesDriver 和 NftablesDriver 两种实现，其中 IptablesDriver 用于兼容传统 Linux 环境，通过 iptables-legacy、iptables-nft 或相关 Go 库实现规则管理；NftablesDriver 用于支持现代 Linux 系统，通过 nft 原生接口或者 nftables 库直接操作 Linux Netfilter 框架。未来系统可以在不修改 Controller 和策略模型的情况下继续扩展 eBPF Driver，实现更加高级的数据面控制能力。
+
+Agent 启动后不会简单根据 Linux 内核版本选择防火墙技术，而是通过能力探测机制自动判断当前节点支持能力，包括 Linux 发行版、iptables 版本、iptables backend 类型、nft 命令支持情况、Netfilter 能力、Docker 环境、Kubernetes 环境以及当前系统已有防火墙组件状态。Agent 根据探测结果选择最佳 Firewall Driver，例如在老旧 Linux 系统中选择 iptables-legacy，在支持 nft backend 的现代系统中选择 iptables-nft 或 nftables Driver，并将节点能力信息同步至 Controller，由 Controller 保存节点能力模型。通过这种设计，平台可以同时管理不同 Linux 发行版和不同防火墙技术环境，实现真正的跨平台防火墙管理能力。
+
+系统采用策略模型与底层规则分离设计。管理员在 Web 页面配置的是抽象安全策略，例如允许某个网段访问某个端口、禁止指定 IP 地址访问服务、配置公网端口映射等，而不是直接操作 iptables 参数。策略模型包含方向、源地址、目标地址、协议类型、端口范围、动作类型、优先级、描述信息以及生效节点等字段。Controller 根据策略模型生成标准化规则对象，再由 Agent Driver 根据具体后端生成对应 iptables 或 nftables 规则。例如同一条允许 TCP 22 端口访问的策略，在 iptables Driver 中可能生成 INPUT 链规则，而在 nftables Driver 中可能转换为 inet family 下的 chain rule，从而保证业务层完全不依赖底层实现。
+
+为了解决 Linux 环境中存在多来源防火墙规则的问题，系统设计严格的规则所有权隔离机制。Agent 不拥有整个 Netfilter 框架控制权，而只拥有自身命名空间范围内的规则管理权限。系统统一使用 MYFW 前缀作为管理空间，例如 iptables 环境创建 MYFW-INPUT、MYFW-FORWARD、MYFW-NAT 等自定义链；nftables 环境创建独立 MYFW table 和 chain。所有由 Web 平台生成的规则只能存在于 MYFW 管理区域内，Agent 只允许读取、修改、删除自身拥有的规则。对于非 MYFW 前缀规则，无论来源是 root 用户手工维护、Docker 创建的 DOCKER 链、Kubernetes kube-proxy 创建的 KUBE 链，还是其他系统服务生成的规则，Agent 均视为外部规则，只允许检测和展示，不允许修改、覆盖或删除，实现多来源规则共存。
+
+为了将管理规则接入 Linux 网络处理流程，Firewall Driver 负责维护入口跳转逻辑。在 iptables 环境中，Driver 会在 INPUT、OUTPUT、FORWARD 等系统链中插入跳转规则，将指定流量导入 MYFW 管理链；在 nftables 环境中，则通过独立 table、chain 和 hook 机制实现流量接管。Driver 在执行跳转规则操作之前，会对目标链、规则位置、已有规则上下文进行严格检测，确保不会覆盖其他系统规则或者改变 Docker、Kubernetes 原有网络逻辑。当外部规则发生变化时，系统不会强制恢复整个防火墙，而只维护自身拥有的管理范围。
+
+系统功能主要围绕访问控制和网络转发能力设计，不实现复杂流量限速功能，而专注于安全策略管理。系统支持 Linux Netfilter 四类表能力，包括 filter 表访问控制、nat 表地址转换、mangle 表数据包标记以及 raw 表基础控制，同时支持 INPUT、OUTPUT、FORWARD、PREROUTING、POSTROUTING 等核心链路。系统支持入方向访问控制、出方向访问控制、转发控制、DNAT 端口映射、SNAT 地址转换、IP 黑名单、IP 白名单、网段限制、协议限制、端口限制以及基于 mangle MARK 的数据包标签能力。通过 MARK 标记，可以进一步与 Linux Traffic Control、策略路由或者其他网络系统联动，实现更加复杂的网络控制能力。
+
+系统提供两种规则管理模式。普通模式采用云安全组方式，通过简单的源地址、目标地址、协议、端口和动作配置完成策略管理，适用于日常运维操作；专家模式展示底层 Firewall Driver 实际生成的规则结构，包括 iptables table、chain、rule 或 nftables table、chain、rule，方便高级管理员进行底层分析和故障排查。两种模式共享同一策略模型，保证高级操作与普通操作不会产生数据分裂。
+
+系统具备完整的安全变更控制能力。所有防火墙修改操作必须经过审批流程，管理员提交规则变更后，Controller 首先生成变更任务，并保存修改前后的策略差异，经过审批确认后才允许 Agent 执行。Agent 在执行规则变更之前，会自动保存当前节点防火墙快照，并通过 Driver 执行 Apply 操作。规则应用成功后进入确认保护阶段，如果在指定时间内 Controller 未确认此次变更正常，则 Agent 自动调用 Driver 的 Rollback 方法恢复至上一稳定版本，避免错误策略导致服务器失联。所有变更过程均记录审计日志，包括操作者、目标节点、变更内容、执行结果和恢复记录。
+
+Agent 内部设计 Watchdog 机制，用于持续检测自身管理区域状态。Watchdog 通过 Firewall Driver 定期检查 MYFW 管理链、入口跳转规则以及规则 Hash 值。如果发现自身管理范围内规则被人为修改、删除或者发生漂移，Agent 会向 Controller 上报告警，并根据配置决定自动恢复或者等待管理员确认。漂移检测只针对系统拥有的 MYFW 管理空间，不检测 Docker、Kubernetes 或管理员手工规则，避免产生误报。
+
+系统通信采用 Agent 主动连接 Controller 的模式。Agent 不暴露管理端口，而是主动向 Controller 建立 gRPC 双向 Streaming 长连接，用于节点注册、心跳检测、任务下发、执行结果返回、状态同步以及实时数据传输。通信支持断线自动重连、任务缓存以及离线运行能力。当 Controller 暂时不可用时，Agent 保持当前已经生效的防火墙策略继续运行，并在恢复连接后同步最新状态。
+
+Agent 的网络状态采集与规则执行采用职责分离设计。规则操作由 Firewall Driver 完成，网络状态采集统一通过 Linux Netlink、proc 文件系统以及 conntrack 接口实现，向 Controller 提供统一的数据模型，包括网卡流量、连接数量、规则命中次数、数据包统计以及 TOP 网络访问信息。后续可通过扩展 eBPF 采集模块，实现类似 Cilium Hubble 的网络流量可视化能力。
+
+系统全面支持 Docker 化部署。Controller 作为独立 Docker 服务运行，可通过 Docker Compose 或 Kubernetes 部署。Agent 同样支持容器化运行，但由于需要访问宿主机网络协议栈，需要使用 host network 模式以及 privileged 权限，同时挂载必要的系统目录，使其能够管理宿主机 Netfilter 配置。未来 Kubernetes 场景中，可以通过 DaemonSet 方式部署 Agent，实现对 Kubernetes Node 网络策略的统一管理，并兼容 kube-proxy、CNI 网络插件以及容器网络规则。
+
+最终，该系统形成一个基于 Controller + Agent 架构、OceanBase 持久化、Firewall Driver 抽象、多源规则隔离、策略编译、安全审批和流量分析能力于一体的 Linux 网络安全管理平台。系统通过 OceanBase 解决状态可靠性问题，通过 Firewall Driver 解决底层技术演进问题，通过 MYFW 命名空间隔离解决规则冲突问题，通过审批回滚机制解决操作安全问题，通过 Web 可视化解决传统 Linux 防火墙维护复杂问题。最终实现一个能够统一管理 Linux 主机、Docker 环境以及未来 Kubernetes 节点的轻量级、可扩展、生产级网络防火墙控制平台。

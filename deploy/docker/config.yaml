@@ -1,0 +1,31 @@
+server:
+  web:
+    listen: :8080
+  grpc:
+    listen: :9090
+    tls:
+      ca_file: /etc/myfw/ca/ca.pem
+      cert_file: /etc/myfw/ca/server.crt
+      key_file: /etc/myfw/ca/server.key
+      client_auth: require_and_verify
+
+database:
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 30m
+
+ca:
+  key_file: /etc/myfw/ca/ca.key
+  cert_file: /etc/myfw/ca/ca.pem
+  agent_cert_ttl: 8760h
+  agent_cert_renew_before: 720h
+
+bootstrap:
+  token_ttl: 15m
+
+audit:
+  retention_days: 365
+
+log:
+  level: info
+  format: text

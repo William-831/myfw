@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package myfw.v1;
+
+option go_package = "iptables-tool/api/myfw/v1;myfwv1";
+
+// Direction of a firewall policy/rule relative to the host.
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_INBOUND = 1;   // INPUT
+  DIRECTION_OUTBOUND = 2;  // OUTPUT
+  DIRECTION_FORWARD = 3;   // FORWARD
+}
+
+// Transport / network protocol a rule matches.
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_ANY = 1;
+  PROTOCOL_TCP = 2;
+  PROTOCOL_UDP = 3;
+  PROTOCOL_ICMP = 4;
+}
+
+// Terminal action applied to a matched packet.
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_ACCEPT = 1;
+  ACTION_DROP = 2;
+  ACTION_REJECT = 3;
+  ACTION_MARK = 4;   // mangle MARK
+  ACTION_DNAT = 5;
+  ACTION_SNAT = 6;
+}
+
+// Which firewall backend an Agent selected for a node.
+enum FirewallBackend {
+  FIREWALL_BACKEND_UNSPECIFIED = 0;
+  FIREWALL_BACKEND_IPTABLES_LEGACY = 1;
+  FIREWALL_BACKEND_IPTABLES_NFT = 2;   // iptables with the nft backend
+  FIREWALL_BACKEND_NFTABLES = 3;       // native nftables
+}
+
+// Capabilities probed by the Agent at startup (see design.md § 5).
+message Capability {
+  string distro = 1;             // e.g. "ubuntu 22.04"
+  string kernel_version = 2;
+  string iptables_version = 3;
+  FirewallBackend iptables_backend = 4;
+  bool nft_supported = 5;
+  bool docker_present = 6;
+  bool kubernetes_present = 7;
+  FirewallBackend selected_backend = 8;  // the driver the Agent chose
+  repeated string extra = 9;             // free-form probe notes
+}
+
+// Stable identity + machine fingerprint captured at registration
+// (see design.md § 13.3).
+message MachineFingerprint {
+  string machine_id = 1;   // /etc/machine-id
+  string hostname = 2;
+  string kernel_version = 3;
+  string arch = 4;         // GOARCH-style, e.g. "amd64"
+  repeated string mac_addresses = 5;
+  repeated string ip_addresses = 6;
+}

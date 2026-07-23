@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package myfw.v1;
+
+option go_package = "iptables-tool/api/myfw/v1;myfwv1";
+
+import "myfw/v1/common.proto";
+
+// Registration & certificate lifecycle service. This is the only RPC an
+// Agent may call with just a bootstrap token; everything else requires a
+// valid client certificate. See design.md § 13.2 / § 13.3.
+service Registration {
+  // Register exchanges a one-time bootstrap token + CSR for a signed client
+  // certificate. The node starts in PENDING state until an admin approves it.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // RenewCert re-signs the client certificate over an already-authenticated
+  // (mTLS) channel before expiry.
+  rpc RenewCert(RenewCertRequest) returns (RenewCertResponse);
+}
+
+message RegisterRequest {
+  string bootstrap_token = 1;
+  string candidate_id = 2;             // Agent-generated candidate node id
+  bytes csr_pem = 3;                   // PKCS#10 CSR; private key never leaves host
+  MachineFingerprint fingerprint = 4;
+  Capability capability = 5;
+}
+
+message RegisterResponse {
+  string node_id = 1;                  // final id assigned by Controller
+  bytes client_cert_pem = 2;           // signed client certificate
+  string node_status = 3;              // "PENDING" | "ACTIVE"
+}
+
+message RenewCertRequest {
+  string node_id = 1;
+  bytes csr_pem = 2;
+}
+
+message RenewCertResponse {
+  bytes client_cert_pem = 1;
+  int64 not_after_unix = 2;
+}
