@@ -1,9 +1,11 @@
 # 开发进度
 
-> 更新日期：2026-07-20
+> 更新日期：2026-07-27
 > 配套文档：[development-plan.md](./development-plan.md)
 >
 > **图例**：`[ ]` 未开始 · `[~]` 进行中 · `[x]` 已完成 · `[-]` 已跳过
+>
+> **工作流约定（2026-07-27 起）**：本地仅维护纯净源代码，所有编译 / 测试 / 打包统一在远程 Linux 服务器执行；每次里程碑达成后更新本文档并打 Git tag 标记节点。
 
 ---
 
@@ -19,12 +21,12 @@
 | M5 | Firewall Driver + Iptables | `[x]` | 2026-07-21 | 2026-07-21 | v0.1.0-m5 | Driver 抽象 + IptablesDriver + AgentStream 服务端 + REST 触发 apply 端到端跑通（含 fake iptables 落规则、Linux 侧真 iptables 联调延后） |
 | M6 | 策略模型 + Rule Compiler | `[x]` | 2026-07-21 | 2026-07-21 | v0.1.0-m6 | Policy CRUD + versioning、Compiler（node_ids + label selector）、Dispatcher 并行下发聚合结果，端到端跑通 |
 | M7 | 变更审批 + 快照 + 回滚 | `[x]` | 2026-07-21 | 2026-07-21 | v0.1.0-m7 | 完整状态机（submit→approve→dispatch→apply→confirm_wait→confirmed / auto-rollback）、startup recovery、三个端到端路径 |
-| M8 | Watchdog 漂移检测 | `[~]` | 2026-07-21 |  |  | M7 完成后启动 |
-| M9 | NftablesDriver | `[ ]` |  |  |  |  |
-| M10 | 状态采集 | `[ ]` |  |  |  |  |
-| M11 | Web 前端 | `[ ]` |  |  |  |  |
-| M12 | 审计 / 告警 / 观测 | `[ ]` |  |  |  |  |
-| M13 | 打包分发 | `[ ]` |  |  |  |  |
+| M8 | Watchdog 漂移检测 | `[x]` | 2026-07-21 |  |  | 30s Hash 对比 + 漂移上报 + AutoRecover 开关；tag 待补打 |
+| M9 | NftablesDriver | `[x]` | 2026-07-21 |  |  | inet/ip family + 5 chain + fakeexec 测试；tag 待补打 |
+| M10 | 状态采集 | `[x]` | 2026-07-21 |  |  | CPU/内存/网络/连接数采集 + StateReport 上报；tag 待补打 |
+| M11 | Web 前端 | `[~]` | 2026-07-21 |  |  | 登录/节点/策略/审批/审计/Dashboard 页面就位；差 Controller 反代静态资源；tag 待补打 |
+| M12 | 审计 / 告警 / 观测 | `[x]` | 2026-07-21 |  |  | CSV 导出 + /metrics + webhook 告警；tag 待补打 |
+| M13 | 打包分发 | `[ ]` |  |  |  | 待启动 |
 
 ---
 
@@ -228,3 +230,9 @@
 - **2026-07-21** — M5 达成：Firewall Driver 抽象 + IptablesDriver（Exec 可注入，`ShellExec` 生产/`fakeexec` 测试）；Controller 侧 `AgentStream` 服务端上线（连接注册表 + 心跳 last_seen + TaskResult 上行）；Agent 侧 `handler.Handler` 接下发（snapshot → apply → 失败自 rollback → confirm 清快照）；REST `POST /nodes/:id/apply` 触发端到端；`TestApplyEndToEnd` 覆盖真 gRPC/mTLS/AgentStream + fake iptables 全链路；macOS 实机 smoke 验证连接建立 + 任务下发 + 结果回传（macOS 无 iptables，Handler 优雅失败）。Linux 真机 iptables 联调延后到有 VM 时验证，`ShellExec` 路径已就位。打 tag `v0.1.0-m5`。
 - **2026-07-21** — M6 达成：`internal/controller/{policy,compiler,task}` 三个新包 + `policy_routes.go`；Policy 模型 CRUD + 每次变更写 PolicyVersion 快照（事务保护）；Compiler 支持显式 `node_ids` 与 `labels` 交集匹配、稳定 (priority, id) 输出；Dispatcher 并行下发 + `stream.SubscribeTaskResults()` 多路 fan-out（重构掉了 M5 唯一 channel 的路径，多路 apply 不再互相抢结果）。REST 覆盖完整 CRUD + `POST /policies/:id/apply` + `POST /policies/apply-all`，apply 返回 200/207。`TestPolicyApplyEndToEnd` 与 `TestApplyAllPoliciesFanOut` 两个端到端集成测试覆盖显式目标与 label 目标；macOS 实机 smoke 走通 create → list → apply → update(v2) → delete 全生命周期。打 tag `v0.1.0-m6`。
 - **2026-07-21** — M7 达成：`internal/controller/task/coordinator.go` 实现完整 Task 状态机（pending_approval → approved → dispatching → applying → confirm_wait → confirmed / rolled_back / failed）；Coordinator 包含 Submit（含 auto_approve 快速路径）、Approve/Reject/Confirm 三个动作、resultLoop 消费 TaskResult 推进状态机、armRollbackTimer + autoRollback（超时自动回滚）、recoverOnStart（启动恢复过期 confirm_wait + stuck in-flight tasks 标记 failed）；policy apply 改造为默认走审批流（返回 202 + PENDING_APPROVAL tasks），`auto_approve=true` 保持同步语义兼容 M6 测试；Task model 加 `ConfirmDeadline` + `Reviewer` 字段；REST `POST /api/v1/tasks/:id/{approve,reject,confirm}` + `GET /api/v1/tasks`；审计事件覆盖 submit/approve/reject/applying_ok/apply_failed/confirm/auto_rollback/recover_failed 全生命周期。端到端集成测试覆盖三条路径：`TestApprovalAndConfirmFlow`（happy path）、`TestAutoRollbackFlow`（2s deadline expire → ROLLED_BACK + rules restored）、`TestRejectFlow`（reject → FAILED）。Agent 侧无需改动——M5 的 Handler 已具备 Apply/Confirm/Rollback 能力。打 tag `v0.1.0-m7`。
+- **2026-07-21** - M8 达成：`internal/agent/watchdog` 定期（30s）计算 MYFW 命名空间 Hash 与 Controller 期望态对比；漂移上报经 `stream.Service` 写审计；`AutoRecover` 开关触发 SyncRequest 自动恢复；单测覆盖无漂移 / 漂移 / 无基线 / Hash 错误 / 禁用 / nil driver。tag 待补打。
+- **2026-07-21** - M9 达成：`internal/agent/driver/nftables` 实现 inet/ip family、5 个 chain（INPUT/OUTPUT/FORWARD/PREROUTING/POSTROUTING）的 Init/Apply/Snapshot/Restore/Hash/Teardown；配套 fakeexec 测试；能力探测选择优先级 iptables-nft > iptables-legacy > nftables。tag 待补打。
+- **2026-07-21** - M10 达成：`internal/agent/collector` 采集 CPU / 内存 / 网络接口 / 连接数，复用 `StateReport` + `InterfaceStat` 经 `AgentToController_State` 上报，Controller 侧 `stream.Service` 接收记录。tag 待补打。
+- **2026-07-21~23** - M11 进行中：`web/`（Vite + Vue3 + Element Plus）落地登录 / 节点管理 / 节点详情 / 策略管理（`Policies.vue`）/ 审批中心 / 审计日志 / 系统概览 Dashboard；剩余 Controller 反代静态资源未接入。tag 待补打。
+- **2026-07-23** - M12 达成：审计日志 CSV 导出（支持筛选）；Prometheus 指标暴露 `/metrics`；告警 webhook 渠道。tag 待补打。
+- **2026-07-27** - 工程整理与安全增强：① 清理本地构建产物 / 依赖 / 证书（`agent.exe`、`controller.exe`、`dist/`、`deploy-package/`、`dev-ca/`、`deploy-cert/`、`web/node_modules`、`.mimicode` 等），补全 `.gitignore`（`/deploy-package/`、`/deploy-cert/`、`*.srl`、`*.ext`、`/.mimicode/` 等），移除遗留 `main.go` 与 `internal/shared/`。② 新增 `internal/security/` 模块：会话令牌（HMAC-SHA256）+ 防重放（nonce）+ IP 钉扎 + 证书自动轮换（短证书 24h），作为 gRPC 统一安全拦截器，在 mTLS 之上叠加应用层安全。③ 新增 `internal/model/iptables.go` 与 `stream.proto` 的 `IptablesRules` / `IptablesChain` / `SyncRulesRequest` 消息，支持节点 iptables 规则上报与同步。④ Controller 拆分 audit / dashboard / iptables / node / task 等 REST 路由文件。⑤ 同步修订 `design.md` / `deployment.md` / `development-plan.md` 至最新代码。⑥ 约定本地仅维护源代码，编译 / 测试 / 打包统一在远程 Linux 服务器执行；后续里程碑以 Git tag 标记节点。

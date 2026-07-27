@@ -1,7 +1,7 @@
 # 部署指南
 
-> 版本：v0.2
-> 更新日期：2026-07-20
+> 版本：v0.3
+> 更新日期：2026-07-27
 > 配套文档：[design.md](./design.md)
 >
 > **部署形态约定**：
@@ -115,10 +115,12 @@
 
 用于开发者本机跑通、写测试、Demo 演示。**不要用于生产**。
 
+> **构建约定（2026-07-27 起）**：本地仓库仅维护纯净源代码，下列 `go run` / `go build` / `make` 等编译、测试、打包命令统一在远程 Linux 服务器上执行；本地只做代码编辑与 `git commit/push`。开发数据库 `dev.db`、CA 证书目录 `dev-ca/` 等运行时产物均落在远程服务器，不进入 git。
+
 ### 3.1 启动 Controller（本地进程,不用 Docker）
 
 ```bash
-cd iptables-tool
+cd go-iptablesops
 
 # 数据库走 SQLite,DB 文件落在项目根目录 dev.db
 export MYFW_DB_DRIVER=sqlite
@@ -345,7 +347,7 @@ docker compose logs -f controller
 Agent 必须**静态编译**，产出单一二进制。
 
 ```bash
-cd iptables-tool
+cd go-iptablesops
 
 # 交叉编译 Linux amd64（无 CGO,纯静态）
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

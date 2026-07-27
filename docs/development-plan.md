@@ -1,7 +1,7 @@
 # 开发方案
 
-> 版本：v0.1
-> 更新日期：2026-07-20
+> 版本：v0.2
+> 更新日期：2026-07-27
 > 配套文档：[design.md](./design.md)、[deployment.md](./deployment.md)、[progress.md](./progress.md)
 
 ---
@@ -34,7 +34,7 @@
 以下是最终形态。实际开发按阶段逐步创建，不需要一次性建齐。
 
 ```
-iptables-tool/
+go-iptablesops/                  # 目录名；Go 模块名为 iptables-tool（见 go.mod）
 ├── docs/                         # 设计 / 部署 / 开发方案 / 进度
 │   ├── design.md
 │   ├── deployment.md
@@ -55,36 +55,46 @@ iptables-tool/
 │   └── agent/                    # Agent 主入口
 │       └── main.go
 ├── internal/
-│   ├── config/                   # 配置加载(env > file > default)
-│   ├── db/                       # GORM Driver 切换 + 迁移
-│   ├── model/                    # 实体定义
+│   ├── config/                   # Controller 配置加载（env > file > default）
+│   ├── db/                       # GORM Driver 切换 + 迁移（SQLite/MySQL，无静默降级）
+│   ├── model/                    # 实体定义（含 IptablesRule 规则持久化模型）
 │   ├── pki/                      # 私有 CA / 证书签发 / 指纹校验
+│   ├── security/                 # 通信安全：会话令牌 + HMAC + 防重放 + IP 钉扎 + 证书轮换
 │   ├── controller/               # Controller 业务模块
-│   │   ├── server/               #   Web + gRPC server 编排
+│   │   ├── server/               #   Gin + gRPC 编排 + REST 路由（按域拆分 *_routes.go）
 │   │   ├── auth/                 #   用户认证
 │   │   ├── asset/                #   节点资产管理
-│   │   ├── policy/               #   策略 CRUD
+│   │   ├── policy/               #   策略 CRUD + 版本
 │   │   ├── compiler/             #   Rule Compiler
-│   │   ├── task/                 #   任务调度
-│   │   ├── approval/             #   审批流
+│   │   ├── task/                 #   任务调度 + Coordinator 状态机
+│   │   ├── registration/         #   节点注册
+│   │   ├── stream/               #   AgentStream 服务端（双向流）
 │   │   ├── audit/                #   审计日志
-│   │   └── traffic/              #   流量聚合
+│   │   └── alerting/             #   告警（webhook）
 │   ├── agent/                    # Agent 业务模块
-│   │   ├── bootstrap/            #   首次注册
-│   │   ├── conn/                 #   gRPC 长连接
+│   │   ├── bootstrap/            #   首次注册 + 身份派生 + CSR
+│   │   ├── config/               #   Agent 配置加载
+│   │   ├── conn/                 #   gRPC mTLS 长连接 + 重连
 │   │   ├── capability/           #   能力探测
-│   │   ├── driver/               #   Driver 接口 + iptables/nftables 实现
+│   │   ├── driver/               #   Driver 接口 + iptables/nftables 实现（含 fakeexec）
+│   │   ├── handler/              #   任务执行（Snapshot/Apply/Confirm/Rollback）
 │   │   ├── watchdog/             #   漂移检测
-│   │   └── collector/            #   状态采集
-│   └── shared/                   # 双端共用的小工具
-├── web/                          # Vue3 前端(独立子目录,可后建)
+│   │   └── collector/            #   状态采集（CPU/内存/网络/连接）
+├── web/                          # Vue3 前端（Vite + Element Plus）
+│   ├── src/
+│   │   ├── api/                  #   接口封装
+│   │   ├── layout/               #   布局
+│   │   ├── router/               #   路由
+│   │   └── views/                #   页面（Login/Nodes/Dashboard/Approve/Audit/Policies）
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js
 ├── configs/
 │   ├── controller.dev.yaml
 │   └── controller.prod.example.yaml
 ├── deploy/
 │   ├── docker/
-│   │   ├── Dockerfile.controller
-│   │   └── docker-compose.yaml
+│   │   └── Dockerfile.controller # Controller 镜像构建（docker-compose 由部署方维护，见 deployment.md）
 │   └── systemd/
 │       ├── myfw-agent.service
 │       └── install-agent.sh
@@ -100,7 +110,7 @@ iptables-tool/
 ├── Makefile
 ├── go.mod
 ├── go.sum
-├── LICENSE
+├── LICENSE                       # 待定（MIT / Apache-2.0），暂缓
 └── README.md
 ```
 

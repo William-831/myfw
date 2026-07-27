@@ -1,7 +1,7 @@
 # Linux 网络防火墙统一管理平台 · 设计文档
 
-> 版本：v0.4
-> 更新日期：2026-07-20
+> 版本：v0.5
+> 更新日期：2026-07-27
 > 定位：面向个人运维使用的企业级 Linux 网络防火墙集中管理平台
 >
 > **部署形态约定**：Controller 以 Docker 方式部署；Agent **仅以裸机 systemd 形态部署**，不提供容器镜像，也不做 K8s DaemonSet 适配。
@@ -138,6 +138,7 @@ Controller 的数据库连接**优先从环境变量读取**,配置文件字段�
 | 模块 | 说明 |
 |---|---|
 | 用户认证模块 | 登录、权限、令牌管理 |
+| 通信安全模块 | gRPC 会话令牌（HMAC-SHA256）、防重放、IP 钉扎、证书自动轮换（详见 §13.4） |
 | 节点资产管理模块 | 节点注册、能力、状态、分组 |
 | 防火墙策略管理模块 | 策略 CRUD、版本 |
 | 规则编译模块（Rule Compiler） | 策略模型 → 标准规则对象 |
@@ -413,9 +414,9 @@ Controller ↔ Agent 之间的 gRPC 通信 **强制启用双向 TLS**，不提�
 
 **证书轮换**：
 
-- 客户端证书默认有效期 1 年；
-- Agent 在证书剩余有效期低于 30 天时，通过已有 mTLS 通道向 Controller 请求续签；
-- 私钥不出宿主机，Agent 本地生成 CSR 发送。
+- 客户端证书有效期由 Controller 配置 `ca.agent_cert_ttl` 决定（开发环境默认 1 年，内网生产可缩短）；
+- Agent 侧 `internal/security/CertRotation` 组件后台检测证书临近过期（默认剩余不足有效期 20% 时），通过已有 mTLS 通道向 Controller 请求续签；
+- 私钥不出宿主机，Agent 本地生成 EC P-256 密钥对与 CSR 发送，新证书原子落盘（先写临时文件再 rename，崩溃安全）。
 
 **明文/降级**：
 
@@ -492,6 +493,26 @@ Controller 侧：
 - 证书吊销；
 - 证书指纹不匹配的连接尝试。
 
+### 13.4 应用层会话安全（internal/security）
+
+在 mTLS 传输层之上，系统叠加一层**应用层会话安全**，用于纯内网环境下防御横向移动、指令伪造与重放攻击。该能力由 `internal/security` 模块统一实现，作为 gRPC 一元 / 流式拦截器接入。
+
+**会话令牌**：
+
+- Agent 注册成功后，Controller 为其签发轻量会话令牌（`SessionToken`），绑定 `node_id`、证书指纹、首次连接 IP；
+- 令牌使用 HMAC-SHA256 签名（不引入 JWT 库，避免外部依赖），载荷形如 `nodeID|fingerprint|ip|issuedAt|expiresAt|nonce`；
+- 后续请求通过 gRPC metadata 携带 `x-session-token` + `x-session-sig`。
+
+**防重放**：每个令牌携带随机 nonce，Controller 侧 `SessionManager` 记录已消费的 nonce，重复 nonce 直接拒绝。
+
+**IP 钉扎**：可选启用，将 `node_id` 绑定到首次连接 IP，IP 变化判定为可疑（横向移动征兆）并拒绝连接。
+
+**Bootstrap 例外**：`Registration/Register` 方法走特殊认证路径（仅校验 bootstrap token），不要求会话令牌，保证首次接入可达。
+
+**拦截器组合**：`SecureInterceptor` 统一执行「mTLS 证书提取 node_id → IP 钉扎 → 会话令牌验证 → 注入 node_id 到 ctx」流程，业务 handler 通过 `security.NodeIDFromContext(ctx)` 取用。
+
+> 说明：会话令牌与 mTLS **叠加而非替代**--mTLS 提供传输加密与证书身份，会话令牌提供应用级防重放与行为绑定。开发环境可通过 `DisableTLS` 降级为仅 metadata 传 `x-node-id`，仅用于本地联调，生产一律强制 mTLS。
+
 ---
 
 ## 14. 网络状态与流量采集
@@ -510,8 +531,13 @@ Controller 侧：
 - 规则命中次数
 - 数据包统计
 - TOP 网络访问信息
+- 节点 iptables 规则快照（filter / nat / mangle / raw 各链，区分 MYFW 命名空间）
 
-### 14.3 未来扩展
+### 14.3 规则上报与同步
+
+Agent 通过 gRPC 双向流的 `IptablesRules` 消息上报节点当前 iptables 规则（按 table / chain 组织），Controller 可下发 `SyncRulesRequest` 主动请求上报。上报内容持久化到 `IptablesRule` 模型，供 Web 控制台「专家模式」展示节点底层规则并与期望态对比（见 §10）。该能力与 Firewall Driver 的 MYFW 命名空间规则隔离互补：Driver 管理平台下发规则，规则上报展示全量规则（含非 MYFW 的系统规则，只读）。
+
+### 14.4 未来扩展
 
 通过 eBPF 采集模块，实现类似 **Cilium Hubble** 的网络流量可视化能力。
 
