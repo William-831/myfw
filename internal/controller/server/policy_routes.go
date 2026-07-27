@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"iptables-tool/internal/controller/auth"
 	"iptables-tool/internal/controller/compiler"
 	"iptables-tool/internal/controller/policy"
 	"iptables-tool/internal/controller/task"
@@ -213,4 +214,4 @@ func respondPolicyErr(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 }
 
-func actor(c *gin.Context) string { return "admin" }
+func actor(c *gin.Context) string { return auth.ActorFromContext(c.Request.Context()) }

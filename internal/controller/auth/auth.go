@@ -2,9 +2,9 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -38,7 +38,8 @@ func New(db *gorm.DB) *Handler {
 }
 
 func (h *Handler) Register(r gin.IRouter) {
-	g := r.Group("/api/auth")
+	r.Use(h.middleware())
+	g := r.Group("/api/v1/auth")
 	g.POST("/login", h.login)
 	g.GET("/me", h.me)
 }
@@ -61,7 +62,7 @@ func (h *Handler) login(c *gin.Context) {
 	}
 
 	if req.Username == "admin" && req.Password == "admin123" {
-		token := h.generateToken(1, "admin")
+		token := generateToken(1, "admin")
 		c.JSON(http.StatusOK, loginResp{Token: token, Username: "admin"})
 		return
 	}
@@ -78,14 +79,14 @@ func (h *Handler) me(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-func (h *Handler) generateToken(userID uint, username string) string {
+func generateToken(userID uint, username string) string {
 	claims := TokenClaims{
 		UserID:   userID,
 		Username: username,
 		Expires:  time.Now().Add(24 * time.Hour).Unix(),
 	}
 	buf, _ := json.Marshal(claims)
-	return fmt.Sprintf("fake.%s", base64Encode(buf))
+	return "fake." + base64.StdEncoding.EncodeToString(buf)
 }
 
 func (h *Handler) middleware() gin.HandlerFunc {
@@ -96,7 +97,7 @@ func (h *Handler) middleware() gin.HandlerFunc {
 			return
 		}
 
-		parts := strings.Split(authHeader, " ")
+		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
 			c.Next()
 			return
@@ -108,7 +109,7 @@ func (h *Handler) middleware() gin.HandlerFunc {
 			return
 		}
 
-		claimsData, err := base64Decode(strings.TrimPrefix(token, "fake."))
+		claimsData, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(token, "fake."))
 		if err != nil {
 			c.Next()
 			return
@@ -125,62 +126,20 @@ func (h *Handler) middleware() gin.HandlerFunc {
 			return
 		}
 
-		c.Set("user", User{ID: claims.UserID, Username: claims.Username})
+		user := User{ID: claims.UserID, Username: claims.Username}
+		c.Set("user", user)
+		// 同时存入标准 context，使 ActorFromContext 可读取
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), userContextKey{}, user))
 		c.Next()
 	}
 }
 
-func base64Encode(data []byte) string {
-	const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	result := make([]byte, 0, ((len(data)+2)/3)*4)
-	for i := 0; i < len(data); i += 3 {
-		b0, b1, b2 := data[i], byte(0), byte(0)
-		if i+1 < len(data) {
-			b1 = data[i+1]
-		}
-		if i+2 < len(data) {
-			b2 = data[i+2]
-		}
-		result = append(result, table[b0>>2])
-		result = append(result, table[((b0&3)<<4)|(b1>>4)])
-		result = append(result, table[((b1&15)<<2)|(b2>>6)])
-		result = append(result, table[b2&63])
-	}
-	if mod := len(data) % 3; mod != 0 {
-		result[len(result)-1] = '='
-		if mod == 1 {
-			result[len(result)-2] = '='
-		}
-	}
-	return string(result)
-}
-
-func base64Decode(data string) ([]byte, error) {
-	const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	result := make([]byte, 0, (len(data)*3)/4)
-	var buffer uint32
-	var bits uint
-	for _, c := range data {
-		if c == '=' {
-			break
-		}
-		idx := strings.IndexRune(table, c)
-		if idx == -1 {
-			return nil, ErrInvalidToken
-		}
-		buffer = (buffer << 6) | uint32(idx)
-		bits += 6
-		if bits >= 8 {
-			bits -= 8
-			result = append(result, byte(buffer>>bits))
-		}
-	}
-	return result, nil
-}
-
 func ActorFromContext(ctx context.Context) string {
-	if user, ok := ctx.Value("user").(User); ok {
+	if user, ok := ctx.Value(userContextKey{}).(User); ok {
 		return user.Username
 	}
 	return "admin"
 }
+
+// userContextKey 是 context.Value 中用户信息的键类型
+type userContextKey struct{}

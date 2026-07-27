@@ -15,5 +15,6 @@ func AllModels() []any {
 		&Approval{},
 		&Snapshot{},
 		&AuditLog{},
+		&IptablesRule{},
 	}
 }

@@ -24,6 +24,7 @@ type ControllerConfig struct {
 }
 
 type TLSConfig struct {
+	Disable  bool   `yaml:"disable"`   // 禁用 TLS（仅用于内网开发环境）
 	CAFile   string `yaml:"ca_file"`
 	CertFile string `yaml:"cert_file"` // written by Agent after Register
 	KeyFile  string `yaml:"key_file"`  // written by Agent after Register
@@ -77,6 +78,14 @@ func applyEnv(cfg *Config) {
 // (i.e. registration has completed at least once). When false, main should
 // run the bootstrap flow before opening a long-lived connection.
 func (c Config) Bootstrapped() bool {
+	// 如果禁用 TLS，检查 bootstrap_done 标记文件是否存在
+	if c.Controller.TLS.Disable {
+		donePath := c.Node.DataDir + "/bootstrap_done"
+		if _, err := os.Stat(donePath); err != nil {
+			return false
+		}
+		return true
+	}
 	if c.Controller.TLS.CertFile == "" || c.Controller.TLS.KeyFile == "" {
 		return false
 	}
@@ -93,14 +102,18 @@ func (c Config) RequireForBootstrap() error {
 	if c.Controller.Endpoint == "" {
 		return fmt.Errorf("agent config: controller.endpoint is empty")
 	}
-	if c.Controller.TLS.CAFile == "" {
-		return fmt.Errorf("agent config: controller.tls.ca_file is empty")
+	// 如果禁用 TLS，跳过证书文件检查，但仍然需要 bootstrap_token
+	if !c.Controller.TLS.Disable {
+		if c.Controller.TLS.CAFile == "" {
+			return fmt.Errorf("agent config: controller.tls.ca_file is empty")
+		}
+		if c.Controller.TLS.CertFile == "" || c.Controller.TLS.KeyFile == "" {
+			return fmt.Errorf("agent config: controller.tls.{cert_file,key_file} must be set (targets for the signed cert)")
+		}
 	}
+	// 无 mTLS 模式也需要 bootstrap_token 来注册节点
 	if c.Controller.BootstrapToken == "" {
 		return fmt.Errorf("agent config: controller.bootstrap_token is empty")
-	}
-	if c.Controller.TLS.CertFile == "" || c.Controller.TLS.KeyFile == "" {
-		return fmt.Errorf("agent config: controller.tls.{cert_file,key_file} must be set (targets for the signed cert)")
 	}
 	if c.Node.DataDir == "" {
 		return fmt.Errorf("agent config: node.data_dir is empty")

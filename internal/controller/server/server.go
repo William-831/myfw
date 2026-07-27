@@ -1,22 +1,16 @@
-// Package server wires together the Controller's Web (Gin) and gRPC endpoints
-// and manages their lifecycle. Business handlers are registered in later
-// milestones; M2 provides the skeleton and M3 adds mTLS enforcement +
-// registration/asset services. See docs/development-plan.md § M2/§ M3.
+// Package server 组装 Controller 的 Web (Gin) 和 gRPC 端点，管理生命周期。
 package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -40,42 +34,81 @@ import (
 	"iptables-tool/internal/controller/task"
 	"iptables-tool/internal/model"
 	"iptables-tool/internal/pki"
+	"iptables-tool/internal/security"
 )
 
-// Server owns the Web and gRPC servers and their shared dependencies.
+// Server 持有 Web 和 gRPC 服务器及其共享依赖。
 type Server struct {
-	cfg    config.Config
-	log    *slog.Logger
-	db     *gorm.DB
-	ca     *pki.CA
-	stream *stream.Service
-	policy *policy.Service
-	comp   *compiler.Compiler
-	co     *task.Coordinator
-	http   *http.Server
-	grpc   *grpc.Server
+	cfg      config.Config
+	log      *slog.Logger
+	db       *gorm.DB
+	ca       *pki.CA
+	stream   *stream.Service
+	policy   *policy.Service
+	comp     *compiler.Compiler
+	co       *task.Coordinator
+	sec      *security.SecureInterceptor
+	http     *http.Server
+	grpc     *grpc.Server
 }
 
-// New constructs a Server from config plus the shared DB handle.
+// New 从配置和共享 DB 句柄构建 Server。
 func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
-	ca, err := pki.LoadCA(cfg.CA.CertFile, cfg.CA.KeyFile)
-	if err != nil {
-		return nil, err
+	log.Info("config loaded", "disable_mtls", cfg.Server.GRPC.TLS.Disable)
+
+	// 当 mTLS 禁用时，CA 可选
+	var ca *pki.CA
+	if !cfg.Server.GRPC.TLS.Disable {
+		var err error
+		ca, err = pki.LoadCA(cfg.CA.CertFile, cfg.CA.KeyFile)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	creds, err := loadServerTLS(cfg.Server.GRPC.TLS)
-	if err != nil {
-		return nil, err
+	// 根据配置决定是否加载 TLS 凭据
+	var opts []grpc.ServerOption
+	if !cfg.Server.GRPC.TLS.Disable {
+		creds, err := loadServerTLS(cfg.Server.GRPC.TLS)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.Creds(creds))
 	}
 
 	auditSink := audit.New(db)
 
-	grpcSrv := grpc.NewServer(
-		grpc.Creds(creds),
-		grpc.UnaryInterceptor(authUnary(db)),
-		grpc.StreamInterceptor(authStream(db)),
+	// 创建安全拦截器（集成 mTLS + 会话令牌 + HMAC + IP钉扎）
+	hmacSecret := []byte(os.Getenv("MYFW_HMAC_SECRET"))
+	if len(hmacSecret) == 0 {
+		// 开发环境使用随机密钥，生产环境必须通过环境变量设置
+		hmacSecret = make([]byte, 32)
+		rand.Read(hmacSecret)
+		log.Warn("using random HMAC secret; set MYFW_HMAC_SECRET in production")
+	}
+
+	secInterceptor := security.NewSecureInterceptor(security.SecureConfig{
+		DisableTLS:       cfg.Server.GRPC.TLS.Disable,
+		SessionTTL:       24 * time.Hour,
+		HMACSecret:       hmacSecret,
+		EnableIPPinning:  true,
+		AntiReplayWindow: 300,
+	}, log)
+
+	// 使用安全拦截器替代原有的 authUnary/authStream
+	opts = append(opts,
+		grpc.ChainUnaryInterceptor(
+			secInterceptor.UnaryServerInterceptor(),
+			legacyAuthUnary(db, cfg.Server.GRPC.TLS.Disable),
+		),
+		grpc.ChainStreamInterceptor(
+			secInterceptor.StreamServerInterceptor(),
+			legacyAuthStream(db, cfg.Server.GRPC.TLS.Disable),
+		),
 	)
-	// Register services.
+
+	grpcSrv := grpc.NewServer(opts...)
+	// 注册服务
 	regSvc := registration.New(db, ca, cfg.CA.AgentCertTTL, auditSink)
 	myfwv1.RegisterRegistrationServer(grpcSrv, regSvc)
 
@@ -86,7 +119,7 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 	comp := compiler.New(db)
 	co := task.NewCoordinator(db, streamSvc, comp, auditSink, log)
 
-	// Web (Gin) with REST admin routes.
+	// Web (Gin) REST 路由
 	assetH := asset.New(db, auditSink, cfg.Bootstrap.TokenTTL)
 	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink)
 
@@ -99,6 +132,7 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 		policy: policySvc,
 		comp:   comp,
 		co:     co,
+		sec:    secInterceptor,
 		grpc:   grpcSrv,
 	}
 	s.http = &http.Server{
@@ -109,10 +143,7 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 	return s, nil
 }
 
-// loadServerTLS builds mTLS credentials. Client certificates are VERIFIED
-// when presented, but not required at TLS handshake time — that lets a fresh
-// Agent call Registration.Register (which has no client cert yet). All other
-// RPCs are guarded by authUnary/authStream which reject missing certs.
+// loadServerTLS 构建 mTLS 凭据。
 func loadServerTLS(t config.TLSConfig) (credentials.TransportCredentials, error) {
 	cert, err := tls.LoadX509KeyPair(t.CertFile, t.KeyFile)
 	if err != nil {
@@ -128,50 +159,47 @@ func loadServerTLS(t config.TLSConfig) (credentials.TransportCredentials, error)
 	}
 	return credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.VerifyClientCertIfGiven, // handshake-layer TOFU allowed
+		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    pool,
 		MinVersion:   tls.VersionTLS12,
 	}), nil
 }
 
-// bootstrapMethods lists gRPC methods that may be called WITHOUT a client
-// certificate. Everything else requires an mTLS-authenticated peer bound to
-// a live node record.
+// bootstrapMethods 列出不需要客户端证书的 gRPC 方法。
 var bootstrapMethods = map[string]bool{
 	"/myfw.v1.Registration/Register": true,
 }
 
-// authUnary enforces the certificate-binding contract on all unary RPCs.
-func authUnary(db *gorm.DB) grpc.UnaryServerInterceptor {
+// legacyAuthUnary 保留原有的数据库级认证检查（证书吊销、节点状态等）。
+// 安全拦截器处理 mTLS + 会话层认证，这里做业务层二次校验。
+func legacyAuthUnary(db *gorm.DB, disableMTLS bool) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if err := checkAuth(ctx, info.FullMethod, db); err != nil {
+		if err := checkAuth(ctx, info.FullMethod, db, disableMTLS); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
 	}
 }
 
-// authStream enforces the same rules on server-streaming/bidirectional RPCs.
-func authStream(db *gorm.DB) grpc.StreamServerInterceptor {
+// legacyAuthStream 流式RPC的业务层认证。
+func legacyAuthStream(db *gorm.DB, disableMTLS bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := checkAuth(ss.Context(), info.FullMethod, db); err != nil {
+		if err := checkAuth(ss.Context(), info.FullMethod, db, disableMTLS); err != nil {
 			return err
 		}
 		return handler(srv, ss)
 	}
 }
 
-// checkAuth is the shared authorization step. For bootstrap methods it is a
-// no-op (the RPC itself validates the token); for every other method it:
-//  1. Requires a verified client certificate.
-//  2. Extracts the node id from the certificate's URI SAN / CN.
-//  3. Looks up the persisted Certificate row by fingerprint and confirms it
-//     is not revoked and belongs to that same node id.
-//  4. Confirms the node exists and is not ARCHIVED.
-func checkAuth(ctx context.Context, method string, db *gorm.DB) error {
+// checkAuth 业务层认证：验证证书是否被吊销、节点是否归档。
+func checkAuth(ctx context.Context, method string, db *gorm.DB, disableMTLS bool) error {
 	if bootstrapMethods[method] {
 		return nil
 	}
+	if disableMTLS {
+		return nil
+	}
+
 	p, ok := peer.FromContext(ctx)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "no peer info")
@@ -208,13 +236,10 @@ func checkAuth(ctx context.Context, method string, db *gorm.DB) error {
 	if node.Status == model.NodeStatusArchived {
 		return status.Error(codes.PermissionDenied, "node archived")
 	}
-	// PENDING/ACTIVE/OFFLINE all reach handlers; individual handlers may still
-	// gate on status (e.g. only ACTIVE receives ApplyTasks).
-	_ = strings.TrimSpace // keep the strings import for future header parsing
 	return nil
 }
 
-// newWebHandler builds the Gin engine with health + admin REST routes.
+// newWebHandler 构建 Gin 引擎。
 func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service, policySvc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -233,10 +258,10 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerNodeRoutes(r, db)
 	registerTaskRoutes(r, streamSvc)
 	registerTaskLifecycleRoutes(r, co)
-	registerApprovalRoutes(r, co)
 	registerPolicyRoutes(r, policySvc, co, comp)
 	registerAuditRoutes(r, auditSink)
 	registerDashboardRoutes(r, db)
+	registerIptablesRoutes(r, db)
 
 	r.Static("/assets", "/var/www/myfw/assets")
 	r.NoRoute(func(c *gin.Context) {
@@ -246,9 +271,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	return r
 }
 
-// BuildWebHandler is a test-facing helper that constructs the same handler
-// tree the server serves at /, without touching listeners. Tests use it with
-// httptest to exercise REST routes against a real DB.
+// BuildWebHandler 测试辅助：构建 Web handler 树。
 func BuildWebHandler(db *gorm.DB, tokenTTL time.Duration) http.Handler {
 	auditSink := audit.New(db)
 	assets := asset.New(db, auditSink, tokenTTL)
@@ -259,9 +282,7 @@ func BuildWebHandler(db *gorm.DB, tokenTTL time.Duration) http.Handler {
 	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink)
 }
 
-// BuildWebHandlerWithStream is the same but lets the caller inject a shared
-// stream.Service so REST-issued apply tasks land on the same registry the
-// gRPC server uses. This is what tests use for end-to-end.
+// BuildWebHandlerWithStream 测试辅助：注入共享的 stream.Service。
 func BuildWebHandlerWithStream(db *gorm.DB, tokenTTL time.Duration, streamSvc *stream.Service) http.Handler {
 	auditSink := audit.New(db)
 	assets := asset.New(db, auditSink, tokenTTL)
@@ -271,11 +292,8 @@ func BuildWebHandlerWithStream(db *gorm.DB, tokenTTL time.Duration, streamSvc *s
 	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink)
 }
 
-// Run starts both servers and blocks until ctx is cancelled, then shuts down
-// gracefully.
+// Run 启动两个服务器并阻塞直到 ctx 取消。
 func (s *Server) Run(ctx context.Context) error {
-	// M7: start the task coordinator's background loops (result subscriber,
-	// startup recovery of orphaned tasks, confirm-wait timers).
 	s.co.Start(ctx)
 
 	grpcLn, err := net.Listen("tcp", s.cfg.Server.GRPC.Listen)
@@ -315,8 +333,6 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) shutdown() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Stop the coordinator first so in-flight result handling drains before
-	// we tear down the gRPC server (which hosts the AgentStream).
 	s.co.Stop()
 	if err := s.http.Shutdown(shutdownCtx); err != nil {
 		s.log.Warn("web shutdown", "err", err)
@@ -330,152 +346,4 @@ func prometheusHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h.ServeHTTP(c.Writer, c.Request)
 	}
-}
-
-func registerAuditRoutes(r *gin.Engine, auditSink *audit.Sink) {
-	r.GET("/api/audit/logs", func(c *gin.Context) {
-		action := c.Query("action")
-		nodeID := c.Query("node_id")
-		limitStr := c.DefaultQuery("limit", "10")
-		offsetStr := c.DefaultQuery("offset", "0")
-
-		limit, _ := strconv.Atoi(limitStr)
-		offset, _ := strconv.Atoi(offsetStr)
-
-		logs, total, err := auditSink.Query(c.Request.Context(), action, nodeID, limit, offset)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"data": logs, "total": total})
-	})
-
-	r.GET("/api/audit/export", func(c *gin.Context) {
-		action := c.Query("action")
-		nodeID := c.Query("node_id")
-
-		logs, _, err := auditSink.Query(c.Request.Context(), action, nodeID, 10000, 0)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.Header("Content-Type", "text/csv")
-		c.Header("Content-Disposition", "attachment; filename=audit_logs.csv")
-
-		w := csv.NewWriter(c.Writer)
-		w.Write([]string{"ID", "Actor", "Action", "NodeID", "Detail", "CreatedAt"})
-		for _, log := range logs {
-			w.Write([]string{
-				fmt.Sprintf("%d", log.ID),
-				log.Actor,
-				log.Action,
-				log.NodeID,
-				log.Detail,
-				log.CreatedAt.Format(time.RFC3339),
-			})
-		}
-		w.Flush()
-	})
-}
-
-func registerNodeRoutes(r *gin.Engine, db *gorm.DB) {
-	g := r.Group("/api/v1/nodes")
-	g.GET("/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		var node model.Node
-		if err := db.Preload("Capability").Where("id = ?", id).First(&node).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
-			return
-		}
-		c.JSON(http.StatusOK, node)
-	})
-	g.PUT("/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		var body struct {
-			Labels []string `json:"labels"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		labelsJSON, _ := json.Marshal(body.Labels)
-		if err := db.Model(&model.Node{}).Where("id = ?", id).Update("labels", string(labelsJSON)).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		var node model.Node
-		db.Preload("Capability").Where("id = ?", id).First(&node)
-		c.JSON(http.StatusOK, node)
-	})
-	g.DELETE("/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		if err := db.Model(&model.Node{}).Where("id = ?", id).Update("status", model.NodeStatusArchived).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-}
-
-func registerApprovalRoutes(r *gin.Engine, co *task.Coordinator) {
-	g := r.Group("/api/approvals")
-	g.GET("", func(c *gin.Context) {
-		status := c.Query("status")
-		if status == "" {
-			status = string(model.TaskPendingApproval)
-		}
-		list, err := co.List(c.Request.Context(), status)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"data": list, "total": len(list)})
-	})
-	g.POST("/:id/approve", func(c *gin.Context) {
-		t, err := co.Approve(c.Request.Context(), c.Param("id"), actor(c), 5*time.Minute)
-		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, t)
-	})
-	g.POST("/:id/reject", func(c *gin.Context) {
-		var body struct {
-			Reason string `json:"reason"`
-		}
-		_ = c.ShouldBindJSON(&body)
-		t, err := co.Reject(c.Request.Context(), c.Param("id"), actor(c), body.Reason)
-		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, t)
-	})
-}
-
-func registerDashboardRoutes(r *gin.Engine, db *gorm.DB) {
-	r.GET("/api/dashboard/stats", func(c *gin.Context) {
-		var nodeCount, activeNodeCount, pendingNodeCount int64
-		var policyCount, activePolicyCount int64
-		var pendingTaskCount int64
-
-		db.Model(&model.Node{}).Count(&nodeCount)
-		db.Model(&model.Node{}).Where("status = ?", model.NodeStatusActive).Count(&activeNodeCount)
-		db.Model(&model.Node{}).Where("status = ?", model.NodeStatusPending).Count(&pendingNodeCount)
-
-		db.Model(&model.Policy{}).Count(&policyCount)
-		db.Model(&model.Policy{}).Where("enabled = ?", true).Count(&activePolicyCount)
-
-		db.Model(&model.Task{}).Where("status = ?", model.TaskPendingApproval).Count(&pendingTaskCount)
-
-		c.JSON(http.StatusOK, gin.H{
-			"node_count":          nodeCount,
-			"active_node_count":   activeNodeCount,
-			"pending_node_count":  pendingNodeCount,
-			"policy_count":        policyCount,
-			"active_policy_count": activePolicyCount,
-			"pending_task_count":  pendingTaskCount,
-		})
-	})
 }

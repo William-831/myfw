@@ -19,7 +19,7 @@
           </el-button>
         </el-form-item>
       </el-form>
-      <p class="hint-text">默认管理员账号：admin / admin</p>
+      <p class="hint-text">默认管理员账号：admin / admin123</p>
     </div>
   </div>
 </template>
@@ -29,6 +29,7 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { User, Lock } from '@element-plus/icons-vue'
+import { login } from '@/api'
 
 const router = useRouter()
 const loading = ref(false)
@@ -52,14 +53,13 @@ const handleLogin = async () => {
 
   loading.value = true
   try {
-    if (loginForm.username === 'admin' && loginForm.password === 'admin') {
-      localStorage.setItem('token', 'admin-token')
-      localStorage.setItem('username', 'admin')
-      ElMessage.success('登录成功')
-      router.push('/dashboard')
-    } else {
-      ElMessage.error('用户名或密码错误')
-    }
+    const res = await login(loginForm)
+    localStorage.setItem('token', res.token)
+    localStorage.setItem('username', res.username)
+    ElMessage.success('登录成功')
+    router.push('/dashboard')
+  } catch (err) {
+    ElMessage.error('用户名或密码错误')
   } finally {
     loading.value = false
   }

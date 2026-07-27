@@ -1,23 +1,23 @@
-// Command agent is the entry point for the MYFW execution-plane service.
+// Command agent 是 MYFW 执行面服务的入口。
 //
-// It runs on each managed Linux host as a bare-metal systemd service:
-//  1. Loads /etc/myfw-agent/agent.yaml.
-//  2. Ensures a stable node id under /var/lib/myfw-agent.
-//  3. Probes host capabilities (iptables/nftables/docker/kubernetes).
-//  4. On first launch: registers with the Controller using a one-time
-//     bootstrap token and persists the returned client certificate.
-//  5. Opens an mTLS long-lived stream to the Controller and pushes heartbeats.
-//
-// The Firewall Drivers land in M5.
+// 运行在每个受管 Linux 主机上，作为 systemd 服务：
+//  1. 加载 /etc/myfw-agent/agent.yaml。
+//  2. 确保 /var/lib/myfw-agent 下的稳定节点身份。
+//  3. 探测主机能力（iptables/nftables/docker/kubernetes）。
+//  4. 首次启动：使用一次性引导令牌向 Controller 注册，持久化返回的客户端证书。
+//  5. 打开 mTLS 长连接流并推送心跳。
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,14 +25,16 @@ import (
 	"iptables-tool/internal/agent/bootstrap"
 	"iptables-tool/internal/agent/capability"
 	agentcfg "iptables-tool/internal/agent/config"
+	"iptables-tool/internal/agent/collector"
 	"iptables-tool/internal/agent/conn"
 	agentdriver "iptables-tool/internal/agent/driver"
 	iptdriver "iptables-tool/internal/agent/driver/iptables"
+	nftdriver "iptables-tool/internal/agent/driver/nftables"
 	"iptables-tool/internal/agent/handler"
 	"iptables-tool/internal/agent/watchdog"
+	"iptables-tool/internal/security"
 )
 
-// version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
@@ -60,14 +62,14 @@ func run() error {
 	log := newLogger()
 	log.Info("starting myfw-agent", "version", version, "config", *configPath)
 
-	// 1. Stable node identity.
+	// 1. 稳定节点身份
 	id, err := bootstrap.LoadOrCreateIdentity(cfg.Node.DataDir)
 	if err != nil {
 		return err
 	}
 	log.Info("node identity ready", "node_id", id.NodeID)
 
-	// 2. Capability probe.
+	// 2. 能力探测
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	cap := capability.Detect(ctx)
@@ -80,7 +82,7 @@ func run() error {
 		"k8s", cap.KubernetesPresent,
 	)
 
-	// 3. First-time bootstrap (only if we don't already have a client cert).
+	// 3. 首次引导注册（若尚无客户端证书）
 	nodeID := id.NodeID
 	if !cfg.Bootstrapped() {
 		if err := cfg.RequireForBootstrap(); err != nil {
@@ -89,6 +91,7 @@ func run() error {
 		log.Info("running first-time bootstrap")
 
 		bootConn, err := conn.Dial(ctx, cfg.Controller.Endpoint, conn.TLSMaterial{
+			Disable:       cfg.Controller.TLS.Disable,
 			CAFile:        cfg.Controller.TLS.CAFile,
 			ServerName:    cfg.Controller.ServerName,
 			BootstrapOnly: true,
@@ -113,15 +116,41 @@ func run() error {
 		nodeID = res.NodeID
 		log.Info("bootstrap complete", "node_id", res.NodeID, "status", res.NodeStatus)
 
-		// Best-effort: strip the now-consumed token from the config file so
-		// a subsequent start doesn't try to re-use it.
+		if cfg.Controller.TLS.Disable {
+			donePath := cfg.Node.DataDir + "/bootstrap_done"
+			if err := os.WriteFile(donePath, []byte(res.NodeID), 0600); err != nil {
+				log.Warn("could not create bootstrap_done marker", "err", err)
+			}
+		}
+
 		if err := clearBootstrapToken(*configPath); err != nil {
 			log.Warn("could not clear bootstrap_token from config", "err", err)
 		}
 	}
 
-	// 4. Long-lived mTLS stream (heartbeats + task rx).
+	// 4. 证书自动轮换：检查是否需要轮换
+	if !cfg.Controller.TLS.Disable {
+		rotator := security.NewCertRotation(security.RotationConfig{
+			CertTTL:     24 * time.Hour,
+			RenewBefore: 5 * time.Hour,
+			KeyDir:      cfg.Node.DataDir,
+			Logger:      log,
+		})
+		if err := rotator.LoadExisting(); err == nil && rotator.NeedsRotation() {
+			log.Info("certificate nearing expiry, requesting renewal")
+			if err := requestCertRenewal(ctx, cfg, nodeID, rotator, cap); err != nil {
+				log.Warn("certificate renewal failed, will retry on next restart", "err", err)
+			}
+		}
+		// 启动后台轮换循环
+		rotator.StartRotationLoop(ctx, func(ctx context.Context) error {
+			return requestCertRenewal(ctx, cfg, nodeID, rotator, cap)
+		})
+	}
+
+	// 5. mTLS 长连接流（心跳 + 任务接收）
 	streamConn, err := conn.Dial(ctx, cfg.Controller.Endpoint, conn.TLSMaterial{
+		Disable:    cfg.Controller.TLS.Disable,
 		CAFile:     cfg.Controller.TLS.CAFile,
 		CertFile:   cfg.Controller.TLS.CertFile,
 		KeyFile:    cfg.Controller.TLS.KeyFile,
@@ -132,9 +161,7 @@ func run() error {
 	}
 	defer streamConn.Close()
 
-	// 5. Build the Firewall Driver matching the detected backend. On non-Linux
-	//    / undetected hosts we run without a driver — heartbeats still flow
-	//    but ApplyTasks are refused with a clear error.
+	// 5. 根据探测结果构建防火墙驱动
 	drv := selectDriver(cap, log)
 	if drv != nil {
 		if err := drv.Init(ctx); err != nil {
@@ -145,8 +172,10 @@ func run() error {
 		}
 	}
 
-	// The handler needs the trimmed Driver interface, but selectDriver returns
-	// the full one; nil is passed through so Apply is rejected politely.
+	// 6. 上报 iptables 规则到 Controller
+	go reportIptablesRules(ctx, cfg, nodeID, log)
+
+	// 7. 构建任务处理器
 	var h *handler.Handler
 	if drv != nil {
 		h = handler.New(drv, log)
@@ -154,10 +183,10 @@ func run() error {
 		h = handler.New(nil, log)
 	}
 
-	// Create a shared send channel for drift reports (persists across reconnections).
+	// 8. 共享发送通道（漂移报告等跨重连消息）
 	sendCh := make(chan *myfwv1.AgentToController, 8)
 
-	// Start Watchdog if driver is available.
+	// 9. 启动看门狗（若驱动可用）
 	var wd *watchdog.Watchdog
 	if drv != nil {
 		reporter := conn.NewReporter(log, sendCh)
@@ -172,27 +201,75 @@ func run() error {
 		defer wd.Stop()
 	}
 
-	// Start the connection loop (blocking).
+	// 10. 连接循环（阻塞）
 	if err := conn.Loop(ctx, streamConn, log, nodeID, cap, h, conn.HeartbeatOptions{}, sendCh); err != nil {
 		return err
 	}
 
-	// Wait for shutdown signal.
 	<-ctx.Done()
 	return nil
 }
 
-// selectDriver picks a driver.Driver based on the probed backend. Returns nil
-// when nothing usable exists (macOS dev, or Linux without iptables/nftables).
+// reportIptablesRules 收集并上报 iptables 规则
+func reportIptablesRules(ctx context.Context, cfg agentcfg.Config, nodeID string, log *slog.Logger) {
+	time.Sleep(2 * time.Second) // 等待连接稳定
+
+	c := collector.New(60*time.Second, log)
+	rules, err := c.CollectIptablesRulesForHTTP()
+	if err != nil {
+		log.Warn("collect iptables rules failed", "err", err)
+		return
+	}
+	if len(rules) == 0 {
+		log.Info("no iptables rules found")
+		return
+	}
+
+	type chainData struct {
+		Table string   `json:"table"`
+		Chain string   `json:"chain"`
+		Rules []string `json:"rules"`
+	}
+	var chains []chainData
+	for table, tableChains := range rules {
+		for chain, chainRules := range tableChains {
+			chains = append(chains, chainData{Table: table, Chain: chain, Rules: chainRules})
+		}
+	}
+
+	body, _ := json.Marshal(map[string]any{"chains": chains})
+	url := buildControllerWebURL(cfg.Controller.Endpoint) + "/api/v1/iptables/report/" + nodeID
+
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		log.Warn("report iptables rules failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		log.Info("iptables rules reported successfully", "node_id", nodeID)
+	} else {
+		log.Warn("report iptables rules failed", "status", resp.StatusCode)
+	}
+}
+
+// buildControllerWebURL 将 gRPC endpoint 转换为 Web API URL
+func buildControllerWebURL(endpoint string) string {
+	if idx := strings.LastIndex(endpoint, ":"); idx > 0 {
+		return "http://" + endpoint[:idx] + ":8080"
+	}
+	return "http://" + endpoint
+}
+
+// selectDriver 根据探测结果选择防火墙驱动
 func selectDriver(cap *myfwv1.Capability, log *slog.Logger) agentdriver.Driver {
 	switch cap.SelectedBackend {
 	case myfwv1.FirewallBackend_FIREWALL_BACKEND_IPTABLES_LEGACY,
 		myfwv1.FirewallBackend_FIREWALL_BACKEND_IPTABLES_NFT:
 		return iptdriver.New(iptdriver.ShellExec{}, cap.SelectedBackend)
 	case myfwv1.FirewallBackend_FIREWALL_BACKEND_NFTABLES:
-		// M9 will land NftablesDriver; for now, log and drop through.
-		log.Warn("nftables backend detected but NftablesDriver not yet implemented (M9)")
-		return nil
+		return nftdriver.New(nftdriver.ShellExec{}, cap.SelectedBackend)
 	}
 	return nil
 }
@@ -201,23 +278,18 @@ func newLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
-// clearBootstrapToken strips the bootstrap_token line from the YAML config so
-// a restart doesn't try to use the now-consumed one-time token. We do a
-// line-oriented rewrite rather than YAML round-trip to preserve the operator's
-// comments and formatting.
+// clearBootstrapToken 从配置文件中移除已消费的一次性令牌
 func clearBootstrapToken(path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	out := make([]byte, 0, len(raw))
-	// Walk line by line; drop lines whose trimmed prefix is bootstrap_token:
 	start := 0
 	for i := 0; i <= len(raw); i++ {
 		if i == len(raw) || raw[i] == '\n' {
 			line := raw[start:i]
-			trim := ltrim(line)
-			if !hasPrefix(trim, "bootstrap_token:") {
+			if !strings.HasPrefix(strings.TrimLeft(string(line), " \t"), "bootstrap_token:") {
 				out = append(out, line...)
 				if i < len(raw) {
 					out = append(out, '\n')
@@ -229,18 +301,52 @@ func clearBootstrapToken(path string) error {
 	return os.WriteFile(path, out, 0o600)
 }
 
-func ltrim(b []byte) []byte {
-	for i := 0; i < len(b); i++ {
-		if b[i] != ' ' && b[i] != '\t' {
-			return b[i:]
-		}
+// requestCertRenewal 向Controller请求证书轮换。
+// 流程：生成新密钥对 → 发送CSR → 获取新证书 → 原子写入磁盘。
+func requestCertRenewal(ctx context.Context, cfg agentcfg.Config, nodeID string, rotator *security.CertRotation, cap *myfwv1.Capability) error {
+	// 连接到Controller（使用旧证书）
+	conn, err := conn.Dial(ctx, cfg.Controller.Endpoint, conn.TLSMaterial{
+		Disable:    cfg.Controller.TLS.Disable,
+		CAFile:     cfg.Controller.TLS.CAFile,
+		CertFile:   cfg.Controller.TLS.CertFile,
+		KeyFile:    cfg.Controller.TLS.KeyFile,
+		ServerName: cfg.Controller.ServerName,
+	})
+	if err != nil {
+		return fmt.Errorf("dial for renewal: %w", err)
 	}
-	return nil
-}
+	defer conn.Close()
 
-func hasPrefix(b []byte, p string) bool {
-	if len(b) < len(p) {
-		return false
+	// 生成新密钥对和CSR
+	csrPEM, newKeyPEM, err := rotator.GenerateCSR(nodeID)
+	if err != nil {
+		return fmt.Errorf("generate csr: %w", err)
 	}
-	return string(b[:len(p)]) == p
+
+	// 调用Register RPC进行证书轮换（复用注册接口，token用空字符串）
+	regClient := myfwv1.NewRegistrationClient(conn)
+	regCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := regClient.Register(regCtx, &myfwv1.RegisterRequest{
+		BootstrapToken: "", // 空token，Controller会识别为续签请求
+		CandidateId:    nodeID,
+		CsrPem:         csrPEM,
+		Fingerprint:    bootstrap.MachineFingerprint(),
+		Capability:     cap,
+	})
+	if err != nil {
+		return fmt.Errorf("renewal RPC: %w", err)
+	}
+
+	if resp.ClientCertPem == nil || len(resp.ClientCertPem) == 0 {
+		return fmt.Errorf("empty certificate in renewal response")
+	}
+
+	// 持久化新证书和密钥
+	if err := rotator.ApplyNewCert(resp.ClientCertPem, newKeyPEM); err != nil {
+		return fmt.Errorf("apply new cert: %w", err)
+	}
+
+	return nil
 }

@@ -185,8 +185,13 @@ func Do(
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: Register RPC: %w", err)
 	}
-	if resp == nil || len(resp.ClientCertPem) == 0 || resp.NodeId == "" {
+	// 检查响应：禁用 mTLS 时 ClientCertPem 可以为空
+	if resp == nil || resp.NodeId == "" {
 		return nil, errors.New("bootstrap: empty response")
+	}
+	// 如果有证书文件路径，才要求 ClientCertPem 非空
+	if dst.CertFile != "" && len(resp.ClientCertPem) == 0 {
+		return nil, errors.New("bootstrap: empty certificate response")
 	}
 
 	// Persist private key FIRST, then cert. This ordering means a crash
@@ -194,11 +199,16 @@ func Do(
 	// which the Agent will detect at next start and re-bootstrap only if the
 	// operator explicitly clears the state — safer than the reverse ordering
 	// where a leftover key without a cert looks correctly bootstrapped.
-	if err := writeFileAtomic(dst.KeyFile, kc.KeyPEM, 0o600); err != nil {
-		return nil, err
+	if dst.KeyFile != "" {
+		if err := writeFileAtomic(dst.KeyFile, kc.KeyPEM, 0o600); err != nil {
+			return nil, err
+		}
 	}
-	if err := writeFileAtomic(dst.CertFile, resp.ClientCertPem, 0o644); err != nil {
-		return nil, err
+	// 如果有证书且禁用 mTLS，才写入证书文件
+	if dst.CertFile != "" && len(resp.ClientCertPem) > 0 {
+		if err := writeFileAtomic(dst.CertFile, resp.ClientCertPem, 0o644); err != nil {
+			return nil, err
+		}
 	}
 	return &Result{NodeID: resp.NodeId, NodeStatus: resp.NodeStatus}, nil
 }

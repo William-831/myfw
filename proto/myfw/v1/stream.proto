@@ -24,6 +24,7 @@ message AgentToController {
     DriftReport drift = 3;
     StateReport state = 4;
     SyncRequest sync = 5;
+    IptablesRules iptables_rules = 6;
   }
 }
 
@@ -58,6 +59,19 @@ message StateReport {
   int64 ts_unix = 2;
   repeated InterfaceStat interfaces = 3;
   uint64 conntrack_count = 4;
+}
+
+// IptablesRules 报告节点当前的 iptables 规则
+message IptablesRules {
+  string node_id = 1;
+  int64 ts_unix = 2;
+  repeated IptablesChain chains = 3;
+}
+
+message IptablesChain {
+  string table = 1;      // filter, nat, mangle, raw
+  string chain = 2;      // INPUT, OUTPUT, FORWARD, etc.
+  repeated string rules = 3;  // iptables -S 输出的规则行
 }
 
 message InterfaceStat {
@@ -100,7 +114,13 @@ message ControllerToAgent {
     RollbackTask rollback = 3;
     SyncRequest sync = 4;
     HeartbeatAck ack = 5;
+    SyncRulesRequest sync_rules = 6;
   }
+}
+
+// SyncRulesRequest 请求 Agent 上报当前 iptables 规则
+message SyncRulesRequest {
+  string reason = 1;
 }
 
 // ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace

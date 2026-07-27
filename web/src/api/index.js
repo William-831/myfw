@@ -32,27 +32,57 @@ service.interceptors.response.use(
   }
 )
 
-export const login = (data) => service.post('/auth/login', data)
+// 认证
+export const login = (data) => service.post('/v1/auth/login', data)
 
-export const getNodes = (params) => service.get('/nodes', { params })
-export const getNode = (id) => service.get(`/nodes/${id}`)
-export const updateNode = (id, data) => service.put(`/nodes/${id}`, data)
-export const deleteNode = (id) => service.delete(`/nodes/${id}`)
+// 节点管理
+export const getNodes = () => service.get('/v1/nodes/list')
+export const getNode = (id) => service.get(`/v1/nodes/${id}`)
+export const updateNode = (id, data) => service.put(`/v1/nodes/${id}`, data)
+export const deleteNode = (id) => service.delete(`/v1/nodes/${id}`)
+export const createBootstrapToken = (data) => service.post('/v1/nodes/bootstrap', data)
 
-export const getPolicies = (params) => service.get('/policies', { params })
-export const createPolicy = (data) => service.post('/policies', data)
-export const getPolicy = (id) => service.get(`/policies/${id}`)
-export const updatePolicy = (id, data) => service.put(`/policies/${id}`, data)
-export const deletePolicy = (id) => service.delete(`/policies/${id}`)
-export const applyPolicy = (id) => service.post(`/policies/${id}/apply`)
+// 策略管理
+export const getPolicies = () => service.get('/v1/policies')
+export const createPolicy = (data) => service.post('/v1/policies', data)
+export const getPolicy = (id) => service.get(`/v1/policies/${id}`)
+export const updatePolicy = (id, data) => service.put(`/v1/policies/${id}`, data)
+export const deletePolicy = (id) => service.delete(`/v1/policies/${id}`)
+export const applyPolicy = (id, data) => service.post(`/v1/policies/${id}/apply`, data)
+export const applyAllPolicies = (data) => service.post('/v1/policies/apply-all', data)
 
-export const getApprovals = (params) => service.get('/approvals', { params })
-export const approve = (id) => service.post(`/approvals/${id}/approve`)
-export const reject = (id) => service.post(`/approvals/${id}/reject`)
+// 策略批量操作
+export const batchTogglePolicies = (ids, enabled) =>
+  service.post('/v1/iptables/batch-toggle', { ids, enabled })
+export const batchDeletePolicies = (ids) =>
+  service.post('/v1/iptables/batch-delete', { ids })
+export const batchApplyToNodes = (policyIds, nodeIds) =>
+  service.post('/v1/iptables/batch-apply', { policy_ids: policyIds, node_ids: nodeIds })
 
-export const getAudits = (params) => service.get('/audit/logs', { params })
-export const exportAudits = (params) => service.get('/audit/export', { params, responseType: 'blob' })
+// 策略冲突检测
+export const detectConflicts = (policyIds) =>
+  service.post('/v1/iptables/conflicts', { policy_ids: policyIds })
 
-export const getDashboardStats = () => service.get('/dashboard/stats')
+// 任务 / 审批管理
+export const getTasks = (params) => service.get('/v1/tasks', { params })
+export const getTask = (id) => service.get(`/v1/tasks/${id}`)
+export const approveTask = (id, data) => service.post(`/v1/tasks/${id}/approve`, data || {})
+export const rejectTask = (id, data) => service.post(`/v1/tasks/${id}/reject`, data || {})
+export const confirmTask = (id) => service.post(`/v1/tasks/${id}/confirm`)
+
+// 审计日志
+export const getAuditLogs = (params) => service.get('/v1/audit/logs', { params })
+export const exportAuditLogs = (params) => service.get('/v1/audit/export', { params, responseType: 'blob' })
+
+// 仪表盘
+export const getDashboardStats = () => service.get('/v1/dashboard/stats')
+
+// iptables 规则
+export const getNodeIptablesRules = (nodeId) => service.get(`/v1/iptables/rules/${nodeId}`)
+export const getIptablesOverview = () => service.get('/v1/iptables/overview')
+export const getChainTree = (nodeId) => service.get(`/v1/iptables/chain-tree/${nodeId}`)
+
+// 已连接节点
+export const getConnectedNodes = () => service.get('/v1/nodes/connected')
 
 export default service

@@ -109,11 +109,11 @@ func (n *Notifier) AddWebhook(cfg WebhookConfig) {
 	n.webhooks = append(n.webhooks, cfg)
 }
 
-func (n *Notifier) RemoveWebhook(url string) {
+func (n *Notifier) RemoveWebhook(targetURL string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	for i, cfg := range n.webhooks {
-		if cfg.URL == url {
+	for i, wh := range n.webhooks {
+		if wh.URL == targetURL {
 			n.webhooks = append(n.webhooks[:i], n.webhooks[i+1:]...)
 			return
 		}

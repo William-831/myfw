@@ -14,11 +14,11 @@
         router
       >
         <el-menu-item index="/dashboard">
-          <el-icon><Dashboard /></el-icon>
+          <el-icon><Odometer /></el-icon>
           <span>概览</span>
         </el-menu-item>
         <el-menu-item index="/nodes">
-          <el-icon><Network /></el-icon>
+          <el-icon><Connection /></el-icon>
           <span>节点管理</span>
         </el-menu-item>
         <el-menu-item index="/policies">
@@ -26,7 +26,7 @@
           <span>策略管理</span>
         </el-menu-item>
         <el-menu-item index="/approve">
-          <el-icon><CheckCircle /></el-icon>
+          <el-icon><CircleCheck /></el-icon>
           <span>审批中心</span>
         </el-menu-item>
         <el-menu-item index="/audit">
@@ -67,10 +67,10 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Dashboard,
-  Network,
+  Odometer,
+  Connection,
   Lock,
-  CheckCircle,
+  CircleCheck,
   Document,
   Menu,
   User,

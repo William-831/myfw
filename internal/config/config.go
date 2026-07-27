@@ -35,8 +35,9 @@ type GRPCConfig struct {
 	TLS    TLSConfig `yaml:"tls"`
 }
 
-// TLSConfig configures the mandatory mTLS on the gRPC endpoint.
+// TLSConfig configures the mTLS on the gRPC endpoint.
 type TLSConfig struct {
+	Disable    bool   `yaml:"disable"`     // 禁用 mTLS（仅用于内网开发环境）
 	CAFile     string `yaml:"ca_file"`
 	CertFile   string `yaml:"cert_file"`
 	KeyFile    string `yaml:"key_file"`
@@ -137,10 +138,12 @@ func (c Config) validate() error {
 	if c.Server.GRPC.Listen == "" {
 		return fmt.Errorf("config: server.grpc.listen is empty")
 	}
-	// mTLS is mandatory: the gRPC endpoint must have cert material.
-	t := c.Server.GRPC.TLS
-	if t.CAFile == "" || t.CertFile == "" || t.KeyFile == "" {
-		return fmt.Errorf("config: server.grpc.tls requires ca_file, cert_file and key_file (mTLS is mandatory)")
+	// mTLS 检查：如果禁用则跳过证书验证
+	if !c.Server.GRPC.TLS.Disable {
+		t := c.Server.GRPC.TLS
+		if t.CAFile == "" || t.CertFile == "" || t.KeyFile == "" {
+			return fmt.Errorf("config: server.grpc.tls requires ca_file, cert_file and key_file (mTLS is mandatory unless disabled)")
+		}
 	}
 	return nil
 }

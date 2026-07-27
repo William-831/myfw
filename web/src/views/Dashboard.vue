@@ -4,10 +4,10 @@
       <el-card class="stat-card">
         <div class="stat-content">
           <div class="stat-icon node-icon">
-            <el-icon><Network /></el-icon>
+            <el-icon><Connection /></el-icon>
           </div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.totalNodes }}</p>
+            <p class="stat-value">{{ stats.node_count }}</p>
             <p class="stat-label">节点总数</p>
           </div>
         </div>
@@ -18,7 +18,7 @@
             <el-icon><CircleCheck /></el-icon>
           </div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.onlineNodes }}</p>
+            <p class="stat-value">{{ stats.active_node_count }}</p>
             <p class="stat-label">在线节点</p>
           </div>
         </div>
@@ -29,7 +29,7 @@
             <el-icon><Lock /></el-icon>
           </div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.totalPolicies }}</p>
+            <p class="stat-value">{{ stats.policy_count }}</p>
             <p class="stat-label">策略总数</p>
           </div>
         </div>
@@ -40,7 +40,7 @@
             <el-icon><Clock /></el-icon>
           </div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.pendingApprovals }}</p>
+            <p class="stat-value">{{ stats.pending_task_count }}</p>
             <p class="stat-label">待审批</p>
           </div>
         </div>
@@ -56,13 +56,17 @@
       </el-card>
       <el-card class="chart-card" style="flex: 1;">
         <template #header>
-          <span>最近审计记录</span>
+          <div class="audit-header">
+            <span>最近审计记录</span>
+            <el-button size="small" text @click="$router.push('/audit')">查看全部</el-button>
+          </div>
         </template>
-        <div class="audit-list">
+        <div v-loading="auditLoading" class="audit-list">
+          <div v-if="recentAudits.length === 0" class="empty-tip">暂无审计记录</div>
           <div v-for="log in recentAudits" :key="log.id" class="audit-item">
-            <span class="audit-action" :class="getActionClass(log.action)">{{ log.action }}</span>
+            <span class="audit-action" :class="getActionClass(log.action)">{{ getActionLabel(log.action) }}</span>
             <span class="audit-detail">{{ log.detail }}</span>
-            <span class="audit-time">{{ formatTime(log.createdAt) }}</span>
+            <span class="audit-time">{{ formatTime(log.created_at) }}</span>
           </div>
         </div>
       </el-card>
@@ -71,210 +75,137 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, watch } from 'vue'
 import * as echarts from 'echarts'
-import { Network, CircleCheck, Lock, Clock } from '@element-plus/icons-vue'
+import { Connection, CircleCheck, Lock, Clock } from '@element-plus/icons-vue'
+import { getDashboardStats, getAuditLogs } from '@/api'
 
 const nodeChartRef = ref(null)
+const auditLoading = ref(false)
+let chart = null
 
 const stats = reactive({
-  totalNodes: 5,
-  onlineNodes: 4,
-  totalPolicies: 23,
-  pendingApprovals: 2
+  node_count: 0,
+  active_node_count: 0,
+  pending_node_count: 0,
+  policy_count: 0,
+  active_policy_count: 0,
+  pending_task_count: 0
 })
 
-const recentAudits = [
-  { id: 1, action: 'node.register', detail: '节点 node-01 注册成功', createdAt: '2024-01-15 10:30:00' },
-  { id: 2, action: 'policy.apply', detail: '策略 policy-001 已应用到节点 node-01', createdAt: '2024-01-15 10:25:00' },
-  { id: 3, action: 'node.drift', detail: '检测到节点 node-02 规则漂移', createdAt: '2024-01-15 10:20:00' },
-  { id: 4, action: 'policy.create', detail: '创建策略 allow-ssh', createdAt: '2024-01-15 10:15:00' },
-  { id: 5, action: 'node.heartbeat', detail: '节点 node-03 心跳正常', createdAt: '2024-01-15 10:10:00' }
-]
+const recentAudits = ref([])
+
+const getActionLabel = (action) => {
+  const map = {
+    'node.register': '节点注册',
+    'node.drift': '规则漂移',
+    'node.heartbeat': '节点心跳',
+    'node.archived': '节点归档',
+    'policy.create': '策略创建',
+    'policy.update': '策略更新',
+    'policy.delete': '策略删除',
+    'policy.apply': '策略应用',
+    'task.submit': '任务提交',
+    'task.approve': '任务审批',
+    'task.reject': '任务拒绝',
+    'task.confirm': '任务确认',
+    'task.auto_rollback': '自动回滚',
+    'task.applying_ok': '规则应用成功',
+    'task.apply_failed': '规则应用失败',
+    'auth.login': '用户登录'
+  }
+  return map[action] || action
+}
 
 const getActionClass = (action) => {
-  if (action.includes('register') || action.includes('heartbeat')) return 'success'
-  if (action.includes('drift')) return 'warning'
-  if (action.includes('apply') || action.includes('create')) return 'info'
+  if (action.includes('register') || action.includes('heartbeat') || action.includes('ok')) return 'success'
+  if (action.includes('drift') || action.includes('failed') || action.includes('rollback')) return 'warning'
+  if (action.includes('apply') || action.includes('create') || action.includes('submit') || action.includes('approve')) return 'info'
   return 'default'
 }
 
 const formatTime = (time) => {
-  return time
+  if (!time) return '-'
+  try {
+    return new Date(time).toLocaleString()
+  } catch {
+    return time
+  }
 }
 
-onMounted(() => {
-  if (nodeChartRef.value) {
-    const chart = echarts.init(nodeChartRef.value)
-    chart.setOption({
-      tooltip: {
-        trigger: 'item'
-      },
-      legend: {
-        bottom: 0
-      },
-      series: [
-        {
-          name: '节点状态',
-          type: 'pie',
-          radius: ['40%', '70%'],
-          avoidLabelOverlap: false,
-          itemStyle: {
-            borderRadius: 10,
-            borderColor: '#fff',
-            borderWidth: 2
-          },
-          label: {
-            show: false
-          },
-          emphasis: {
-            label: {
-              show: true,
-              fontSize: 18,
-              fontWeight: 'bold'
-            }
-          },
-          data: [
-            { value: 4, name: '在线', itemStyle: { color: '#67c23a' } },
-            { value: 1, name: '离线', itemStyle: { color: '#f56c6c' } }
-          ]
-        }
+const updateChart = () => {
+  if (!chart) return
+  chart.setOption({
+    tooltip: { trigger: 'item' },
+    legend: { bottom: 0 },
+    series: [{
+      name: '节点状态',
+      type: 'pie',
+      radius: ['40%', '70%'],
+      avoidLabelOverlap: false,
+      itemStyle: { borderRadius: 10, borderColor: '#fff', borderWidth: 2 },
+      label: { show: false },
+      emphasis: { label: { show: true, fontSize: 18, fontWeight: 'bold' } },
+      data: [
+        { value: stats.active_node_count, name: '在线', itemStyle: { color: '#67c23a' } },
+        { value: stats.node_count - stats.active_node_count - stats.pending_node_count, name: '离线', itemStyle: { color: '#f56c6c' } },
+        { value: stats.pending_node_count, name: '待审核', itemStyle: { color: '#e6a23c' } }
       ]
-    })
+    }]
+  })
+}
+
+onMounted(async () => {
+  if (nodeChartRef.value) {
+    chart = echarts.init(nodeChartRef.value)
+  }
+
+  try {
+    const data = await getDashboardStats()
+    Object.assign(stats, data)
+    updateChart()
+  } catch {
+    // 保持默认值
+  }
+
+  auditLoading.value = true
+  try {
+    const data = await getAuditLogs({ limit: 8, offset: 0 })
+    recentAudits.value = data.data || []
+  } catch {
+    recentAudits.value = []
+  } finally {
+    auditLoading.value = false
   }
 })
 </script>
 
 <style scoped>
-.dashboard {
-  width: 100%;
-}
-
-.stats-row {
-  display: flex;
-  gap: 20px;
-  margin-bottom: 20px;
-}
-
-.stat-card {
-  flex: 1;
-}
-
-.stat-content {
-  display: flex;
-  align-items: center;
-}
-
-.stat-icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 12px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-right: 16px;
-}
-
-.stat-icon .el-icon {
-  font-size: 28px;
-  color: #fff;
-}
-
-.node-icon {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.online-icon {
-  background: linear-gradient(135deg, #67c23a 0%, #85ce61 100%);
-}
-
-.policy-icon {
-  background: linear-gradient(135deg, #409eff 0%, #66b1ff 100%);
-}
-
-.approve-icon {
-  background: linear-gradient(135deg, #e6a23c 0%, #ebb563 100%);
-}
-
-.stat-info {
-  flex: 1;
-}
-
-.stat-value {
-  font-size: 28px;
-  font-weight: bold;
-  color: #1f2937;
-  margin: 0;
-}
-
-.stat-label {
-  font-size: 14px;
-  color: #9ca3af;
-  margin: 4px 0 0;
-}
-
-.charts-row {
-  display: flex;
-  gap: 20px;
-}
-
-.chart-card {
-  height: 350px;
-}
-
-.chart {
-  width: 100%;
-  height: 280px;
-}
-
-.audit-list {
-  height: 280px;
-  overflow-y: auto;
-}
-
-.audit-item {
-  display: flex;
-  align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.audit-action {
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  margin-right: 12px;
-}
-
-.audit-action.success {
-  background-color: #f0f9ff;
-  color: #67c23a;
-}
-
-.audit-action.warning {
-  background-color: #fef0f0;
-  color: #f56c6c;
-}
-
-.audit-action.info {
-  background-color: #f0f5ff;
-  color: #409eff;
-}
-
-.audit-action.default {
-  background-color: #f9fafb;
-  color: #6b7280;
-}
-
-.audit-detail {
-  flex: 1;
-  font-size: 13px;
-  color: #374151;
-}
-
-.audit-time {
-  font-size: 12px;
-  color: #9ca3af;
-}
+.dashboard { width: 100%; }
+.stats-row { display: flex; gap: 20px; margin-bottom: 20px; }
+.stat-card { flex: 1; }
+.stat-content { display: flex; align-items: center; }
+.stat-icon { width: 64px; height: 64px; border-radius: 12px; display: flex; justify-content: center; align-items: center; margin-right: 16px; }
+.stat-icon .el-icon { font-size: 28px; color: #fff; }
+.node-icon { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+.online-icon { background: linear-gradient(135deg, #67c23a 0%, #85ce61 100%); }
+.policy-icon { background: linear-gradient(135deg, #409eff 0%, #66b1ff 100%); }
+.approve-icon { background: linear-gradient(135deg, #e6a23c 0%, #ebb563 100%); }
+.stat-info { flex: 1; }
+.stat-value { font-size: 28px; font-weight: bold; color: #1f2937; margin: 0; }
+.stat-label { font-size: 14px; color: #9ca3af; margin: 4px 0 0; }
+.charts-row { display: flex; gap: 20px; }
+.chart-card { height: 350px; }
+.chart { width: 100%; height: 280px; }
+.audit-header { display: flex; justify-content: space-between; align-items: center; }
+.audit-list { height: 280px; overflow-y: auto; }
+.empty-tip { text-align: center; color: #9ca3af; padding: 40px 0; }
+.audit-item { display: flex; align-items: center; padding: 12px 0; border-bottom: 1px solid #f3f4f6; }
+.audit-action { padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 500; margin-right: 12px; white-space: nowrap; }
+.audit-action.success { background-color: #f0f9ff; color: #67c23a; }
+.audit-action.warning { background-color: #fef0f0; color: #f56c6c; }
+.audit-action.info { background-color: #f0f5ff; color: #409eff; }
+.audit-action.default { background-color: #f9fafb; color: #6b7280; }
+.audit-detail { flex: 1; font-size: 13px; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-time { font-size: 12px; color: #9ca3af; margin-left: 12px; white-space: nowrap; }
 </style>

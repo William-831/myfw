@@ -13,11 +13,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
@@ -186,12 +188,35 @@ func (s *Service) onHeartbeat(ctx context.Context, nodeID string, hb *myfwv1.Hea
 		return
 	}
 	now := time.Now().UTC()
+	// 从 gRPC 上下文中提取客户端 IP 并更新
+	ip := extractIPFromContext(ctx)
+	updates := map[string]any{"last_seen": &now}
+	if ip != "" {
+		updates["ip"] = ip
+	}
 	if err := s.DB.WithContext(ctx).
 		Model(&model.Node{}).
 		Where("id = ?", nodeID).
-		Update("last_seen", &now).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		s.Log.Warn("update last_seen", "node_id", nodeID, "err", err)
 	}
+}
+
+// extractIPFromContext 从 gRPC 上下文中提取客户端 IP 地址
+func extractIPFromContext(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	addr, ok := p.Addr.(*net.TCPAddr)
+	if !ok {
+		host, _, err := net.SplitHostPort(p.Addr.String())
+		if err != nil {
+			return p.Addr.String()
+		}
+		return host
+	}
+	return addr.IP.String()
 }
 
 func (s *Service) isArchived(ctx context.Context, nodeID string) (bool, error) {
@@ -226,6 +251,14 @@ func (s *Service) auditDrift(ctx context.Context, nodeID string, drift *myfwv1.D
 // stream was established with. mTLS is enforced by the auth interceptor for
 // every non-bootstrap method, so we can rely on a certificate being present.
 func nodeIDFromContext(ctx context.Context) (string, error) {
+	// 首先尝试从 metadata 中获取 node_id（用于无 mTLS 模式）
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-node-id"); len(vals) > 0 && vals[0] != "" {
+			return vals[0], nil
+		}
+	}
+
+	// 回退到从客户端证书中提取 node_id（mTLS 模式）
 	p, ok := peer.FromContext(ctx)
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "no peer info")

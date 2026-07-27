@@ -64,3 +64,20 @@ coverage.html
 # ---- Misc ----
 tmp/
 .tmp/
+
+# ---- 部署打包产物（含无后缀 Linux 二进制，重点防误提交）----
+/deploy-package/
+/deploy-cert/
+
+# ---- CA 工件补充 ----
+*.srl
+*.ext
+*.p12
+*.pfx
+openssl.cnf
+
+# ---- 工具本地数据 ----
+/.mimicode/
+
+# ---- 误建目录 ----
+/-p/

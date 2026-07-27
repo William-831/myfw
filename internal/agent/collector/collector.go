@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -245,4 +246,58 @@ func (c *Collector) toProto(s *Stats) *myfwv1.StateReport {
 
 func (c *Collector) SetRuleHits(hits map[string]int64) {
 	c.Log.Info("rule hits updated", "count", len(hits))
+}
+
+// CollectIptablesRulesForHTTP 为 HTTP API 收集 iptables 规则
+func (c *Collector) CollectIptablesRulesForHTTP() (map[string]map[string][]string, error) {
+	if runtime.GOOS != "linux" {
+		return nil, nil
+	}
+
+	result := make(map[string]map[string][]string)
+	tables := []string{"filter", "nat", "mangle", "raw"}
+
+	for _, table := range tables {
+		cmd := exec.Command("iptables", "-t", table, "-S")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(output), "\n")
+		currentChain := ""
+		var rules []string
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			if strings.HasPrefix(line, "-N ") || strings.HasPrefix(line, "-P ") {
+				if currentChain != "" && len(rules) > 0 {
+					if result[table] == nil {
+						result[table] = make(map[string][]string)
+					}
+					result[table][currentChain] = rules
+				}
+				parts := strings.SplitN(line, " ", 2)
+				if len(parts) == 2 {
+					currentChain = parts[1]
+					rules = nil
+				}
+			} else if strings.HasPrefix(line, "-A ") {
+				rules = append(rules, line)
+			}
+		}
+
+		if currentChain != "" && len(rules) > 0 {
+			if result[table] == nil {
+				result[table] = make(map[string][]string)
+			}
+			result[table][currentChain] = rules
+		}
+	}
+
+	return result, nil
 }

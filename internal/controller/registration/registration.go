@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
@@ -84,13 +86,25 @@ func (s *Service) Register(ctx context.Context, req *myfwv1.RegisterRequest) (*m
 		}
 
 		// Sign the client certificate for this node.
-		signed, na, err := s.CA.SignAgentCert(req.CsrPem, id, s.AgentCertTTL)
-		if err != nil {
-			return status.Errorf(codes.InvalidArgument, "sign csr: %v", err)
-		}
-		fp, err := pki.FingerprintPEM(signed)
-		if err != nil {
-			return status.Errorf(codes.Internal, "fingerprint: %v", err)
+		// 如果 CA 为空（禁用 mTLS），跳过证书签名
+		var (
+			signed []byte
+			na     time.Time
+			fp     string
+		)
+		if s.CA != nil {
+			signed, na, err = s.CA.SignAgentCert(req.CsrPem, id, s.AgentCertTTL)
+			if err != nil {
+				return status.Errorf(codes.InvalidArgument, "sign csr: %v", err)
+			}
+			fp, err = pki.FingerprintPEM(signed)
+			if err != nil {
+				return status.Errorf(codes.Internal, "fingerprint: %v", err)
+			}
+		} else {
+			// 禁用 mTLS 时，使用节点 ID 作为唯一指纹
+			na = time.Now().Add(s.AgentCertTTL)
+			fp = "no-mtls-" + id
 		}
 
 		// Persist node (PENDING), capability, and certificate binding.
@@ -98,6 +112,7 @@ func (s *Service) Register(ctx context.Context, req *myfwv1.RegisterRequest) (*m
 			ID:        id,
 			Status:    model.NodeStatusPending,
 			Hostname:  fingerprintHostname(req),
+			IP:        extractIP(ctx),
 			MachineID: fingerprintMachineID(req),
 			Arch:      fingerprintArch(req),
 		}
@@ -208,6 +223,24 @@ func fingerprintArch(req *myfwv1.RegisterRequest) string {
 		return req.Fingerprint.Arch
 	}
 	return ""
+}
+
+// extractIP 从 gRPC 上下文中提取客户端 IP 地址
+func extractIP(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	addr, ok := p.Addr.(*net.TCPAddr)
+	if !ok {
+		// 尝试解析字符串形式的地址
+		host, _, err := net.SplitHostPort(p.Addr.String())
+		if err != nil {
+			return p.Addr.String()
+		}
+		return host
+	}
+	return addr.IP.String()
 }
 func fingerprintFromPEM(certPEM []byte) string {
 	fp, _ := pki.FingerprintPEM(certPEM)

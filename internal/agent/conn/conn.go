@@ -11,6 +11,7 @@ package conn
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -23,15 +24,19 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
+	"iptables-tool/internal/security"
 )
 
 // TLSMaterial identifies the files an authenticated Agent needs to dial the
 // Controller. When BootstrapOnly is true, CertFile/KeyFile may be empty and
 // the resulting connection is only good for calling Register.
 type TLSMaterial struct {
+	Disable       bool   // 禁用 TLS（仅用于内网开发环境）
 	CAFile        string
 	CertFile      string
 	KeyFile       string
@@ -42,11 +47,20 @@ type TLSMaterial struct {
 // Dial builds a *grpc.ClientConn to endpoint using the provided TLS material.
 // The caller is responsible for closing the returned conn.
 func Dial(ctx context.Context, endpoint string, m TLSMaterial) (*grpc.ClientConn, error) {
-	tlsCfg, err := buildClientTLS(endpoint, m)
-	if err != nil {
-		return nil, err
+	var opts []grpc.DialOption
+
+	// 如果禁用 TLS，使用不安全的明文连接
+	if m.Disable {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	} else {
+		tlsCfg, err := buildClientTLS(endpoint, m)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+
+	conn, err := grpc.NewClient(endpoint, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("conn: dial %s: %w", endpoint, err)
 	}
@@ -240,22 +254,40 @@ func Loop(ctx context.Context, conn *grpc.ClientConn, log *slog.Logger, nodeID s
 	}
 }
 
-// runStream opens one AgentStream, pushes heartbeats until it errors or ctx
-// cancels, and returns the terminating error. Downstream messages are
-// dispatched to h. The sendCh parameter is a shared channel for messages
-// from other goroutines (like Watchdog).
+// runStream 打开一个 AgentStream，推送心跳直到出错或 ctx 取消。
+// 下游消息分发到 h。sendCh 用于从其他 goroutine（如 Watchdog）发送消息。
 func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.Logger, nodeID string, cap *myfwv1.Capability, h Handler, opts HeartbeatOptions, sendCh chan *myfwv1.AgentToController) error {
+	// 生成会话令牌用于防重放
+	sessionSecret := make([]byte, 32)
+	if _, err := readRandom(sessionSecret); err != nil {
+		return fmt.Errorf("generate session secret: %w", err)
+	}
+	sm := security.NewSessionManager(sessionSecret, 24*time.Hour)
+	token, sig, err := sm.IssueToken(nodeID, "", getLocalIP())
+	if err != nil {
+		log.Warn("failed to issue session token", "err", err)
+	}
+
+	// 在 metadata 中发送 node_id 和会话令牌
+	mdPairs := []string{"x-node-id", nodeID}
+	if token != nil {
+		mdPairs = append(mdPairs,
+			"x-session-token", security.TokenToString(token),
+			"x-session-sig", sig,
+		)
+	}
+	ctx = metadata.AppendToOutgoingContext(ctx, mdPairs...)
+
 	stream, err := client.Connect(ctx)
 	if err != nil {
 		return err
 	}
 	log.Info("stream opened", "node_id", nodeID)
 
-	// Serialize sends onto a single goroutine — a gRPC ClientStream is not
-	// safe for concurrent SendMsg calls.
+	// 序列化发送到单个 goroutine（gRPC ClientStream 非并发安全）
 	rxErr := make(chan error, 1)
 
-	// RX goroutine: dispatches Controller-to-Agent messages.
+	// RX goroutine: 分发 Controller-to-Agent 消息
 	go func() {
 		for {
 			msg, err := stream.Recv()
@@ -303,7 +335,7 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 		}
 	}
 
-	// Fire an immediate heartbeat.
+	// 立即发送心跳
 	if err := stream.Send(sendHB(0)); err != nil {
 		return err
 	}
@@ -330,4 +362,28 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 			}
 		}
 	}
+}
+
+// TokenToString 将会话令牌序列化为字符串（导出给 conn 包使用）。
+// 实际实现在 security 包中，这里仅做类型适配。
+
+// getLocalIP 获取本机IP地址（用于会话令牌绑定）。
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String()
+			}
+		}
+	}
+	return ""
+}
+
+// readRandom 读取密码学安全的随机字节。
+func readRandom(b []byte) (int, error) {
+	return rand.Read(b)
 }

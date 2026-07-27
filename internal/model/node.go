@@ -22,6 +22,7 @@ type Node struct {
 	ID        string     `gorm:"primaryKey;size:64" json:"id"` // final node_id
 	Status    NodeStatus `gorm:"size:16;index" json:"status"`
 	Hostname  string     `gorm:"size:255" json:"hostname"`
+	IP        string     `gorm:"size:64" json:"ip"` // Agent 上报的 IP 地址
 	MachineID string     `gorm:"size:128;index" json:"machine_id"`
 	Arch      string     `gorm:"size:32" json:"arch"`
 	Labels    string     `gorm:"type:text" json:"labels"` // JSON-encoded []string
