@@ -34,6 +34,10 @@ type Handler struct {
 	// HashNotifier receives the hash after a successful Apply.
 	HashNotifier HashNotifier
 
+	// RulesCollector, if set, supplies the node's current iptables rules when
+	// the Controller requests a real-time sync. Injected by cmd/agent.
+	RulesCollector func() (map[string]map[string][]string, error)
+
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
 	last map[string]string
@@ -118,6 +122,33 @@ func (h *Handler) OnRollback(ctx context.Context, task *myfwv1.RollbackTask) {
 	}
 	delete(h.last, task.TaskId)
 	h.Log.Info("rolled back", "task_id", task.TaskId)
+}
+
+// OnSyncRules collects the node's current iptables rules in response to a
+// SyncRulesRequest. Returns nil if no collector is wired.
+func (h *Handler) OnSyncRules(ctx context.Context) *myfwv1.IptablesRules {
+	if h.RulesCollector == nil {
+		return nil
+	}
+	rules, err := h.RulesCollector()
+	if err != nil {
+		h.Log.Warn("collect iptables rules failed", "err", err)
+		return nil
+	}
+	chains := make([]*myfwv1.IptablesChain, 0)
+	for table, tableChains := range rules {
+		for chain, chainRules := range tableChains {
+			chains = append(chains, &myfwv1.IptablesChain{
+				Table: table,
+				Chain: chain,
+				Rules: chainRules,
+			})
+		}
+	}
+	return &myfwv1.IptablesRules{
+		TsUnix: time.Now().Unix(),
+		Chains: chains,
+	}
 }
 
 // static check: Handler satisfies conn.Handler (defined in sibling package).

@@ -13,7 +13,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,15 +44,21 @@ type Service struct {
 	// stealing each other's results.
 	subMu sync.Mutex
 	subs  []chan *myfwv1.TaskResult
+
+	// rulesWaiters: 一次性通知通道，RequestRulesAndWait 调用方在此阻塞，
+	// Agent 上报 IptablesRules 时被唤醒。
+	rulesMu      sync.Mutex
+	rulesWaiters map[string]chan struct{}
 }
 
 // New builds a Service with an empty registry.
 func New(db *gorm.DB, log *slog.Logger, audit *audit.Sink) *Service {
 	return &Service{
-		DB:    db,
-		Log:   log,
-		Reg:   NewRegistry(),
-		Audit: audit,
+		DB:           db,
+		Log:          log,
+		Reg:          NewRegistry(),
+		Audit:        audit,
+		rulesWaiters: map[string]chan struct{}{},
 	}
 }
 
@@ -176,47 +182,113 @@ func (s *Service) handleUpstream(ctx context.Context, nodeID string, msg *myfwv1
 	case *myfwv1.AgentToController_State:
 		// M10 will wire this; drop with a debug log for now.
 		s.Log.Debug("state report", "node_id", nodeID)
+	case *myfwv1.AgentToController_IptablesRules:
+		s.onIptablesRules(ctx, nodeID, p.IptablesRules)
 	default:
 		s.Log.Warn("unknown upstream payload", "node_id", nodeID)
 	}
 }
 
-// onHeartbeat updates node.LastSeen and, if a Capability is attached,
-// replaces the persisted NodeCapability row.
+// onHeartbeat updates node.LastSeen. The node IP is intentionally NOT
+// refreshed here: it was captured at registration from the Agent's reported
+// ip_addresses, and overwriting it with the gRPC peer IP would regress to
+// 127.0.0.1 when the Agent connects via loopback.
 func (s *Service) onHeartbeat(ctx context.Context, nodeID string, hb *myfwv1.Heartbeat) {
 	if hb == nil {
 		return
 	}
 	now := time.Now().UTC()
-	// 从 gRPC 上下文中提取客户端 IP 并更新
-	ip := extractIPFromContext(ctx)
-	updates := map[string]any{"last_seen": &now}
-	if ip != "" {
-		updates["ip"] = ip
-	}
 	if err := s.DB.WithContext(ctx).
 		Model(&model.Node{}).
 		Where("id = ?", nodeID).
-		Updates(updates).Error; err != nil {
+		Update("last_seen", &now).Error; err != nil {
 		s.Log.Warn("update last_seen", "node_id", nodeID, "err", err)
 	}
 }
 
-// extractIPFromContext 从 gRPC 上下文中提取客户端 IP 地址
-func extractIPFromContext(ctx context.Context) string {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return ""
+// onIptablesRules 持久化 Agent 刚上报的规则，并唤醒等待实时拉取的调用方。
+func (s *Service) onIptablesRules(ctx context.Context, nodeID string, msg *myfwv1.IptablesRules) {
+	if msg == nil {
+		return
 	}
-	addr, ok := p.Addr.(*net.TCPAddr)
-	if !ok {
-		host, _, err := net.SplitHostPort(p.Addr.String())
-		if err != nil {
-			return p.Addr.String()
+	tx := s.DB.WithContext(ctx).Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
 		}
-		return host
+	}()
+	if err := tx.Where("node_id = ?", nodeID).Delete(&model.IptablesRule{}).Error; err != nil {
+		tx.Rollback()
+		s.Log.Warn("delete old iptables rules", "node_id", nodeID, "err", err)
+		return
 	}
-	return addr.IP.String()
+	for _, chain := range msg.Chains {
+		for i, rule := range chain.Rules {
+			if err := tx.Create(&model.IptablesRule{
+				NodeID:    nodeID,
+				TableType: chain.Table,
+				Chain:     chain.Chain,
+				RuleLine:  rule,
+				Priority:  i,
+				IsMYFW:    isMYFWRules(rule),
+			}).Error; err != nil {
+				tx.Rollback()
+				s.Log.Warn("create iptables rule", "node_id", nodeID, "err", err)
+				return
+			}
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		s.Log.Warn("commit iptables rules", "node_id", nodeID, "err", err)
+		return
+	}
+	s.Log.Debug("iptables rules persisted", "node_id", nodeID, "chains", len(msg.Chains))
+
+	// 唤醒等待实时拉取的调用方
+	s.rulesMu.Lock()
+	ch, ok := s.rulesWaiters[nodeID]
+	if ok {
+		delete(s.rulesWaiters, nodeID)
+	}
+	s.rulesMu.Unlock()
+	if ok {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// RequestRulesAndWait 下发 SyncRulesRequest 让 Agent 上报当前规则，阻塞等待
+// 上报完成或超时。Web API 用它返回节点规则的准实时视图。
+func (s *Service) RequestRulesAndWait(ctx context.Context, nodeID string, timeout time.Duration) error {
+	ch := make(chan struct{}, 1)
+	s.rulesMu.Lock()
+	s.rulesWaiters[nodeID] = ch
+	s.rulesMu.Unlock()
+	defer func() {
+		s.rulesMu.Lock()
+		delete(s.rulesWaiters, nodeID)
+		s.rulesMu.Unlock()
+	}()
+	if err := s.Reg.Send(nodeID, &myfwv1.ControllerToAgent{
+		Payload: &myfwv1.ControllerToAgent_SyncRules{SyncRules: &myfwv1.SyncRulesRequest{Reason: "web query"}},
+	}); err != nil {
+		return err
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-time.After(timeout):
+		return errors.New("timeout waiting for agent rules")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// isMYFWRules 判断规则是否属于 MYFW 命名空间（与 server 包判定保持一致）。
+func isMYFWRules(rule string) bool {
+	return strings.HasPrefix(rule, "-A MYFW-") || strings.Contains(rule, "-j MYFW-")
 }
 
 func (s *Service) isArchived(ctx context.Context, nodeID string) (bool, error) {

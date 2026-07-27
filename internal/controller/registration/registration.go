@@ -112,7 +112,7 @@ func (s *Service) Register(ctx context.Context, req *myfwv1.RegisterRequest) (*m
 			ID:        id,
 			Status:    model.NodeStatusPending,
 			Hostname:  fingerprintHostname(req),
-			IP:        extractIP(ctx),
+			IP:        nodeIPFromRequest(req, ctx),
 			MachineID: fingerprintMachineID(req),
 			Arch:      fingerprintArch(req),
 		}
@@ -242,6 +242,21 @@ func extractIP(ctx context.Context) string {
 	}
 	return addr.IP.String()
 }
+
+// nodeIPFromRequest 优先取 Agent 上报的本机 IP（fingerprint.ip_addresses，已排除 loopback），
+// 若 Agent 未上报则回退到 gRPC 连接的 peer IP，避免同机部署时误存 127.0.0.1。
+func nodeIPFromRequest(req *myfwv1.RegisterRequest, ctx context.Context) string {
+	if req.Fingerprint != nil {
+		for _, ip := range req.Fingerprint.IpAddresses {
+			if ip == "" || ip == "127.0.0.1" || ip == "::1" {
+				continue
+			}
+			return ip
+		}
+	}
+	return extractIP(ctx)
+}
+
 func fingerprintFromPEM(certPEM []byte) string {
 	fp, _ := pki.FingerprintPEM(certPEM)
 	return fp

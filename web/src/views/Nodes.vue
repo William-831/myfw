@@ -3,60 +3,82 @@
     <el-card>
       <template #header>
         <div class="header-row">
-          <span>节点管理</span>
-          <el-button type="primary" @click="handleAdd">
-            <el-icon><Plus /></el-icon>
-            添加节点
-          </el-button>
+          <span class="title">节点管理</span>
+          <div class="header-actions">
+            <el-popover trigger="click" placement="bottom-end" :width="180">
+              <template #reference>
+                <el-button size="small">
+                  <el-icon><Setting /></el-icon>
+                  <span>列设置</span>
+                </el-button>
+              </template>
+              <div class="col-settings">
+                <div class="col-settings-title">显示列（取消勾选可收纳）</div>
+                <el-checkbox v-for="col in toggleableCols" :key="col.key" v-model="columnVisible[col.key]">{{ col.label }}</el-checkbox>
+              </div>
+            </el-popover>
+            <el-button type="primary" @click="handleAdd">
+              <el-icon><Plus /></el-icon>
+              添加节点
+            </el-button>
+          </div>
         </div>
       </template>
-      <el-table :data="nodes" style="width: 100%" v-loading="loading">
-        <el-table-column prop="id" label="节点ID" width="200" show-overflow-tooltip />
-        <el-table-column prop="hostname" label="主机名" width="150" />
-        <el-table-column label="IP 地址" width="140">
+      <el-table :data="nodes" style="width: 100%" v-loading="loading" size="default">
+        <el-table-column prop="hostname" label="主机名" min-width="140" show-overflow-tooltip />
+        <el-table-column label="IP 地址" min-width="130">
           <template #default="{ row }">
-            <span v-if="row.ip" style="font-family: monospace">{{ row.ip }}</span>
-            <span v-else style="color: #999">-</span>
+            <span v-if="row.ip" class="mono">{{ row.ip }}</span>
+            <span v-else class="muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="防火墙后端" width="120">
+        <el-table-column label="防火墙后端" min-width="110">
           <template #default="{ row }">
             <el-tag :type="getBackendType(row.capability?.selected_backend)" size="small">
               {{ getBackendLabel(row.capability?.selected_backend) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="80">
+        <el-table-column label="状态" min-width="90">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small">
-              {{ getStatusLabel(row.status) }}
-            </el-tag>
+            <el-tag :type="getStatusType(row.status)" size="small">{{ getStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="系统" width="150">
+        <el-table-column v-if="columnVisible.system" label="系统" min-width="140">
           <template #default="{ row }">
-            <span style="font-size: 12px">{{ row.capability?.distro || '-' }}</span>
+            <span class="small">{{ row.capability?.distro || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="标签" width="120">
+        <el-table-column v-if="columnVisible.labels" label="标签" min-width="140">
           <template #default="{ row }">
             <template v-if="parseLabels(row.labels).length > 0">
-              <el-tag v-for="tag in parseLabels(row.labels)" :key="tag" size="small" style="margin-right: 4px">{{ tag }}</el-tag>
+              <el-tag v-for="tag in parseLabels(row.labels)" :key="tag" size="small" effect="plain" style="margin-right: 4px">{{ tag }}</el-tag>
             </template>
-            <span v-else style="color: #999">-</span>
+            <span v-else class="muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="最后活跃" width="160">
+        <el-table-column v-if="columnVisible.lastSeen" label="最后活跃" min-width="150">
           <template #default="{ row }">
-            <span style="font-size: 12px">{{ formatDate(row.last_seen) }}</span>
+            <span class="small">{{ formatDate(row.last_seen) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" min-width="240">
+        <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" @click="handleView(row)">详情</el-button>
-            <el-button size="small" type="warning" @click="handleEdit(row)">编辑</el-button>
-            <el-button size="small" type="primary" @click="handleViewRules(row)">查看规则</el-button>
-            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, row)">
+              <el-button size="small">
+                操作<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="rules">
+                    <el-icon><Connection /></el-icon>查看规则
+                  </el-dropdown-item>
+                  <el-dropdown-item command="view">详情</el-dropdown-item>
+                  <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -126,15 +148,15 @@
       </template>
     </el-dialog>
 
-    <!-- 节点详情对话框 -->
+    <!-- 节点详情对话框（节点ID 完整显示） -->
     <el-dialog v-model="detailDialogVisible" title="节点详情" width="700px">
       <el-descriptions :column="2" border size="small">
         <el-descriptions-item label="节点ID" :span="2">
-          <code>{{ detailNode.id }}</code>
+          <code class="node-id">{{ detailNode.id }}</code>
         </el-descriptions-item>
         <el-descriptions-item label="主机名">{{ detailNode.hostname || '-' }}</el-descriptions-item>
         <el-descriptions-item label="IP 地址">
-          <span v-if="detailNode.ip" style="font-family: monospace">{{ detailNode.ip }}</span>
+          <span v-if="detailNode.ip" class="mono">{{ detailNode.ip }}</span>
           <span v-else>-</span>
         </el-descriptions-item>
         <el-descriptions-item label="状态">
@@ -167,43 +189,79 @@
       </el-descriptions>
     </el-dialog>
 
-    <!-- iptables 规则对话框 -->
-    <el-dialog v-model="rulesDialogVisible" :title="`iptables 规则 - ${rulesNode.hostname || rulesNode.id}`" width="1000px" top="3vh">
+    <!-- iptables 规则对话框（Tab 分类 + 筛选 + 查看完整命令） -->
+    <el-dialog v-model="rulesDialogVisible" :title="`iptables 规则 - ${rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
       <div v-loading="rulesLoading">
-        <div v-if="!rulesLoading && Object.keys(iptablesRules).length === 0" style="text-align: center; padding: 40px; color: #999">
+        <div v-if="!rulesLoading && Object.keys(iptablesRules).length === 0" class="empty-state">
           暂无规则数据。Agent 启动后会自动上报当前 iptables 规则。
         </div>
-        <template v-else>
-          <div v-for="(chains, table) in iptablesRules" :key="table" class="rule-table-section">
-            <div class="rule-table-header">
-              <span class="table-name">{{ table }}</span>
-              <el-tag size="small" type="info">{{ getTableRuleCount(chains) }} 条规则</el-tag>
-            </div>
-            <div v-for="(rules, chain) in chains" :key="chain" class="rule-chain-section">
-              <div class="chain-header">
-                <el-icon><Connection /></el-icon>
-                <span class="chain-name">{{ chain }}</span>
-                <el-tag size="small">{{ rules.length }} 条</el-tag>
-              </div>
-              <el-table :data="rules.map((r, i) => ({ ...r, index: i + 1 }))" size="small" border stripe style="margin-bottom: 12px">
-                <el-table-column label="#" width="50" align="center">
-                  <template #default="{ row }">{{ row.index }}</template>
-                </el-table-column>
-                <el-table-column label="规则内容" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    <code class="rule-code">{{ row.rule_line }}</code>
-                  </template>
-                </el-table-column>
-                <el-table-column label="类型" width="80" align="center">
-                  <template #default="{ row }">
-                    <el-tag :type="row.is_myfw ? 'success' : 'info'" size="small">
-                      {{ row.is_myfw ? 'MYFW' : '系统' }}
-                    </el-tag>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
+        <template v-else-if="!rulesLoading">
+          <!-- 筛选栏 -->
+          <div class="rules-toolbar">
+            <el-input v-model="ruleSearch" placeholder="搜索规则内容..." clearable size="small" style="width: 280px">
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <el-select v-model="ruleTypeFilter" size="small" style="width: 130px">
+              <el-option label="全部类型" value="all" />
+              <el-option label="MYFW" value="myfw" />
+              <el-option label="系统" value="system" />
+            </el-select>
+            <el-select v-model="ruleChainFilter" size="small" placeholder="全部链" clearable style="width: 160px">
+              <el-option v-for="ch in currentTableChains" :key="ch" :label="ch" :value="ch" />
+            </el-select>
+            <span class="rule-count">当前表共 {{ filteredRuleCount }} 条</span>
           </div>
+
+          <!-- 按 table 分 Tab -->
+          <el-tabs v-model="activeTable" type="card">
+            <el-tab-pane v-for="(chains, table) in iptablesRules" :key="table" :name="table">
+              <template #label>
+                <span>{{ table }}</span>
+                <el-badge :value="getTableRuleCount(chains)" type="info" class="tab-badge" />
+              </template>
+              <div v-for="(rules, chain) in chains" :key="chain" v-show="showChain(chain)" class="rule-chain-section">
+                <div class="chain-header">
+                  <el-icon><Connection /></el-icon>
+                  <span class="chain-name">{{ chain }}</span>
+                  <el-tag size="small">{{ filterRules(rules).length }}/{{ rules.length }} 条</el-tag>
+                </div>
+                <el-table :data="filterRules(rules).map((r, i) => ({ ...r, index: i + 1 }))" size="small" border stripe style="margin-bottom: 12px">
+                  <el-table-column label="#" width="50" align="center">
+                    <template #default="{ row }">{{ row.index }}</template>
+                  </el-table-column>
+                  <el-table-column label="规则内容" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <code class="rule-code">{{ row.rule_line }}</code>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="类型" width="80" align="center">
+                    <template #default="{ row }">
+                      <el-tag :type="row.is_myfw ? 'success' : 'info'" size="small">
+                        {{ row.is_myfw ? 'MYFW' : '系统' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="110" align="center">
+                    <template #default="{ row }">
+                      <el-popover trigger="click" :width="440" placement="left">
+                        <template #reference>
+                          <el-button size="small" link type="primary">查看命令</el-button>
+                        </template>
+                        <div class="cmd-popover">
+                          <div class="cmd-label">完整 iptables 命令（可复制使用）</div>
+                          <code class="cmd-code">{{ buildFullCommand(activeTable, row.rule_line) }}</code>
+                          <el-button size="small" type="primary" style="margin-top: 8px" @click="copyText(buildFullCommand(activeTable, row.rule_line))">
+                            复制命令
+                          </el-button>
+                        </div>
+                      </el-popover>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+              <div v-if="filteredChainCount === 0" class="empty-state">没有匹配的规则</div>
+            </el-tab-pane>
+          </el-tabs>
         </template>
       </div>
     </el-dialog>
@@ -211,9 +269,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Connection } from '@element-plus/icons-vue'
+import { Plus, Connection, Setting, ArrowDown, Search } from '@element-plus/icons-vue'
 import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules } from '@/api'
 
 const loading = ref(false)
@@ -225,6 +283,14 @@ const rulesDialogVisible = ref(false)
 const generating = ref(false)
 const saving = ref(false)
 const rulesLoading = ref(false)
+
+// 列显隐：常用列（主机名/IP/后端/状态/操作）始终显示，非常用列可收纳
+const columnVisible = reactive({ system: true, labels: true, lastSeen: true })
+const toggleableCols = [
+  { key: 'system', label: '系统' },
+  { key: 'labels', label: '标签' },
+  { key: 'lastSeen', label: '最后活跃' }
+]
 
 // 添加节点表单
 const addFormRef = ref(null)
@@ -251,6 +317,10 @@ const detailNode = reactive({
 // iptables 规则
 const rulesNode = reactive({ id: '', hostname: '' })
 const iptablesRules = ref({})
+const activeTable = ref('filter')
+const ruleSearch = ref('')
+const ruleTypeFilter = ref('all')
+const ruleChainFilter = ref('')
 
 // 工具函数
 const getBackendLabel = (backend) => {
@@ -298,6 +368,67 @@ const parseLabels = (labelsStr) => {
 
 const getTableRuleCount = (chains) => {
   return Object.values(chains).reduce((sum, rules) => sum + rules.length, 0)
+}
+
+// 规则筛选：按搜索关键字 + 类型过滤
+const filterRules = (rules) => {
+  return rules.filter(r => {
+    if (ruleSearch.value && !r.rule_line.toLowerCase().includes(ruleSearch.value.toLowerCase())) return false
+    if (ruleTypeFilter.value === 'myfw' && !r.is_myfw) return false
+    if (ruleTypeFilter.value === 'system' && r.is_myfw) return false
+    return true
+  })
+}
+
+// 链筛选：控制整条链是否显示
+const showChain = (chain) => {
+  if (ruleChainFilter.value && chain !== ruleChainFilter.value) return false
+  return true
+}
+
+// 当前 table 下所有链名（供链筛选下拉）
+const currentTableChains = computed(() => {
+  const chains = iptablesRules.value[activeTable.value]
+  return chains ? Object.keys(chains) : []
+})
+
+// 当前 table 过滤后的规则总数
+const filteredRuleCount = computed(() => {
+  const chains = iptablesRules.value[activeTable.value]
+  if (!chains) return 0
+  return Object.entries(chains).reduce((sum, [chain, rules]) => {
+    if (ruleChainFilter.value && chain !== ruleChainFilter.value) return sum
+    return sum + filterRules(rules).length
+  }, 0)
+})
+
+// 当前 table 过滤后仍有规则显示的链数
+const filteredChainCount = computed(() => {
+  const chains = iptablesRules.value[activeTable.value]
+  if (!chains) return 0
+  return Object.entries(chains).filter(([chain, rules]) =>
+    showChain(chain) && filterRules(rules).length > 0
+  ).length
+})
+
+// 拼接完整 iptables 命令：rule_line 为 iptables-save 格式（-A CHAIN ...）
+const buildFullCommand = (table, ruleLine) => {
+  return `iptables -t ${table} ${ruleLine}`
+}
+
+const copyText = (text) => {
+  navigator.clipboard.writeText(text)
+  ElMessage.success('已复制到剪贴板')
+}
+
+// 操作下拉命令分发
+const handleCommand = (cmd, row) => {
+  switch (cmd) {
+    case 'view': handleView(row); break
+    case 'edit': handleEdit(row); break
+    case 'rules': handleViewRules(row); break
+    case 'delete': handleDelete(row); break
+  }
 }
 
 // 加载节点列表
@@ -446,6 +577,10 @@ const handleViewRules = async (row) => {
   rulesNode.hostname = row.hostname
   rulesLoading.value = true
   rulesDialogVisible.value = true
+  // 重置筛选
+  ruleSearch.value = ''
+  ruleTypeFilter.value = 'all'
+  ruleChainFilter.value = ''
   try {
     const data = await getNodeIptablesRules(row.id)
     const rules = data.rules || []
@@ -461,6 +596,9 @@ const handleViewRules = async (row) => {
     }
 
     iptablesRules.value = grouped
+    // 默认选中 filter，没有则第一个 table
+    const tables = Object.keys(grouped)
+    activeTable.value = tables.includes('filter') ? 'filter' : (tables[0] || 'filter')
   } catch {
     iptablesRules.value = {}
     ElMessage.error('获取 iptables 规则失败')
@@ -490,11 +628,25 @@ onMounted(loadNodes)
 
 <style scoped>
 .header-row { display: flex; justify-content: space-between; align-items: center; }
-.rule-table-section { margin-bottom: 20px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; }
-.rule-table-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e5e7eb; }
-.table-name { font-size: 16px; font-weight: bold; color: #1f2937; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+.title { font-weight: 600; }
+.col-settings { display: flex; flex-direction: column; gap: 6px; }
+.col-settings-title { font-size: 12px; color: #909399; margin-bottom: 4px; }
+.mono { font-family: 'Courier New', Courier, monospace; }
+.node-id { font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; word-break: break-all; }
+.muted { color: #999; }
+.small { font-size: 12px; }
+
+.rules-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.rule-count { font-size: 12px; color: #909399; margin-left: auto; }
+.tab-badge { margin-left: 6px; }
 .rule-chain-section { margin-bottom: 16px; }
 .chain-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #374151; }
 .chain-name { font-weight: 600; }
 .rule-code { font-family: 'Courier New', Courier, monospace; font-size: 12px; color: #1f2937; }
+.empty-state { text-align: center; padding: 40px; color: #999; }
+
+.cmd-popover { padding: 4px; }
+.cmd-label { font-size: 12px; color: #909399; margin-bottom: 8px; }
+.cmd-code { display: block; font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; background: #f5f7fa; padding: 10px; border-radius: 4px; word-break: break-all; }
 </style>

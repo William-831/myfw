@@ -136,6 +136,9 @@ type Handler interface {
 	// they may be no-ops on M5.
 	OnConfirm(ctx context.Context, task *myfwv1.ConfirmTask)
 	OnRollback(ctx context.Context, task *myfwv1.RollbackTask)
+	// OnSyncRules collects the node's current iptables rules when the
+	// Controller requests a real-time pull.
+	OnSyncRules(ctx context.Context) *myfwv1.IptablesRules
 }
 
 // Reporter is used by Watchdog to send drift reports and sync requests through the stream.
@@ -211,6 +214,7 @@ func (h NopHandler) OnApply(ctx context.Context, t *myfwv1.ApplyTask) *myfwv1.Ta
 }
 func (h NopHandler) OnConfirm(ctx context.Context, t *myfwv1.ConfirmTask)   {}
 func (h NopHandler) OnRollback(ctx context.Context, t *myfwv1.RollbackTask) {}
+func (h NopHandler) OnSyncRules(ctx context.Context) *myfwv1.IptablesRules  { return nil }
 
 // Loop opens an AgentStream and pushes a Heartbeat every Interval until ctx
 // is cancelled. Any RPC error causes a reconnect with exponential backoff.
@@ -311,6 +315,16 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 				h.OnRollback(ctx, p.Rollback)
 			case *myfwv1.ControllerToAgent_Sync:
 				log.Debug("sync requested", "reason", p.Sync.Reason)
+			case *myfwv1.ControllerToAgent_SyncRules:
+				log.Debug("sync rules requested", "reason", p.SyncRules.Reason)
+				if res := h.OnSyncRules(ctx); res != nil {
+					res.NodeId = nodeID
+					select {
+					case sendCh <- &myfwv1.AgentToController{Payload: &myfwv1.AgentToController_IptablesRules{IptablesRules: res}}:
+					case <-ctx.Done():
+						return
+					}
+				}
 			case *myfwv1.ControllerToAgent_Ack:
 				// heartbeat ack — nothing to do beyond keepalive.
 			default:

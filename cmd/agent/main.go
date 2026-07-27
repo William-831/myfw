@@ -182,6 +182,9 @@ func run() error {
 	} else {
 		h = handler.New(nil, log)
 	}
+	// 注入规则采集器：Controller 拉取规则时，Agent 实时采集当前 iptables 规则回传
+	coll := collector.New(60*time.Second, log)
+	h.RulesCollector = coll.CollectIptablesRulesForHTTP
 
 	// 8. 共享发送通道（漂移报告等跨重连消息）
 	sendCh := make(chan *myfwv1.AgentToController, 8)

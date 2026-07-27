@@ -4,19 +4,26 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/model"
 )
 
-func registerIptablesRoutes(r gin.IRouter, db *gorm.DB) {
+func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 	g := r.Group("/api/v1/iptables")
 
-	// 获取节点规则列表
+	// 获取节点规则列表（准实时：先向 Agent 拉取最新规则写入 DB，再返回）
 	g.GET("/rules/:node_id", func(c *gin.Context) {
 		nodeID := c.Param("node_id")
+		if streamSvc != nil {
+			// 下发 SyncRulesRequest 并等待 Agent 上报（最多 3s）；
+			// 超时或节点离线则降级返回 DB 中最近一次的数据。
+			_ = streamSvc.RequestRulesAndWait(c.Request.Context(), nodeID, 3*time.Second)
+		}
 		var rules []model.IptablesRule
 		if err := db.Where("node_id = ?", nodeID).Order("table_type, chain, priority").Find(&rules).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

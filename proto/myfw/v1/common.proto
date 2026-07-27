@@ -63,3 +63,9 @@ message MachineFingerprint {
   repeated string mac_addresses = 5;
   repeated string ip_addresses = 6;
 }
+
+// Timestamp is a UTC point in time independent of any local calendar.
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
