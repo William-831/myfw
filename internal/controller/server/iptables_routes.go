@@ -11,11 +11,12 @@ import (
 	"gorm.io/gorm"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
+	"iptables-tool/internal/controller/compiler"
 	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/model"
 )
 
-func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
+func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service, comp *compiler.Compiler) {
 	g := r.Group("/api/v1/iptables")
 
 	// 获取节点规则列表（准实时：先向 Agent 拉取最新规则写入 DB，再返回）
@@ -55,6 +56,27 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"result": res})
+	})
+
+	// 策略漂移检测：对比策略编译期望态 vs 节点真实 MYFW 规则
+	g.GET("/drift/:node_id", func(c *gin.Context) {
+		nodeID := c.Param("node_id")
+		expected, err := comp.CompileForNode(c.Request.Context(), nodeID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		var actual []model.IptablesRule
+		db.Where("node_id = ? AND is_myfw = ?", nodeID, true).Order("table_type, chain, priority").Find(&actual)
+		expectedCount := len(expected)
+		actualCount := len(actual)
+		c.JSON(http.StatusOK, gin.H{
+			"expected":       expected,
+			"actual":         actual,
+			"expected_count": expectedCount,
+			"actual_count":   actualCount,
+			"drifted":        expectedCount != actualCount,
+		})
 	})
 
 	// Agent 上报规则

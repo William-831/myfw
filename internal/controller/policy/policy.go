@@ -236,6 +236,7 @@ func writeVersion(tx *gorm.DB, p *model.Policy, version int64, author string) er
 		Version:  version,
 		Snapshot: string(buf),
 		Author:   author,
+		Status:   "approved",
 	}).Error
 }
 
@@ -246,4 +247,100 @@ func nextVersionNumber(tx *gorm.DB, policyID uint) (int64, error) {
 		return 0, err
 	}
 	return v.Version + 1, nil
+}
+
+// SubmitChange 创建一个 pending 状态的 PolicyVersion（待审批），不直接修改 Policy。
+// 审批通过后由 ApproveChange 应用快照生效。
+func (s *Service) SubmitChange(ctx context.Context, id uint, in PolicyInput, author string) (*model.PolicyVersion, error) {
+	if err := validate(in); err != nil {
+		return nil, err
+	}
+	targetsJSON, err := json.Marshal(in.Targets)
+	if err != nil {
+		return nil, fmt.Errorf("policy: marshal targets: %w", err)
+	}
+	p := &model.Policy{
+		Name:        in.Name,
+		Direction:   in.Direction,
+		Source:      in.Source,
+		Destination: in.Destination,
+		Protocol:    in.Protocol,
+		PortRange:   in.PortRange,
+		Action:      in.Action,
+		Mark:        in.Mark,
+		NatTo:       in.NatTo,
+		Priority:    in.Priority,
+		Description: in.Description,
+		Targets:     string(targetsJSON),
+		Enabled:     in.Enabled,
+	}
+	p.ID = id
+	buf, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	v := &model.PolicyVersion{PolicyID: id, Snapshot: string(buf), Author: author, Status: "pending"}
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		next, err := nextVersionNumber(tx, id)
+		if err != nil {
+			return err
+		}
+		v.Version = next
+		return tx.Create(v).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// ApproveChange 将 pending 版本的快照应用到 Policy 并标记为 approved。
+func (s *Service) ApproveChange(ctx context.Context, policyID, versionID uint, author string) (*model.Policy, error) {
+	var v model.PolicyVersion
+	err := s.DB.WithContext(ctx).
+		Where("id = ? AND policy_id = ? AND status = ?", versionID, policyID, "pending").
+		First(&v).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var p model.Policy
+	if err := json.Unmarshal([]byte(v.Snapshot), &p); err != nil {
+		return nil, fmt.Errorf("policy: parse snapshot: %w", err)
+	}
+	p.ID = policyID
+	p.UpdatedAt = time.Now().UTC()
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&p).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.PolicyVersion{}).Where("id = ?", v.ID).Update("status", "approved").Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// RejectChange 拒绝 pending 版本。
+func (s *Service) RejectChange(ctx context.Context, policyID, versionID uint) error {
+	res := s.DB.WithContext(ctx).Model(&model.PolicyVersion{}).
+		Where("id = ? AND policy_id = ? AND status = ?", versionID, policyID, "pending").
+		Update("status", "rejected")
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListVersions 返回策略的所有版本（按版本号倒序）。
+func (s *Service) ListVersions(ctx context.Context, policyID uint) ([]model.PolicyVersion, error) {
+	var out []model.PolicyVersion
+	err := s.DB.WithContext(ctx).Where("policy_id = ?", policyID).Order("version DESC").Find(&out).Error
+	return out, err
 }

@@ -31,6 +31,7 @@ type PolicyVersion struct {
 	Version   int64     `gorm:"index" json:"version"`
 	Snapshot  string    `gorm:"type:text" json:"snapshot"` // JSON of the Policy at this version
 	Author    string    `gorm:"size:128" json:"author"`
+	Status    string    `gorm:"size:16;index" json:"status"` // pending/approved/rejected
 	CreatedAt time.Time `json:"created_at"`
 }
 

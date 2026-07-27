@@ -213,6 +213,7 @@
             <el-button type="primary" size="small" @click="handleAddRule">
               <el-icon><Plus /></el-icon>添加规则
             </el-button>
+            <el-button size="small" @click="handleCheckDrift" :loading="driftLoading">合规检查</el-button>
           </div>
 
           <!-- 按 table 分 Tab -->
@@ -332,6 +333,29 @@
         <el-button type="primary" @click="submitRuleOp" :loading="ruleOpSaving">执行</el-button>
       </template>
     </el-dialog>
+
+    <!-- 合规检查对话框（策略漂移检测） -->
+    <el-dialog v-model="driftDialogVisible" title="策略合规检查" width="760px">
+      <div v-loading="driftLoading">
+        <el-alert :type="driftResult.drifted ? 'error' : 'success'" :closable="false" style="margin-bottom: 12px">
+          {{ driftResult.drifted ? `检测到漂移：期望 ${driftResult.expected_count} 条，实际 ${driftResult.actual_count} 条` : `合规：期望 ${driftResult.expected_count} 条，实际 ${driftResult.actual_count} 条` }}
+        </el-alert>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <div class="drift-section-title">策略期望规则（{{ driftResult.expected_count }}）</div>
+            <div v-for="r in driftResult.expected" :key="r.id" class="drift-item">
+              <code>{{ r.id }}: {{ r.protocol }} {{ r.port_range }} -&gt; {{ r.action }}</code>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="drift-section-title">节点真实 MYFW 规则（{{ driftResult.actual_count }}）</div>
+            <div v-for="r in driftResult.actual" :key="r.id" class="drift-item">
+              <code>{{ r.rule_line }}</code>
+            </div>
+          </el-col>
+        </el-row>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -339,7 +363,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule } from '@/api'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule, getNodeDrift } from '@/api'
 
 const loading = ref(false)
 const nodes = ref([])
@@ -754,6 +778,24 @@ const submitRuleOp = async () => {
   }
 }
 
+// 合规检查（策略漂移检测）
+const driftDialogVisible = ref(false)
+const driftLoading = ref(false)
+const driftResult = reactive({ expected: [], actual: [], expected_count: 0, actual_count: 0, drifted: false })
+
+const handleCheckDrift = async () => {
+  driftLoading.value = true
+  driftDialogVisible.value = true
+  try {
+    const data = await getNodeDrift(rulesNode.id)
+    Object.assign(driftResult, data)
+  } catch {
+    ElMessage.error('合规检查失败')
+  } finally {
+    driftLoading.value = false
+  }
+}
+
 // 删除节点
 const handleDelete = async (row) => {
   try {
@@ -796,4 +838,7 @@ onMounted(loadNodes)
 .cmd-popover { padding: 4px; }
 .cmd-label { font-size: 12px; color: #909399; margin-bottom: 8px; }
 .cmd-code { display: block; font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; background: #f5f7fa; padding: 10px; border-radius: 4px; word-break: break-all; }
+.drift-section-title { font-weight: 600; margin-bottom: 8px; color: #374151; }
+.drift-item { padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
+.drift-item code { font-size: 12px; color: #1f2937; }
 </style>

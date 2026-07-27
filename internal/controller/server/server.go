@@ -261,7 +261,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerPolicyRoutes(r, policySvc, co, comp)
 	registerAuditRoutes(r, auditSink)
 	registerDashboardRoutes(r, db)
-	registerIptablesRoutes(r, db, streamSvc)
+	registerIptablesRoutes(r, db, streamSvc, comp)
 
 	r.Static("/assets", "/var/www/myfw/assets")
 	r.NoRoute(func(c *gin.Context) {

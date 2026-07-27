@@ -27,6 +27,12 @@ func registerPolicyRoutes(r gin.IRouter, svc *policy.Service, co *task.Coordinat
 
 	g.POST("/:id/apply", func(c *gin.Context) { applyOnePolicy(c, svc, co, comp) })
 	g.POST("/apply-all", func(c *gin.Context) { applyAllPolicies(c, co, comp) })
+
+	// 策略变更审批（阶段5）：提交变更 -> 审批 -> 生效并下发关联节点
+	g.POST("/:id/submit", func(c *gin.Context) { submitPolicyChange(c, svc) })
+	g.GET("/:id/versions", func(c *gin.Context) { listPolicyVersions(c, svc) })
+	g.POST("/:id/versions/:vid/approve", func(c *gin.Context) { approvePolicyVersion(c, svc, co, comp) })
+	g.POST("/:id/versions/:vid/reject", func(c *gin.Context) { rejectPolicyVersion(c, svc) })
 }
 
 // --- CRUD ------------------------------------------------------------------
@@ -194,6 +200,94 @@ func applyAllPolicies(c *gin.Context, co *task.Coordinator, comp *compiler.Compi
 	})
 }
 
+// --- 变更审批（阶段5）-------------------------------------------------------
+
+func submitPolicyChange(c *gin.Context, svc *policy.Service) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var in policy.PolicyInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	v, err := svc.SubmitChange(c.Request.Context(), id, in, actor(c))
+	if err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{
+		"version": v,
+		"message": "变更已提交，待审批；通过 POST /api/v1/policies/:id/versions/:vid/approve 生效",
+	})
+}
+
+func listPolicyVersions(c *gin.Context, svc *policy.Service) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	versions, err := svc.ListVersions(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"versions": versions})
+}
+
+func approvePolicyVersion(c *gin.Context, svc *policy.Service, co *task.Coordinator, comp *compiler.Compiler) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	vid, ok := parseVersionID(c)
+	if !ok {
+		return
+	}
+	p, err := svc.ApproveChange(c.Request.Context(), id, vid, actor(c))
+	if err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+	// 审批通过后，自动下发到关联节点
+	nodeIDs, err := comp.TargetNodes(c.Request.Context(), p)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"policy": p, "warning": "approved but dispatch failed: " + err.Error()})
+		return
+	}
+	tasks := []any{}
+	if len(nodeIDs) > 0 {
+		t, err := co.Submit(c.Request.Context(), p.ID, nodeIDs, task.SubmitOpts{
+			Author:          actor(c),
+			AutoApprove:     false,
+			ConfirmDeadline: 5 * time.Minute,
+		})
+		if err == nil {
+			for _, tk := range t {
+				tasks = append(tasks, tk)
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"policy": p, "tasks": tasks})
+}
+
+func rejectPolicyVersion(c *gin.Context, svc *policy.Service) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	vid, ok := parseVersionID(c)
+	if !ok {
+		return
+	}
+	if err := svc.RejectChange(c.Request.Context(), id, vid); err != nil {
+		respondPolicyErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "version rejected"})
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func parseID(c *gin.Context) (uint, bool) {
@@ -201,6 +295,16 @@ func parseID(c *gin.Context) (uint, bool) {
 	n, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil || n == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad policy id"})
+		return 0, false
+	}
+	return uint(n), true
+}
+
+func parseVersionID(c *gin.Context) (uint, bool) {
+	raw := c.Param("vid")
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || n == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad version id"})
 		return 0, false
 	}
 	return uint(n), true

@@ -80,6 +80,13 @@ export const getDashboardStats = () => service.get('/v1/dashboard/stats')
 // iptables 规则
 export const getNodeIptablesRules = (nodeId) => service.get(`/v1/iptables/rules/${nodeId}`)
 export const operateNodeRule = (nodeId, op) => service.post(`/v1/iptables/rules/${nodeId}`, op)
+export const getNodeDrift = (nodeId) => service.get(`/v1/iptables/drift/${nodeId}`)
+
+// 策略变更审批（阶段5）
+export const submitPolicyChange = (id, data) => service.post(`/v1/policies/${id}/submit`, data)
+export const getPolicyVersions = (id) => service.get(`/v1/policies/${id}/versions`)
+export const approvePolicyVersion = (id, vid) => service.post(`/v1/policies/${id}/versions/${vid}/approve`)
+export const rejectPolicyVersion = (id, vid) => service.post(`/v1/policies/${id}/versions/${vid}/reject`)
 export const getIptablesOverview = () => service.get('/v1/iptables/overview')
 export const getChainTree = (nodeId) => service.get(`/v1/iptables/chain-tree/${nodeId}`)
 
