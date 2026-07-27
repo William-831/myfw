@@ -277,15 +277,11 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 		log.Warn("failed to issue session token", "err", err)
 	}
 
-	// 在 metadata 中发送 node_id 和会话令牌
-	mdPairs := []string{"x-node-id", nodeID}
-	if token != nil {
-		mdPairs = append(mdPairs,
-			"x-session-token", security.TokenToString(token),
-			"x-session-sig", sig,
-		)
-	}
-	ctx = metadata.AppendToOutgoingContext(ctx, mdPairs...)
+	// dev 联调：仅发 node_id（会话令牌需 Controller 签发，当前 Agent 自生成无法通过
+	// Controller 验证，暂不发，仅靠 mTLS 证书认证。TODO: Controller 注册时签发令牌）
+	_ = token
+	_ = sig
+	ctx = metadata.AppendToOutgoingContext(ctx, "x-node-id", nodeID)
 
 	stream, err := client.Connect(ctx)
 	if err != nil {

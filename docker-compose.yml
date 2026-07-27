@@ -1,0 +1,21 @@
+version: "3"
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.compose
+    image: myfw-controller:v0.2.0
+    container_name: myfw-controller
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      # CA 证书只读挂载（含 ca.key 供 Controller 签发 Agent 证书）
+      - ./dev-ca:/etc/myfw/ca:ro
+      # 数据目录（SQLite dev.db 持久化）
+      - ./data:/var/lib/myfw
+      # 容器内绝对路径配置
+      - ./configs/controller-container.yaml:/etc/myfw/config.yaml:ro
+      # 前端静态资源（web/dist -> /var/www/myfw）
+      - ./web/dist:/var/www/myfw:ro
+    restart: unless-stopped

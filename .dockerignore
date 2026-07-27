@@ -1,0 +1,14 @@
+# 减小 docker build context，排除本地产物与敏感文件
+dist/
+dev-ca/
+data/
+.git/
+web/node_modules/
+web/dist/
+deploy-package/
+deploy-cert/
+*.tar
+*.tar.gz
+*.exe
+*.db
+*.log
