@@ -155,6 +155,7 @@
               <el-button size="small" text type="warning" @click="editPolicy(policy)">编辑</el-button>
               <el-button size="small" text type="danger" @click="handleDelete(policy)">删除</el-button>
               <el-button size="small" text type="primary" @click="handleApply(policy)" :loading="policy._applying">应用</el-button>
+              <el-button size="small" text type="info" @click="viewVersions(policy)">版本</el-button>
             </div>
           </div>
 
@@ -397,6 +398,32 @@
         <el-button type="primary" @click="executeBatchApply" :loading="batchApplyLoading">应用</el-button>
       </template>
     </el-dialog>
+
+    <!-- 策略版本与审批对话框 -->
+    <el-dialog v-model="versionDialogVisible" title="策略版本与审批" width="760px">
+      <el-table :data="versions" v-loading="versionLoading" size="small">
+        <el-table-column label="版本" width="80" align="center">
+          <template #default="{ row }">v{{ row.version }}</template>
+        </el-table-column>
+        <el-table-column prop="author" label="提交人" width="120" />
+        <el-table-column label="状态" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="versionStatusType(row.status)" size="small">{{ versionStatusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="时间">
+          <template #default="{ row }">{{ row.created_at ? new Date(row.created_at).toLocaleString() : '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" align="center">
+          <template #default="{ row }">
+            <template v-if="row.status === 'pending'">
+              <el-button size="small" type="success" @click="approveVersion(row)">通过</el-button>
+              <el-button size="small" type="danger" @click="rejectVersion(row)">拒绝</el-button>
+            </template>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -406,6 +433,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Refresh, Connection, Warning } from '@element-plus/icons-vue'
 import {
   getPolicies, createPolicy, updatePolicy, deletePolicy as apiDeletePolicy,
+  submitPolicyChange, getPolicyVersions, approvePolicyVersion, rejectPolicyVersion,
   applyPolicy as apiApplyPolicy, applyAllPolicies, getNodes,
   batchTogglePolicies, batchDeletePolicies, batchApplyToNodes,
   detectConflicts, getChainTree
@@ -697,8 +725,8 @@ const savePolicy = async () => {
       targets: { node_ids: selectedNodeIds.value, labels: [] }
     }
     if (policyForm._editingId) {
-      await updatePolicy(policyForm._editingId, data)
-      ElMessage.success('更新成功')
+      await submitPolicyChange(policyForm._editingId, data)
+      ElMessage.success('变更已提交，待审批（在版本列表中通过后生效并下发）')
     } else {
       await createPolicy(data)
       ElMessage.success('创建成功')
@@ -715,6 +743,50 @@ const viewPolicy = (p) => {
   Object.assign(viewPolicyData, p)
   viewDialogVisible.value = true
 }
+
+// 策略版本与审批（阶段5）
+const versionDialogVisible = ref(false)
+const versionLoading = ref(false)
+const versions = ref([])
+const currentVersionPolicyId = ref(0)
+
+const viewVersions = async (p) => {
+  currentVersionPolicyId.value = p.id
+  versionDialogVisible.value = true
+  versionLoading.value = true
+  try {
+    const data = await getPolicyVersions(p.id)
+    versions.value = data.versions || []
+  } catch {
+    ElMessage.error('加载版本失败')
+  } finally {
+    versionLoading.value = false
+  }
+}
+
+const approveVersion = async (v) => {
+  try {
+    await approvePolicyVersion(currentVersionPolicyId.value, v.id)
+    ElMessage.success('已通过，关联节点已触发下发')
+    viewVersions({ id: currentVersionPolicyId.value })
+    loadData()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.error || '审批失败')
+  }
+}
+
+const rejectVersion = async (v) => {
+  try {
+    await rejectPolicyVersion(currentVersionPolicyId.value, v.id)
+    ElMessage.success('已拒绝')
+    viewVersions({ id: currentVersionPolicyId.value })
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.error || '拒绝失败')
+  }
+}
+
+const versionStatusType = (s) => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[s] || 'info')
+const versionStatusLabel = (s) => ({ pending: '待审批', approved: '已通过', rejected: '已拒绝' }[s] || s)
 const handleDelete = async (p) => {
   try {
     await ElMessageBox.confirm(`确定删除策略 ${p.name}?`, '确认', { type: 'warning' })
