@@ -4,7 +4,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
@@ -37,6 +40,9 @@ type Handler struct {
 	// RulesCollector, if set, supplies the node's current iptables rules when
 	// the Controller requests a real-time sync. Injected by cmd/agent.
 	RulesCollector func() (map[string]map[string][]string, error)
+
+	// RuleExecutor 执行单条 iptables 命令（增删改插），由 cmd/agent 注入。
+	RuleExecutor func(ctx context.Context, args []string) (string, error)
 
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
@@ -149,6 +155,90 @@ func (h *Handler) OnSyncRules(ctx context.Context) *myfwv1.IptablesRules {
 		TsUnix: time.Now().Unix(),
 		Chains: chains,
 	}
+}
+
+// OnRuleOperation 执行单条规则增删改插，构造 iptables 命令并执行。
+// 双模式：专家模式直接用 rule_line；结构化模式由 action/protocol/源/目的/端口翻译。
+func (h *Handler) OnRuleOperation(ctx context.Context, op *myfwv1.RuleOperation) *myfwv1.TaskResult {
+	res := &myfwv1.TaskResult{TaskId: op.TaskId, TsUnix: time.Now().Unix()}
+	if h.RuleExecutor == nil {
+		res.Message = "no rule executor configured"
+		return res
+	}
+	args, err := buildIptablesArgs(op)
+	if err != nil {
+		res.Message = "build command: " + err.Error()
+		return res
+	}
+	out, err := h.RuleExecutor(ctx, args)
+	if err != nil {
+		res.Message = "exec failed: " + err.Error() + " | " + strings.TrimSpace(out)
+		return res
+	}
+	res.Ok = true
+	res.Message = "iptables " + strings.Join(args, " ")
+	return res
+}
+
+// buildIptablesArgs 把 RuleOperation 翻译成 iptables 命令参数。
+func buildIptablesArgs(op *myfwv1.RuleOperation) ([]string, error) {
+	table := op.Table
+	if table == "" {
+		table = "filter"
+	}
+	chain := strings.TrimSpace(op.Chain)
+	if chain == "" {
+		return nil, errors.New("chain required")
+	}
+	var flag string
+	switch op.Op {
+	case myfwv1.RuleOpType_RULE_OP_ADD:
+		flag = "-A"
+	case myfwv1.RuleOpType_RULE_OP_INSERT:
+		flag = "-I"
+	case myfwv1.RuleOpType_RULE_OP_DELETE:
+		flag = "-D"
+	case myfwv1.RuleOpType_RULE_OP_REPLACE:
+		flag = "-R"
+	default:
+		return nil, errors.New("invalid op")
+	}
+	args := []string{"-t", table, flag, chain}
+	if (op.Op == myfwv1.RuleOpType_RULE_OP_INSERT || op.Op == myfwv1.RuleOpType_RULE_OP_REPLACE) && op.Position > 0 {
+		args = append(args, strconv.Itoa(int(op.Position)))
+	}
+	ruleLine := strings.TrimSpace(op.RuleLine)
+	if ruleLine == "" {
+		rl, err := buildRuleLineFromStructured(op)
+		if err != nil {
+			return nil, err
+		}
+		ruleLine = rl
+	}
+	args = append(args, strings.Fields(ruleLine)...)
+	return args, nil
+}
+
+// buildRuleLineFromStructured 结构化字段翻译为 iptables 规则体。
+func buildRuleLineFromStructured(op *myfwv1.RuleOperation) (string, error) {
+	if op.Action == "" {
+		return "", errors.New("action required for structured mode")
+	}
+	var parts []string
+	if op.Protocol != "" && op.Protocol != "any" {
+		parts = append(parts, "-p", op.Protocol)
+	}
+	if op.Source != "" {
+		parts = append(parts, "-s", op.Source)
+	}
+	if op.Destination != "" {
+		parts = append(parts, "-d", op.Destination)
+	}
+	if op.Port != "" && op.Protocol != "icmp" {
+		parts = append(parts, "--dport", op.Port)
+	}
+	parts = append(parts, "-j", strings.ToUpper(op.Action))
+	return strings.Join(parts, " "), nil
 }
 
 // static check: Handler satisfies conn.Handler (defined in sibling package).

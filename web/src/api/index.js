@@ -79,6 +79,7 @@ export const getDashboardStats = () => service.get('/v1/dashboard/stats')
 
 // iptables 规则
 export const getNodeIptablesRules = (nodeId) => service.get(`/v1/iptables/rules/${nodeId}`)
+export const operateNodeRule = (nodeId, op) => service.post(`/v1/iptables/rules/${nodeId}`, op)
 export const getIptablesOverview = () => service.get('/v1/iptables/overview')
 export const getChainTree = (nodeId) => service.get(`/v1/iptables/chain-tree/${nodeId}`)
 

@@ -115,12 +115,40 @@ message ControllerToAgent {
     SyncRequest sync = 4;
     HeartbeatAck ack = 5;
     SyncRulesRequest sync_rules = 6;
+    RuleOperation rule_operation = 7;
   }
 }
 
 // SyncRulesRequest 请求 Agent 上报当前 iptables 规则
 message SyncRulesRequest {
   string reason = 1;
+}
+
+// RuleOpType 单条规则操作类型。
+enum RuleOpType {
+  RULE_OP_UNSPECIFIED = 0;
+  RULE_OP_ADD = 1;       // 追加到链尾 (iptables -A)
+  RULE_OP_INSERT = 2;    // 插入到指定位置 (iptables -I)
+  RULE_OP_DELETE = 3;    // 删除 (iptables -D)
+  RULE_OP_REPLACE = 4;   // 替换 (iptables -R)
+}
+
+// RuleOperation 下发单条规则操作到 Agent（节点规则页增删改插）。
+// 双模式：
+//   - 专家模式：rule_line 给出 iptables-save 格式规则体（如 "-p tcp --dport 80 -j ACCEPT"）
+//   - 结构化模式：rule_line 为空时，由 action/protocol/source/destination/port 翻译
+message RuleOperation {
+  string task_id = 1;
+  string table = 2;          // filter/nat/mangle/raw
+  string chain = 3;          // INPUT/OUTPUT/FORWARD/...
+  RuleOpType op = 4;
+  int32 position = 5;        // 插入/替换位置（1-based），0 表示追加
+  string rule_line = 6;      // 专家模式：原始规则体
+  string action = 7;         // ACCEPT/DROP/REJECT/MARK/DNAT/SNAT
+  string protocol = 8;       // tcp/udp/icmp/any
+  string source = 9;         // 源 IP/CIDR
+  string destination = 10;   // 目的 IP/CIDR
+  string port = 11;          // 端口或范围
 }
 
 // ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace

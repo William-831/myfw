@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -185,6 +186,12 @@ func run() error {
 	// 注入规则采集器：Controller 拉取规则时，Agent 实时采集当前 iptables 规则回传
 	coll := collector.New(60*time.Second, log)
 	h.RulesCollector = coll.CollectIptablesRulesForHTTP
+	// 注入规则执行器：节点规则页增删改插时，执行 iptables 命令
+	h.RuleExecutor = func(ctx context.Context, args []string) (string, error) {
+		cmd := exec.CommandContext(ctx, "iptables", args...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
 
 	// 8. 共享发送通道（漂移报告等跨重连消息）
 	sendCh := make(chan *myfwv1.AgentToController, 8)

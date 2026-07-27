@@ -21,6 +21,62 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// RuleOpType 单条规则操作类型。
+type RuleOpType int32
+
+const (
+	RuleOpType_RULE_OP_UNSPECIFIED RuleOpType = 0
+	RuleOpType_RULE_OP_ADD         RuleOpType = 1 // 追加到链尾 (iptables -A)
+	RuleOpType_RULE_OP_INSERT      RuleOpType = 2 // 插入到指定位置 (iptables -I)
+	RuleOpType_RULE_OP_DELETE      RuleOpType = 3 // 删除 (iptables -D)
+	RuleOpType_RULE_OP_REPLACE     RuleOpType = 4 // 替换 (iptables -R)
+)
+
+// Enum value maps for RuleOpType.
+var (
+	RuleOpType_name = map[int32]string{
+		0: "RULE_OP_UNSPECIFIED",
+		1: "RULE_OP_ADD",
+		2: "RULE_OP_INSERT",
+		3: "RULE_OP_DELETE",
+		4: "RULE_OP_REPLACE",
+	}
+	RuleOpType_value = map[string]int32{
+		"RULE_OP_UNSPECIFIED": 0,
+		"RULE_OP_ADD":         1,
+		"RULE_OP_INSERT":      2,
+		"RULE_OP_DELETE":      3,
+		"RULE_OP_REPLACE":     4,
+	}
+)
+
+func (x RuleOpType) Enum() *RuleOpType {
+	p := new(RuleOpType)
+	*p = x
+	return p
+}
+
+func (x RuleOpType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RuleOpType) Descriptor() protoreflect.EnumDescriptor {
+	return file_myfw_v1_stream_proto_enumTypes[0].Descriptor()
+}
+
+func (RuleOpType) Type() protoreflect.EnumType {
+	return &file_myfw_v1_stream_proto_enumTypes[0]
+}
+
+func (x RuleOpType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RuleOpType.Descriptor instead.
+func (RuleOpType) EnumDescriptor() ([]byte, []int) {
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{0}
+}
+
 type AgentToController struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Payload:
@@ -885,6 +941,7 @@ type ControllerToAgent struct {
 	//	*ControllerToAgent_Sync
 	//	*ControllerToAgent_Ack
 	//	*ControllerToAgent_SyncRules
+	//	*ControllerToAgent_RuleOperation
 	Payload       isControllerToAgent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -981,6 +1038,15 @@ func (x *ControllerToAgent) GetSyncRules() *SyncRulesRequest {
 	return nil
 }
 
+func (x *ControllerToAgent) GetRuleOperation() *RuleOperation {
+	if x != nil {
+		if x, ok := x.Payload.(*ControllerToAgent_RuleOperation); ok {
+			return x.RuleOperation
+		}
+	}
+	return nil
+}
+
 type isControllerToAgent_Payload interface {
 	isControllerToAgent_Payload()
 }
@@ -1009,6 +1075,10 @@ type ControllerToAgent_SyncRules struct {
 	SyncRules *SyncRulesRequest `protobuf:"bytes,6,opt,name=sync_rules,json=syncRules,proto3,oneof"`
 }
 
+type ControllerToAgent_RuleOperation struct {
+	RuleOperation *RuleOperation `protobuf:"bytes,7,opt,name=rule_operation,json=ruleOperation,proto3,oneof"`
+}
+
 func (*ControllerToAgent_Apply) isControllerToAgent_Payload() {}
 
 func (*ControllerToAgent_Confirm) isControllerToAgent_Payload() {}
@@ -1020,6 +1090,8 @@ func (*ControllerToAgent_Sync) isControllerToAgent_Payload() {}
 func (*ControllerToAgent_Ack) isControllerToAgent_Payload() {}
 
 func (*ControllerToAgent_SyncRules) isControllerToAgent_Payload() {}
+
+func (*ControllerToAgent_RuleOperation) isControllerToAgent_Payload() {}
 
 // SyncRulesRequest 请求 Agent 上报当前 iptables 规则
 type SyncRulesRequest struct {
@@ -1066,6 +1138,134 @@ func (x *SyncRulesRequest) GetReason() string {
 	return ""
 }
 
+// RuleOperation 下发单条规则操作到 Agent（节点规则页增删改插）。
+// 双模式：
+//   - 专家模式：rule_line 给出 iptables-save 格式规则体（如 "-p tcp --dport 80 -j ACCEPT"）
+//   - 结构化模式：rule_line 为空时，由 action/protocol/source/destination/port 翻译
+type RuleOperation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Table         string                 `protobuf:"bytes,2,opt,name=table,proto3" json:"table,omitempty"` // filter/nat/mangle/raw
+	Chain         string                 `protobuf:"bytes,3,opt,name=chain,proto3" json:"chain,omitempty"` // INPUT/OUTPUT/FORWARD/...
+	Op            RuleOpType             `protobuf:"varint,4,opt,name=op,proto3,enum=myfw.v1.RuleOpType" json:"op,omitempty"`
+	Position      int32                  `protobuf:"varint,5,opt,name=position,proto3" json:"position,omitempty"`                // 插入/替换位置（1-based），0 表示追加
+	RuleLine      string                 `protobuf:"bytes,6,opt,name=rule_line,json=ruleLine,proto3" json:"rule_line,omitempty"` // 专家模式：原始规则体
+	Action        string                 `protobuf:"bytes,7,opt,name=action,proto3" json:"action,omitempty"`                     // ACCEPT/DROP/REJECT/MARK/DNAT/SNAT
+	Protocol      string                 `protobuf:"bytes,8,opt,name=protocol,proto3" json:"protocol,omitempty"`                 // tcp/udp/icmp/any
+	Source        string                 `protobuf:"bytes,9,opt,name=source,proto3" json:"source,omitempty"`                     // 源 IP/CIDR
+	Destination   string                 `protobuf:"bytes,10,opt,name=destination,proto3" json:"destination,omitempty"`          // 目的 IP/CIDR
+	Port          string                 `protobuf:"bytes,11,opt,name=port,proto3" json:"port,omitempty"`                        // 端口或范围
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuleOperation) Reset() {
+	*x = RuleOperation{}
+	mi := &file_myfw_v1_stream_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuleOperation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuleOperation) ProtoMessage() {}
+
+func (x *RuleOperation) ProtoReflect() protoreflect.Message {
+	mi := &file_myfw_v1_stream_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuleOperation.ProtoReflect.Descriptor instead.
+func (*RuleOperation) Descriptor() ([]byte, []int) {
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *RuleOperation) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetChain() string {
+	if x != nil {
+		return x.Chain
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetOp() RuleOpType {
+	if x != nil {
+		return x.Op
+	}
+	return RuleOpType_RULE_OP_UNSPECIFIED
+}
+
+func (x *RuleOperation) GetPosition() int32 {
+	if x != nil {
+		return x.Position
+	}
+	return 0
+}
+
+func (x *RuleOperation) GetRuleLine() string {
+	if x != nil {
+		return x.RuleLine
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *RuleOperation) GetPort() string {
+	if x != nil {
+		return x.Port
+	}
+	return ""
+}
+
 // ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace
 // to the given RuleSet, then wait for a ConfirmTask within confirm_deadline
 // (else auto-rollback). See design.md § 11.
@@ -1080,7 +1280,7 @@ type ApplyTask struct {
 
 func (x *ApplyTask) Reset() {
 	*x = ApplyTask{}
-	mi := &file_myfw_v1_stream_proto_msgTypes[13]
+	mi := &file_myfw_v1_stream_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1092,7 +1292,7 @@ func (x *ApplyTask) String() string {
 func (*ApplyTask) ProtoMessage() {}
 
 func (x *ApplyTask) ProtoReflect() protoreflect.Message {
-	mi := &file_myfw_v1_stream_proto_msgTypes[13]
+	mi := &file_myfw_v1_stream_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1105,7 +1305,7 @@ func (x *ApplyTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyTask.ProtoReflect.Descriptor instead.
 func (*ApplyTask) Descriptor() ([]byte, []int) {
-	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{13}
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ApplyTask) GetTaskId() string {
@@ -1138,7 +1338,7 @@ type ConfirmTask struct {
 
 func (x *ConfirmTask) Reset() {
 	*x = ConfirmTask{}
-	mi := &file_myfw_v1_stream_proto_msgTypes[14]
+	mi := &file_myfw_v1_stream_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1150,7 +1350,7 @@ func (x *ConfirmTask) String() string {
 func (*ConfirmTask) ProtoMessage() {}
 
 func (x *ConfirmTask) ProtoReflect() protoreflect.Message {
-	mi := &file_myfw_v1_stream_proto_msgTypes[14]
+	mi := &file_myfw_v1_stream_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1163,7 +1363,7 @@ func (x *ConfirmTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfirmTask.ProtoReflect.Descriptor instead.
 func (*ConfirmTask) Descriptor() ([]byte, []int) {
-	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{14}
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ConfirmTask) GetTaskId() string {
@@ -1182,7 +1382,7 @@ type RollbackTask struct {
 
 func (x *RollbackTask) Reset() {
 	*x = RollbackTask{}
-	mi := &file_myfw_v1_stream_proto_msgTypes[15]
+	mi := &file_myfw_v1_stream_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1194,7 +1394,7 @@ func (x *RollbackTask) String() string {
 func (*RollbackTask) ProtoMessage() {}
 
 func (x *RollbackTask) ProtoReflect() protoreflect.Message {
-	mi := &file_myfw_v1_stream_proto_msgTypes[15]
+	mi := &file_myfw_v1_stream_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1207,7 +1407,7 @@ func (x *RollbackTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackTask.ProtoReflect.Descriptor instead.
 func (*RollbackTask) Descriptor() ([]byte, []int) {
-	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{15}
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RollbackTask) GetTaskId() string {
@@ -1228,7 +1428,7 @@ type SyncRequest struct {
 
 func (x *SyncRequest) Reset() {
 	*x = SyncRequest{}
-	mi := &file_myfw_v1_stream_proto_msgTypes[16]
+	mi := &file_myfw_v1_stream_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1240,7 +1440,7 @@ func (x *SyncRequest) String() string {
 func (*SyncRequest) ProtoMessage() {}
 
 func (x *SyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_myfw_v1_stream_proto_msgTypes[16]
+	mi := &file_myfw_v1_stream_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1253,7 +1453,7 @@ func (x *SyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncRequest.ProtoReflect.Descriptor instead.
 func (*SyncRequest) Descriptor() ([]byte, []int) {
-	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{16}
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SyncRequest) GetReason() string {
@@ -1272,7 +1472,7 @@ type HeartbeatAck struct {
 
 func (x *HeartbeatAck) Reset() {
 	*x = HeartbeatAck{}
-	mi := &file_myfw_v1_stream_proto_msgTypes[17]
+	mi := &file_myfw_v1_stream_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1284,7 +1484,7 @@ func (x *HeartbeatAck) String() string {
 func (*HeartbeatAck) ProtoMessage() {}
 
 func (x *HeartbeatAck) ProtoReflect() protoreflect.Message {
-	mi := &file_myfw_v1_stream_proto_msgTypes[17]
+	mi := &file_myfw_v1_stream_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1297,7 +1497,7 @@ func (x *HeartbeatAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatAck.ProtoReflect.Descriptor instead.
 func (*HeartbeatAck) Descriptor() ([]byte, []int) {
-	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{17}
+	return file_myfw_v1_stream_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *HeartbeatAck) GetTsUnix() int64 {
@@ -1386,7 +1586,7 @@ const file_myfw_v1_stream_proto_rawDesc = "" +
 	"tx_packets\x18\x05 \x01(\x03R\ttxPackets\"6\n" +
 	"\aRuleHit\x12\x17\n" +
 	"\arule_id\x18\x01 \x01(\tR\x06ruleId\x12\x12\n" +
-	"\x04hits\x18\x02 \x01(\x03R\x04hits\"\xc4\x02\n" +
+	"\x04hits\x18\x02 \x01(\x03R\x04hits\"\x85\x03\n" +
 	"\x11ControllerToAgent\x12*\n" +
 	"\x05apply\x18\x01 \x01(\v2\x12.myfw.v1.ApplyTaskH\x00R\x05apply\x120\n" +
 	"\aconfirm\x18\x02 \x01(\v2\x14.myfw.v1.ConfirmTaskH\x00R\aconfirm\x123\n" +
@@ -1394,10 +1594,24 @@ const file_myfw_v1_stream_proto_rawDesc = "" +
 	"\x04sync\x18\x04 \x01(\v2\x14.myfw.v1.SyncRequestH\x00R\x04sync\x12)\n" +
 	"\x03ack\x18\x05 \x01(\v2\x15.myfw.v1.HeartbeatAckH\x00R\x03ack\x12:\n" +
 	"\n" +
-	"sync_rules\x18\x06 \x01(\v2\x19.myfw.v1.SyncRulesRequestH\x00R\tsyncRulesB\t\n" +
+	"sync_rules\x18\x06 \x01(\v2\x19.myfw.v1.SyncRulesRequestH\x00R\tsyncRules\x12?\n" +
+	"\x0erule_operation\x18\a \x01(\v2\x16.myfw.v1.RuleOperationH\x00R\rruleOperationB\t\n" +
 	"\apayload\"*\n" +
 	"\x10SyncRulesRequest\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason\"\x85\x01\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"\xb4\x02\n" +
+	"\rRuleOperation\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x14\n" +
+	"\x05table\x18\x02 \x01(\tR\x05table\x12\x14\n" +
+	"\x05chain\x18\x03 \x01(\tR\x05chain\x12#\n" +
+	"\x02op\x18\x04 \x01(\x0e2\x13.myfw.v1.RuleOpTypeR\x02op\x12\x1a\n" +
+	"\bposition\x18\x05 \x01(\x05R\bposition\x12\x1b\n" +
+	"\trule_line\x18\x06 \x01(\tR\bruleLine\x12\x16\n" +
+	"\x06action\x18\a \x01(\tR\x06action\x12\x1a\n" +
+	"\bprotocol\x18\b \x01(\tR\bprotocol\x12\x16\n" +
+	"\x06source\x18\t \x01(\tR\x06source\x12 \n" +
+	"\vdestination\x18\n" +
+	" \x01(\tR\vdestination\x12\x12\n" +
+	"\x04port\x18\v \x01(\tR\x04port\"\x85\x01\n" +
 	"\tApplyTask\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12+\n" +
 	"\brule_set\x18\x02 \x01(\v2\x10.myfw.v1.RuleSetR\aruleSet\x122\n" +
@@ -1409,7 +1623,14 @@ const file_myfw_v1_stream_proto_rawDesc = "" +
 	"\vSyncRequest\x12\x16\n" +
 	"\x06reason\x18\x01 \x01(\tR\x06reason\"'\n" +
 	"\fHeartbeatAck\x12\x17\n" +
-	"\ats_unix\x18\x01 \x01(\x03R\x06tsUnix2T\n" +
+	"\ats_unix\x18\x01 \x01(\x03R\x06tsUnix*s\n" +
+	"\n" +
+	"RuleOpType\x12\x17\n" +
+	"\x13RULE_OP_UNSPECIFIED\x10\x00\x12\x0f\n" +
+	"\vRULE_OP_ADD\x10\x01\x12\x12\n" +
+	"\x0eRULE_OP_INSERT\x10\x02\x12\x12\n" +
+	"\x0eRULE_OP_DELETE\x10\x03\x12\x13\n" +
+	"\x0fRULE_OP_REPLACE\x10\x042T\n" +
 	"\vAgentStream\x12E\n" +
 	"\aConnect\x12\x1a.myfw.v1.AgentToController\x1a\x1a.myfw.v1.ControllerToAgent(\x010\x01B\"Z iptables-tool/api/myfw/v1;myfwv1b\x06proto3"
 
@@ -1425,57 +1646,62 @@ func file_myfw_v1_stream_proto_rawDescGZIP() []byte {
 	return file_myfw_v1_stream_proto_rawDescData
 }
 
-var file_myfw_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_myfw_v1_stream_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_myfw_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_myfw_v1_stream_proto_goTypes = []any{
-	(*AgentToController)(nil), // 0: myfw.v1.AgentToController
-	(*Heartbeat)(nil),         // 1: myfw.v1.Heartbeat
-	(*TaskResult)(nil),        // 2: myfw.v1.TaskResult
-	(*DriftReport)(nil),       // 3: myfw.v1.DriftReport
-	(*StateReport)(nil),       // 4: myfw.v1.StateReport
-	(*IptablesRules)(nil),     // 5: myfw.v1.IptablesRules
-	(*IptablesChain)(nil),     // 6: myfw.v1.IptablesChain
-	(*InterfaceStat)(nil),     // 7: myfw.v1.InterfaceStat
-	(*AgentStats)(nil),        // 8: myfw.v1.AgentStats
-	(*NetworkStats)(nil),      // 9: myfw.v1.NetworkStats
-	(*RuleHit)(nil),           // 10: myfw.v1.RuleHit
-	(*ControllerToAgent)(nil), // 11: myfw.v1.ControllerToAgent
-	(*SyncRulesRequest)(nil),  // 12: myfw.v1.SyncRulesRequest
-	(*ApplyTask)(nil),         // 13: myfw.v1.ApplyTask
-	(*ConfirmTask)(nil),       // 14: myfw.v1.ConfirmTask
-	(*RollbackTask)(nil),      // 15: myfw.v1.RollbackTask
-	(*SyncRequest)(nil),       // 16: myfw.v1.SyncRequest
-	(*HeartbeatAck)(nil),      // 17: myfw.v1.HeartbeatAck
-	(*Capability)(nil),        // 18: myfw.v1.Capability
-	(*Timestamp)(nil),         // 19: myfw.v1.Timestamp
-	(*RuleSet)(nil),           // 20: myfw.v1.RuleSet
+	(RuleOpType)(0),           // 0: myfw.v1.RuleOpType
+	(*AgentToController)(nil), // 1: myfw.v1.AgentToController
+	(*Heartbeat)(nil),         // 2: myfw.v1.Heartbeat
+	(*TaskResult)(nil),        // 3: myfw.v1.TaskResult
+	(*DriftReport)(nil),       // 4: myfw.v1.DriftReport
+	(*StateReport)(nil),       // 5: myfw.v1.StateReport
+	(*IptablesRules)(nil),     // 6: myfw.v1.IptablesRules
+	(*IptablesChain)(nil),     // 7: myfw.v1.IptablesChain
+	(*InterfaceStat)(nil),     // 8: myfw.v1.InterfaceStat
+	(*AgentStats)(nil),        // 9: myfw.v1.AgentStats
+	(*NetworkStats)(nil),      // 10: myfw.v1.NetworkStats
+	(*RuleHit)(nil),           // 11: myfw.v1.RuleHit
+	(*ControllerToAgent)(nil), // 12: myfw.v1.ControllerToAgent
+	(*SyncRulesRequest)(nil),  // 13: myfw.v1.SyncRulesRequest
+	(*RuleOperation)(nil),     // 14: myfw.v1.RuleOperation
+	(*ApplyTask)(nil),         // 15: myfw.v1.ApplyTask
+	(*ConfirmTask)(nil),       // 16: myfw.v1.ConfirmTask
+	(*RollbackTask)(nil),      // 17: myfw.v1.RollbackTask
+	(*SyncRequest)(nil),       // 18: myfw.v1.SyncRequest
+	(*HeartbeatAck)(nil),      // 19: myfw.v1.HeartbeatAck
+	(*Capability)(nil),        // 20: myfw.v1.Capability
+	(*Timestamp)(nil),         // 21: myfw.v1.Timestamp
+	(*RuleSet)(nil),           // 22: myfw.v1.RuleSet
 }
 var file_myfw_v1_stream_proto_depIdxs = []int32{
-	1,  // 0: myfw.v1.AgentToController.heartbeat:type_name -> myfw.v1.Heartbeat
-	2,  // 1: myfw.v1.AgentToController.task_result:type_name -> myfw.v1.TaskResult
-	3,  // 2: myfw.v1.AgentToController.drift:type_name -> myfw.v1.DriftReport
-	4,  // 3: myfw.v1.AgentToController.state:type_name -> myfw.v1.StateReport
-	16, // 4: myfw.v1.AgentToController.sync:type_name -> myfw.v1.SyncRequest
-	5,  // 5: myfw.v1.AgentToController.iptables_rules:type_name -> myfw.v1.IptablesRules
-	18, // 6: myfw.v1.Heartbeat.capability:type_name -> myfw.v1.Capability
-	7,  // 7: myfw.v1.StateReport.interfaces:type_name -> myfw.v1.InterfaceStat
-	6,  // 8: myfw.v1.IptablesRules.chains:type_name -> myfw.v1.IptablesChain
-	9,  // 9: myfw.v1.AgentStats.network_stats:type_name -> myfw.v1.NetworkStats
-	10, // 10: myfw.v1.AgentStats.rule_hits:type_name -> myfw.v1.RuleHit
-	19, // 11: myfw.v1.AgentStats.timestamp:type_name -> myfw.v1.Timestamp
-	13, // 12: myfw.v1.ControllerToAgent.apply:type_name -> myfw.v1.ApplyTask
-	14, // 13: myfw.v1.ControllerToAgent.confirm:type_name -> myfw.v1.ConfirmTask
-	15, // 14: myfw.v1.ControllerToAgent.rollback:type_name -> myfw.v1.RollbackTask
-	16, // 15: myfw.v1.ControllerToAgent.sync:type_name -> myfw.v1.SyncRequest
-	17, // 16: myfw.v1.ControllerToAgent.ack:type_name -> myfw.v1.HeartbeatAck
-	12, // 17: myfw.v1.ControllerToAgent.sync_rules:type_name -> myfw.v1.SyncRulesRequest
-	20, // 18: myfw.v1.ApplyTask.rule_set:type_name -> myfw.v1.RuleSet
-	0,  // 19: myfw.v1.AgentStream.Connect:input_type -> myfw.v1.AgentToController
-	11, // 20: myfw.v1.AgentStream.Connect:output_type -> myfw.v1.ControllerToAgent
-	20, // [20:21] is the sub-list for method output_type
-	19, // [19:20] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	2,  // 0: myfw.v1.AgentToController.heartbeat:type_name -> myfw.v1.Heartbeat
+	3,  // 1: myfw.v1.AgentToController.task_result:type_name -> myfw.v1.TaskResult
+	4,  // 2: myfw.v1.AgentToController.drift:type_name -> myfw.v1.DriftReport
+	5,  // 3: myfw.v1.AgentToController.state:type_name -> myfw.v1.StateReport
+	18, // 4: myfw.v1.AgentToController.sync:type_name -> myfw.v1.SyncRequest
+	6,  // 5: myfw.v1.AgentToController.iptables_rules:type_name -> myfw.v1.IptablesRules
+	20, // 6: myfw.v1.Heartbeat.capability:type_name -> myfw.v1.Capability
+	8,  // 7: myfw.v1.StateReport.interfaces:type_name -> myfw.v1.InterfaceStat
+	7,  // 8: myfw.v1.IptablesRules.chains:type_name -> myfw.v1.IptablesChain
+	10, // 9: myfw.v1.AgentStats.network_stats:type_name -> myfw.v1.NetworkStats
+	11, // 10: myfw.v1.AgentStats.rule_hits:type_name -> myfw.v1.RuleHit
+	21, // 11: myfw.v1.AgentStats.timestamp:type_name -> myfw.v1.Timestamp
+	15, // 12: myfw.v1.ControllerToAgent.apply:type_name -> myfw.v1.ApplyTask
+	16, // 13: myfw.v1.ControllerToAgent.confirm:type_name -> myfw.v1.ConfirmTask
+	17, // 14: myfw.v1.ControllerToAgent.rollback:type_name -> myfw.v1.RollbackTask
+	18, // 15: myfw.v1.ControllerToAgent.sync:type_name -> myfw.v1.SyncRequest
+	19, // 16: myfw.v1.ControllerToAgent.ack:type_name -> myfw.v1.HeartbeatAck
+	13, // 17: myfw.v1.ControllerToAgent.sync_rules:type_name -> myfw.v1.SyncRulesRequest
+	14, // 18: myfw.v1.ControllerToAgent.rule_operation:type_name -> myfw.v1.RuleOperation
+	0,  // 19: myfw.v1.RuleOperation.op:type_name -> myfw.v1.RuleOpType
+	22, // 20: myfw.v1.ApplyTask.rule_set:type_name -> myfw.v1.RuleSet
+	1,  // 21: myfw.v1.AgentStream.Connect:input_type -> myfw.v1.AgentToController
+	12, // 22: myfw.v1.AgentStream.Connect:output_type -> myfw.v1.ControllerToAgent
+	22, // [22:23] is the sub-list for method output_type
+	21, // [21:22] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_myfw_v1_stream_proto_init() }
@@ -1500,19 +1726,21 @@ func file_myfw_v1_stream_proto_init() {
 		(*ControllerToAgent_Sync)(nil),
 		(*ControllerToAgent_Ack)(nil),
 		(*ControllerToAgent_SyncRules)(nil),
+		(*ControllerToAgent_RuleOperation)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_myfw_v1_stream_proto_rawDesc), len(file_myfw_v1_stream_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   18,
+			NumEnums:      1,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_myfw_v1_stream_proto_goTypes,
 		DependencyIndexes: file_myfw_v1_stream_proto_depIdxs,
+		EnumInfos:         file_myfw_v1_stream_proto_enumTypes,
 		MessageInfos:      file_myfw_v1_stream_proto_msgTypes,
 	}.Build()
 	File_myfw_v1_stream_proto = out.File

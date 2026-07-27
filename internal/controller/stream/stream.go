@@ -286,6 +286,29 @@ func (s *Service) RequestRulesAndWait(ctx context.Context, nodeID string, timeou
 	}
 }
 
+// SendRuleOperation 下发单条规则操作到 Agent 并等待 TaskResult。
+func (s *Service) SendRuleOperation(ctx context.Context, nodeID string, op *myfwv1.RuleOperation, timeout time.Duration) (*myfwv1.TaskResult, error) {
+	ch, cancel := s.SubscribeTaskResults()
+	defer cancel()
+	if err := s.Reg.Send(nodeID, &myfwv1.ControllerToAgent{
+		Payload: &myfwv1.ControllerToAgent_RuleOperation{RuleOperation: op},
+	}); err != nil {
+		return nil, err
+	}
+	for {
+		select {
+		case res := <-ch:
+			if res.TaskId == op.TaskId {
+				return res, nil
+			}
+		case <-time.After(timeout):
+			return nil, errors.New("timeout waiting for rule operation result")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 // isMYFWRules 判断规则是否属于 MYFW 命名空间（与 server 包判定保持一致）。
 func isMYFWRules(rule string) bool {
 	return strings.HasPrefix(rule, "-A MYFW-") || strings.Contains(rule, "-j MYFW-")

@@ -210,6 +210,9 @@
               <el-option v-for="ch in currentTableChains" :key="ch" :label="ch" :value="ch" />
             </el-select>
             <span class="rule-count">当前表共 {{ filteredRuleCount }} 条</span>
+            <el-button type="primary" size="small" @click="handleAddRule">
+              <el-icon><Plus /></el-icon>添加规则
+            </el-button>
           </div>
 
           <!-- 按 table 分 Tab -->
@@ -241,7 +244,7 @@
                       </el-tag>
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="110" align="center">
+                  <el-table-column label="操作" width="210" align="center">
                     <template #default="{ row }">
                       <el-popover trigger="click" :width="440" placement="left">
                         <template #reference>
@@ -255,6 +258,8 @@
                           </el-button>
                         </div>
                       </el-popover>
+                      <el-button size="small" link type="warning" @click="handleEditRule(row)">编辑</el-button>
+                      <el-button size="small" link type="danger" @click="handleDeleteRule(row)">删除</el-button>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -265,6 +270,68 @@
         </template>
       </div>
     </el-dialog>
+
+    <!-- 规则操作对话框（增删改插，双模式） -->
+    <el-dialog v-model="ruleOpDialogVisible" :title="ruleOpTitle" width="620px" :close-on-click-modal="false">
+      <el-form :model="ruleOpForm" label-width="90px" v-if="ruleOpForm.op !== 'delete'">
+        <el-form-item label="表">
+          <el-select v-model="ruleOpForm.table" style="width: 160px">
+            <el-option label="filter" value="filter" />
+            <el-option label="nat" value="nat" />
+            <el-option label="mangle" value="mangle" />
+            <el-option label="raw" value="raw" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="链">
+          <el-input v-model="ruleOpForm.chain" style="width: 200px" placeholder="如 INPUT" />
+        </el-form-item>
+        <el-form-item label="模式">
+          <el-radio-group v-model="ruleOpMode">
+            <el-radio value="structured">结构化</el-radio>
+            <el-radio value="expert">专家模式</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="ruleOpMode === 'structured'">
+          <el-form-item label="动作">
+            <el-select v-model="ruleOpForm.action" style="width: 160px">
+              <el-option label="ACCEPT" value="ACCEPT" />
+              <el-option label="DROP" value="DROP" />
+              <el-option label="REJECT" value="REJECT" />
+              <el-option label="MARK" value="MARK" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="协议">
+            <el-select v-model="ruleOpForm.protocol" style="width: 160px">
+              <el-option label="任意" value="any" />
+              <el-option label="TCP" value="tcp" />
+              <el-option label="UDP" value="udp" />
+              <el-option label="ICMP" value="icmp" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="源地址"><el-input v-model="ruleOpForm.source" placeholder="IP/CIDR，可空" /></el-form-item>
+          <el-form-item label="目的地址"><el-input v-model="ruleOpForm.destination" placeholder="IP/CIDR，可空" /></el-form-item>
+          <el-form-item label="端口"><el-input v-model="ruleOpForm.port" placeholder="如 80 或 1000:2000" /></el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item label="规则体">
+            <el-input v-model="ruleOpForm.rule_line" type="textarea" :rows="2" placeholder="-p tcp --dport 80 -j ACCEPT" />
+          </el-form-item>
+        </template>
+        <el-form-item v-if="ruleOpForm.op === 'insert'" label="插入位置">
+          <el-input-number v-model="ruleOpForm.position" :min="1" />
+        </el-form-item>
+      </el-form>
+      <el-alert v-else type="warning" :closable="false" style="margin-bottom: 12px">
+        确认删除以下规则？
+      </el-alert>
+      <div v-if="ruleOpForm.op === 'delete'">
+        <code class="rule-code">{{ ruleOpForm.rule_line }}</code>
+      </div>
+      <template #footer>
+        <el-button @click="ruleOpDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitRuleOp" :loading="ruleOpSaving">执行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -272,7 +339,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules } from '@/api'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule } from '@/api'
 
 const loading = ref(false)
 const nodes = ref([])
@@ -604,6 +671,86 @@ const handleViewRules = async (row) => {
     ElMessage.error('获取 iptables 规则失败')
   } finally {
     rulesLoading.value = false
+  }
+}
+
+// 规则操作（增删改插，双模式）
+const ruleOpDialogVisible = ref(false)
+const ruleOpSaving = ref(false)
+const ruleOpMode = ref('structured')
+const ruleOpTitle = ref('')
+const ruleOpForm = reactive({
+  op: 'add', table: 'filter', chain: 'INPUT', position: 1,
+  rule_line: '', action: 'ACCEPT', protocol: 'tcp',
+  source: '', destination: '', port: ''
+})
+
+const handleAddRule = () => {
+  ruleOpTitle.value = '添加规则'
+  ruleOpMode.value = 'structured'
+  ruleOpForm.op = 'add'
+  ruleOpForm.table = activeTable.value || 'filter'
+  ruleOpForm.chain = 'INPUT'
+  ruleOpForm.position = 1
+  ruleOpForm.rule_line = ''
+  ruleOpForm.action = 'ACCEPT'
+  ruleOpForm.protocol = 'tcp'
+  ruleOpForm.source = ''
+  ruleOpForm.destination = ''
+  ruleOpForm.port = ''
+  ruleOpDialogVisible.value = true
+}
+
+const handleEditRule = (row) => {
+  ruleOpTitle.value = '编辑规则（替换）'
+  ruleOpMode.value = 'expert'
+  ruleOpForm.op = 'replace'
+  ruleOpForm.table = activeTable.value || row.table_type || 'filter'
+  ruleOpForm.chain = row.chain || 'INPUT'
+  ruleOpForm.position = row.index || 1
+  ruleOpForm.rule_line = row.rule_line || ''
+  ruleOpDialogVisible.value = true
+}
+
+const handleDeleteRule = (row) => {
+  ruleOpTitle.value = '删除规则'
+  ruleOpForm.op = 'delete'
+  ruleOpForm.table = activeTable.value || row.table_type || 'filter'
+  ruleOpForm.chain = row.chain || 'INPUT'
+  ruleOpForm.position = row.index || 1
+  ruleOpForm.rule_line = row.rule_line || ''
+  ruleOpDialogVisible.value = true
+}
+
+const submitRuleOp = async () => {
+  const opMap = { add: 1, insert: 2, delete: 3, replace: 4 }
+  const op = {
+    table: ruleOpForm.table,
+    chain: ruleOpForm.chain,
+    op: opMap[ruleOpForm.op] || 0,
+    position: ruleOpForm.position || 0,
+    rule_line: ruleOpForm.op === 'delete' ? ruleOpForm.rule_line : (ruleOpMode.value === 'expert' ? ruleOpForm.rule_line : ''),
+    action: ruleOpForm.action,
+    protocol: ruleOpForm.protocol,
+    source: ruleOpForm.source,
+    destination: ruleOpForm.destination,
+    port: ruleOpForm.port,
+  }
+  ruleOpSaving.value = true
+  try {
+    const data = await operateNodeRule(rulesNode.id, op)
+    if (data.result?.ok) {
+      ElMessage.success('操作成功：' + (data.result.message || ''))
+      ruleOpDialogVisible.value = false
+      // 刷新规则列表（实时拉取最新状态）
+      await handleViewRules({ id: rulesNode.id, hostname: rulesNode.hostname })
+    } else {
+      ElMessage.error(data.result?.message || '操作失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.error || '操作失败')
+  } finally {
+    ruleOpSaving.value = false
   }
 }
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	myfwv1 "iptables-tool/api/myfw/v1"
 	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/model"
 )
@@ -30,6 +32,29 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"rules": rules})
+	})
+
+	// 下发单条规则操作（增删改插，双模式），等待 Agent 执行结果
+	g.POST("/rules/:node_id", func(c *gin.Context) {
+		nodeID := c.Param("node_id")
+		var op myfwv1.RuleOperation
+		if err := c.ShouldBindJSON(&op); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if op.TaskId == "" {
+			op.TaskId = fmt.Sprintf("ruleop-%d", time.Now().UnixNano())
+		}
+		if streamSvc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "stream service unavailable"})
+			return
+		}
+		res, err := streamSvc.SendRuleOperation(c.Request.Context(), nodeID, &op, 5*time.Second)
+		if err != nil {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"result": res})
 	})
 
 	// Agent 上报规则
