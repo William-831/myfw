@@ -21,11 +21,11 @@
 | M5 | Firewall Driver + Iptables | `[x]` | 2026-07-21 | 2026-07-21 | v0.1.0-m5 | Driver 抽象 + IptablesDriver + AgentStream 服务端 + REST 触发 apply 端到端跑通（含 fake iptables 落规则、Linux 侧真 iptables 联调延后） |
 | M6 | 策略模型 + Rule Compiler | `[x]` | 2026-07-21 | 2026-07-21 | v0.1.0-m6 | Policy CRUD + versioning、Compiler（node_ids + label selector）、Dispatcher 并行下发聚合结果，端到端跑通 |
 | M7 | 变更审批 + 快照 + 回滚 | `[x]` | 2026-07-21 | 2026-07-21 | v0.1.0-m7 | 完整状态机（submit→approve→dispatch→apply→confirm_wait→confirmed / auto-rollback）、startup recovery、三个端到端路径 |
-| M8 | Watchdog 漂移检测 | `[x]` | 2026-07-21 |  |  | 30s Hash 对比 + 漂移上报 + AutoRecover 开关；tag 待补打 |
-| M9 | NftablesDriver | `[x]` | 2026-07-21 |  |  | inet/ip family + 5 chain + fakeexec 测试；tag 待补打 |
-| M10 | 状态采集 | `[x]` | 2026-07-21 |  |  | CPU/内存/网络/连接数采集 + StateReport 上报；tag 待补打 |
-| M11 | Web 前端 | `[~]` | 2026-07-21 |  |  | 登录/节点/策略/审批/审计/Dashboard 页面就位；差 Controller 反代静态资源；tag 待补打 |
-| M12 | 审计 / 告警 / 观测 | `[x]` | 2026-07-21 |  |  | CSV 导出 + /metrics + webhook 告警；tag 待补打 |
+| M8 | Watchdog 漂移检测 | `[x]` | 2026-07-21 |  | v0.1.0-m8 | 30s Hash 对比 + 漂移上报 + AutoRecover 开关 |
+| M9 | NftablesDriver | `[x]` | 2026-07-21 |  | v0.1.0-m9 | inet/ip family + 5 chain + fakeexec 测试 |
+| M10 | 状态采集 | `[x]` | 2026-07-21 |  | v0.1.0-m10 | CPU/内存/网络/连接数采集 + StateReport 上报 |
+| M11 | Web 前端 | `[~]` | 2026-07-21 |  | v0.1.0-m11 | 登录/节点/策略/审批/审计/Dashboard 就位；差 Controller 反代静态资源 |
+| M12 | 审计 / 告警 / 观测 | `[x]` | 2026-07-21 |  | v0.1.0-m12 | CSV 导出 + /metrics + webhook 告警 |
 | M13 | 打包分发 | `[ ]` |  |  |  | 待启动 |
 
 ---
@@ -164,7 +164,7 @@
 - [x] 漂移上报 + 审计（`internal/controller/stream/stream.go` 处理 DriftReport + 写入审计日志）
 - [x] 自动恢复 / 仅告警开关（`AutoRecover` 选项，触发 SyncRequest）
 - [x] 单元测试覆盖（`watchdog_test.go`：无漂移、漂移检测、无基线、Hash 错误、禁用、nil driver）
-- [ ] 打 tag `v0.1.0-m8`
+- [x] 打 tag `v0.1.0-m8`（指向 265aa51）
 
 ---
 
@@ -174,7 +174,7 @@
 - [x] nftables fakeexec 测试实现（`internal/agent/driver/nftables/fakeexec/fakeexec.go`）
 - [x] 能力探测联动（`internal/agent/capability/capability.go`，选择优先级：iptables-nft → iptables-legacy → nftables）
 - [x] 单元测试覆盖（`nftables_test.go`：Init 幂等、Apply、Snapshot、Restore、Hash、Teardown、多规则、flush-then-fill）
-- [ ] 打 tag `v0.1.0-m9`
+- [x] 打 tag `v0.1.0-m9`（指向 265aa51）
 
 ---
 
@@ -183,7 +183,7 @@
 - [x] 状态采集模块（`internal/agent/collector/collector.go`，采集 CPU、内存、网络接口、连接数）
 - [x] 上报协议（复用现有 `StateReport` + `InterfaceStat`，通过 `AgentToController_State` 发送）
 - [x] Controller 接收处理（`internal/controller/stream/stream.go` 记录调试日志）
-- [ ] 打 tag `v0.1.0-m10`
+- [x] 打 tag `v0.1.0-m10`（指向 265aa51）
 
 ---
 
@@ -194,7 +194,7 @@
 - [x] 策略管理页面（CRUD）/ 审批中心页面
 - [x] 审计日志页面 / 系统概览 Dashboard
 - [ ] Controller 反代静态资源
-- [ ] 打 tag `v0.1.0-m11`
+- [x] 打 tag `v0.1.0-m11`（指向 265aa51）
 
 ---
 
@@ -203,7 +203,7 @@
 - [x] 审计日志导出（CSV格式，支持筛选导出）
 - [x] Prometheus 指标暴露（/metrics 端点）
 - [x] 告警渠道（webhook）
-- [ ] 打 tag `v0.1.0-m12`
+- [x] 打 tag `v0.1.0-m12`（指向 d30677c）
 
 ---
 
@@ -236,3 +236,4 @@
 - **2026-07-21~23** - M11 进行中：`web/`（Vite + Vue3 + Element Plus）落地登录 / 节点管理 / 节点详情 / 策略管理（`Policies.vue`）/ 审批中心 / 审计日志 / 系统概览 Dashboard；剩余 Controller 反代静态资源未接入。tag 待补打。
 - **2026-07-23** - M12 达成：审计日志 CSV 导出（支持筛选）；Prometheus 指标暴露 `/metrics`；告警 webhook 渠道。tag 待补打。
 - **2026-07-27** - 工程整理与安全增强：① 清理本地构建产物 / 依赖 / 证书（`agent.exe`、`controller.exe`、`dist/`、`deploy-package/`、`dev-ca/`、`deploy-cert/`、`web/node_modules`、`.mimicode` 等），补全 `.gitignore`（`/deploy-package/`、`/deploy-cert/`、`*.srl`、`*.ext`、`/.mimicode/` 等），移除遗留 `main.go` 与 `internal/shared/`。② 新增 `internal/security/` 模块：会话令牌（HMAC-SHA256）+ 防重放（nonce）+ IP 钉扎 + 证书自动轮换（短证书 24h），作为 gRPC 统一安全拦截器，在 mTLS 之上叠加应用层安全。③ 新增 `internal/model/iptables.go` 与 `stream.proto` 的 `IptablesRules` / `IptablesChain` / `SyncRulesRequest` 消息，支持节点 iptables 规则上报与同步。④ Controller 拆分 audit / dashboard / iptables / node / task 等 REST 路由文件。⑤ 同步修订 `design.md` / `deployment.md` / `development-plan.md` 至最新代码。⑥ 约定本地仅维护源代码，编译 / 测试 / 打包统一在远程 Linux 服务器执行；后续里程碑以 Git tag 标记节点。
+- **2026-07-27** - Tag 核对与补全：核实 M0-M11 的 tag 此前已标记于初始提交 `265aa51`（`feat: 初始化项目，完成 M0-M11 核心功能`），本次补打 `v0.1.0-m12` 指向 `d30677c`（M12 + 工程整理）。至此 M0-M12 全部 tag 就位，可通过 `git checkout <tag>` 回退到任意里程碑节点查看代码。
