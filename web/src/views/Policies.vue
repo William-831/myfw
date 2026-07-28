@@ -352,6 +352,15 @@
           <el-switch v-model="policyForm.enabled" />
         </el-form-item>
       </el-form>
+      <!-- 实时命令预览:随表单勾选/填写即时生成底层 iptables 命令,无感教学 -->
+      <div class="cmd-preview">
+        <div class="cmd-preview-head">
+          <span class="cmd-preview-title">命令预览</span>
+          <span v-if="previewHint" class="cmd-preview-warn">⚠ {{ previewHint }}</span>
+        </div>
+        <pre class="cmd-preview-code">{{ previewCommand }}</pre>
+        <div class="cmd-preview-note">规则追加至 MYFW 自定义链,系统链已自动跳转,不影响 DOCKER / KUBE 等现有规则</div>
+      </div>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="savePolicy" :loading="saving">确定</el-button>
@@ -506,6 +515,44 @@ const policyForm = reactive({
   description: '',
   targets: { node_ids: [], labels: [] },
   enabled: true
+})
+
+// 命令预览:复刻后端 internal/agent/driver/iptables 的 compileRule/targetChainFor 逻辑,
+// 让用户填写表单时即时看到将生成的底层 iptables 命令。表/链映射与动作目标须与后端一致。
+const buildPreviewCommand = (f) => {
+  // 表/链映射:DNAT/SNAT/MARK 走 nat/mangle,其余按方向走 filter
+  let table = 'filter'
+  let chain = 'MYFW-INPUT'
+  switch (f.action) {
+    case 'DNAT': table = 'nat'; chain = 'MYFW-PREROUTING'; break
+    case 'SNAT': table = 'nat'; chain = 'MYFW-POSTROUTING'; break
+    case 'MARK': table = 'mangle'; chain = 'MYFW-MANGLE'; break
+    default:
+      chain = { INBOUND: 'MYFW-INPUT', OUTBOUND: 'MYFW-OUTPUT', FORWARD: 'MYFW-FORWARD' }[f.direction] || 'MYFW-INPUT'
+  }
+  const parts = ['iptables', '-t', table, '-A', chain]
+  if (f.source) parts.push('-s', f.source)
+  if (f.destination) parts.push('-d', f.destination)
+  const proto = { TCP: 'tcp', UDP: 'udp', ICMP: 'icmp' }[f.protocol] || ''
+  if (proto) parts.push('-p', proto)
+  if (f.port_range) parts.push('--dport', String(f.port_range).replace(/-/g, ':'))
+  switch (f.action) {
+    case 'ACCEPT': parts.push('-j', 'ACCEPT'); break
+    case 'DROP': parts.push('-j', 'DROP'); break
+    case 'REJECT': parts.push('-j', 'REJECT'); break
+    case 'MARK': parts.push('-j', 'MARK', '--set-mark', String(f.mark || 0)); break
+    case 'DNAT': parts.push('-j', 'DNAT', '--to-destination', f.nat_to || '<NAT目标>'); break
+    case 'SNAT': parts.push('-j', 'SNAT', '--to-source', f.nat_to || '<NAT目标>'); break
+  }
+  return parts.join(' ')
+}
+
+const previewCommand = computed(() => buildPreviewCommand(policyForm))
+const previewHint = computed(() => {
+  const f = policyForm
+  if (f.port_range && f.protocol !== 'TCP' && f.protocol !== 'UDP') return '端口范围需指定 TCP/UDP 协议,否则后端将拒绝'
+  if ((f.action === 'DNAT' || f.action === 'SNAT') && !f.nat_to) return 'NAT 动作需填写 NAT 目标'
+  return ''
 })
 
 const formRules = {
@@ -1025,6 +1072,14 @@ onMounted(loadData)
 .target-ip { font-family: 'JetBrains Mono', monospace; }
 .target-host { margin-left: 6px; font-size: 11px; opacity: 0.7; }
 .desc { font-style: italic; }
+
+/* 命令预览窗(新增策略 dialog 底部,实时展示底层 iptables 命令) */
+.cmd-preview { margin-top: 12px; border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden; }
+.cmd-preview-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #F1F5F9; border-bottom: 1px solid #E2E8F0; }
+.cmd-preview-title { font-size: 12px; font-weight: 600; color: #1E293B; }
+.cmd-preview-warn { font-size: 12px; color: #f56c6c; }
+.cmd-preview-code { margin: 0; padding: 12px; background: #1E293B; color: #E2E8F0; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.cmd-preview-note { padding: 8px 12px; font-size: 12px; color: #64748B; background: #F8FAFC; }
 
 /* 专家模式 */
 .expert-header {

@@ -52,28 +52,7 @@
         <template #header>
           <span>节点状态分布</span>
         </template>
-        <div class="status-cards">
-          <div class="status-item online">
-            <div class="status-top"><span class="status-dot"></span><span class="status-name">在线</span></div>
-            <div class="status-num">{{ stats.active_node_count }} 个</div>
-            <el-progress :percentage="statusPercent(stats.active_node_count)" color="#67c23a" :stroke-width="6" :show-text="false" />
-          </div>
-          <div class="status-item offline">
-            <div class="status-top"><span class="status-dot"></span><span class="status-name">离线</span></div>
-            <div class="status-num">{{ offlineCount }} 个</div>
-            <el-progress :percentage="statusPercent(offlineCount)" color="#f56c6c" :stroke-width="6" :show-text="false" />
-          </div>
-          <div class="status-item pending">
-            <div class="status-top"><span class="status-dot"></span><span class="status-name">待审核</span></div>
-            <div class="status-num">{{ stats.pending_node_count }} 个</div>
-            <el-progress :percentage="statusPercent(stats.pending_node_count)" color="#e6a23c" :stroke-width="6" :show-text="false" />
-          </div>
-          <div class="status-item abnormal">
-            <div class="status-top"><span class="status-dot"></span><span class="status-name">异常</span></div>
-            <div class="status-num">{{ stats.abnormal_node_count }} 个</div>
-            <el-progress :percentage="statusPercent(stats.abnormal_node_count)" color="#f56c6c" :stroke-width="6" :show-text="false" />
-          </div>
-        </div>
+        <div ref="nodeChartRef" class="chart"></div>
       </el-card>
       <el-card class="chart-card" style="flex: 1;">
         <template #header>
@@ -96,11 +75,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive, computed } from 'vue'
+import { ref, onMounted, onUnmounted, reactive } from 'vue'
+import * as echarts from 'echarts'
 import { Connection, CircleCheck, Lock, Clock } from '@element-plus/icons-vue'
 import { getDashboardStats, getAuditLogs } from '@/api'
 
 const auditLoading = ref(false)
+const nodeChartRef = ref(null)
+let nodeChart = null
 
 const stats = reactive({
   node_count: 0,
@@ -114,11 +96,40 @@ const stats = reactive({
 
 const recentAudits = ref([])
 
-// 离线数 = 总数 - 在线 - 待审核 - 异常
-const offlineCount = computed(() => Math.max(0, stats.node_count - stats.active_node_count - stats.pending_node_count - stats.abnormal_node_count))
+// 节点状态饼图:在线/离线/待审核/异常
+const updateNodeChart = () => {
+  if (!nodeChart) return
+  const offline = Math.max(0, stats.node_count - stats.active_node_count - stats.pending_node_count - stats.abnormal_node_count)
+  nodeChart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c} 个 ({d}%)' },
+    legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#6b7280', fontSize: 12 } },
+    graphic: [
+      { type: 'text', left: 'center', top: '38%', style: { text: `${stats.node_count}`, fontSize: 30, fontWeight: 'bold', fill: '#1f2937', textAlign: 'center' } },
+      { type: 'text', left: 'center', top: '54%', style: { text: '节点总数', fontSize: 12, fill: '#9ca3af', textAlign: 'center' } }
+    ],
+    series: [{
+      type: 'pie', radius: ['45%', '70%'], center: ['50%', '45%'],
+      avoidLabelOverlap: false, cursor: 'pointer',
+      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+      label: { show: false }, labelLine: { show: false },
+      emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' }, scaleSize: 6 },
+      data: [
+        { value: stats.active_node_count, name: '在线', itemStyle: { color: '#67c23a' } },
+        { value: offline, name: '离线', itemStyle: { color: '#909399' } },
+        { value: stats.pending_node_count, name: '待审核', itemStyle: { color: '#e6a23c' } },
+        { value: stats.abnormal_node_count, name: '异常', itemStyle: { color: '#f56c6c' } }
+      ]
+    }]
+  })
+}
 
-// 各状态占节点总数百分比
-const statusPercent = (count) => stats.node_count > 0 ? Math.round(count / stats.node_count * 100) : 0
+const handleResize = () => nodeChart && nodeChart.resize()
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
+  nodeChart && nodeChart.dispose()
+  nodeChart = null
+})
 
 const getActionLabel = (action) => {
   const map = {
@@ -159,12 +170,17 @@ const formatTime = (time) => {
 }
 
 onMounted(async () => {
+  if (nodeChartRef.value) {
+    nodeChart = echarts.init(nodeChartRef.value)
+    window.addEventListener('resize', handleResize)
+  }
   try {
     const data = await getDashboardStats()
     Object.assign(stats, data)
   } catch {
     // 保持默认值
   }
+  updateNodeChart()
 
   auditLoading.value = true
   try {
@@ -194,16 +210,7 @@ onMounted(async () => {
 .stat-label { font-size: 14px; color: #9ca3af; margin: 4px 0 0; }
 .charts-row { display: flex; gap: 20px; }
 .chart-card { height: 350px; }
-.status-cards { display: flex; gap: 16px; }
-.status-item { flex: 1; min-width: 0; padding: 14px; border-radius: 8px; background: #f9fafb; }
-.status-top { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; }
-.status-item.online .status-dot { background: #67c23a; }
-.status-item.offline .status-dot { background: #f56c6c; }
-.status-item.pending .status-dot { background: #e6a23c; }
-.status-item.abnormal .status-dot { background: #f56c6c; }
-.status-name { font-size: 13px; color: #6b7280; }
-.status-num { font-size: 24px; font-weight: 600; color: #1f2937; margin-bottom: 10px; }
+.chart { width: 100%; height: 290px; }
 .audit-header { display: flex; justify-content: space-between; align-items: center; }
 .audit-list { height: 280px; overflow-y: auto; }
 .empty-tip { text-align: center; color: #9ca3af; padding: 40px 0; }
