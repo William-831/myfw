@@ -190,9 +190,17 @@
             <span v-if="getPolicyTargets(policy).length > 0" class="targets">
               <el-icon><Connection /></el-icon>
               关联主机:
-              <el-tag v-for="nodeId in getPolicyTargets(policy)" :key="nodeId" size="small" type="info" class="target-tag">
-                {{ getNodeName(nodeId) }}
-              </el-tag>
+              <el-tooltip
+                v-for="nodeId in getPolicyTargets(policy)"
+                :key="nodeId"
+                :content="nodeId"
+                placement="top"
+              >
+                <el-tag size="small" type="info" class="target-tag">
+                  <span class="target-ip">{{ getNodeDisplay(nodeId).ip || getNodeDisplay(nodeId).hostname || nodeId.slice(0, 12) }}</span>
+                  <span v-if="getNodeDisplay(nodeId).hostname && getNodeDisplay(nodeId).ip" class="target-host">{{ getNodeDisplay(nodeId).hostname }}</span>
+                </el-tag>
+              </el-tooltip>
             </span>
             <span v-if="policy.description" class="desc">{{ policy.description }}</span>
           </div>
@@ -371,9 +379,17 @@
         </el-descriptions-item>
         <el-descriptions-item label="目标节点" :span="2">
           <template v-if="getPolicyTargets(viewPolicyData).length > 0">
-            <el-tag v-for="nodeId in getPolicyTargets(viewPolicyData)" :key="nodeId" style="margin: 2px">
-              {{ getNodeName(nodeId) }} ({{ nodeId }})
-            </el-tag>
+            <el-tooltip
+              v-for="nodeId in getPolicyTargets(viewPolicyData)"
+              :key="nodeId"
+              :content="nodeId"
+              placement="top"
+            >
+              <el-tag size="small" type="info" style="margin: 2px">
+                <span class="target-ip">{{ getNodeDisplay(nodeId).ip || getNodeDisplay(nodeId).hostname || nodeId.slice(0, 12) }}</span>
+                <span v-if="getNodeDisplay(nodeId).hostname && getNodeDisplay(nodeId).ip" class="target-host">{{ getNodeDisplay(nodeId).hostname }}</span>
+              </el-tag>
+            </el-tooltip>
           </template>
           <span v-else>-</span>
         </el-descriptions-item>
@@ -579,6 +595,15 @@ const getPolicyTargets = (p) => {
 const getNodeName = (id) => {
   const node = allNodes.value.find(n => n.id === id)
   return node ? (node.hostname || node.id) : id
+}
+// 节点展示信息：IP 作为主键，hostname 作副标题，nodeId 仅用于 tooltip/URL 参数
+const getNodeDisplay = (id) => {
+  const node = allNodes.value.find(n => n.id === id)
+  return {
+    ip: node?.ip || '',
+    hostname: node?.hostname || '',
+    id
+  }
 }
 const formatDate = (d) => {
   if (!d) return '-'
@@ -997,6 +1022,8 @@ onMounted(loadData)
 }
 .targets { display: flex; align-items: center; gap: 6px; }
 .target-tag { margin: 0 2px; }
+.target-ip { font-family: 'JetBrains Mono', monospace; }
+.target-host { margin-left: 6px; font-size: 11px; opacity: 0.7; }
 .desc { font-style: italic; }
 
 /* 专家模式 */
