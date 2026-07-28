@@ -197,6 +197,10 @@ func (s *Service) onHeartbeat(ctx context.Context, nodeID string, hb *myfwv1.Hea
 	if hb == nil {
 		return
 	}
+	// 心跳携带 capability 时（首包及每 N 次一次），更新能力快照并据后端可用性切换状态
+	if hb.Capability != nil {
+		s.applyCapability(ctx, nodeID, hb.Capability)
+	}
 	now := time.Now().UTC()
 	if err := s.DB.WithContext(ctx).
 		Model(&model.Node{}).
@@ -204,6 +208,108 @@ func (s *Service) onHeartbeat(ctx context.Context, nodeID string, hb *myfwv1.Hea
 		Update("last_seen", &now).Error; err != nil {
 		s.Log.Warn("update last_seen", "node_id", nodeID, "err", err)
 	}
+}
+
+// applyCapability 持久化 Agent 上报的能力快照，并根据后端可用性切换节点状态：
+//   - 后端不可用且当前 ACTIVE -> 置为 ABNORMAL 并写审计
+//   - 后端恢复可用且当前 ABNORMAL -> 置为 ACTIVE 并写审计
+//
+// PENDING 节点仅更新能力快照，不自动改状态（仍需管理员审批）。
+func (s *Service) applyCapability(ctx context.Context, nodeID string, cap *myfwv1.Capability) {
+	available, reason := parseBackendAvailable(cap.Extra)
+	raw, _ := json.Marshal(cap)
+	now := time.Now().UTC()
+
+	var existing model.NodeCapability
+	findErr := s.DB.WithContext(ctx).Where("node_id = ?", nodeID).First(&existing).Error
+	updates := map[string]any{
+		"distro":            cap.Distro,
+		"kernel_version":    cap.KernelVersion,
+		"iptables_version":  cap.IptablesVersion,
+		"selected_backend":  cap.SelectedBackend.String(),
+		"nft_supported":     cap.NftSupported,
+		"docker_present":    cap.DockerPresent,
+		"k8s_present":       cap.KubernetesPresent,
+		"backend_available": available,
+		"backend_reason":    reason,
+		"raw":               string(raw),
+		"updated_at":        now,
+	}
+	if findErr == nil {
+		if err := s.DB.WithContext(ctx).Model(&existing).Updates(updates).Error; err != nil {
+			s.Log.Warn("update capability", "node_id", nodeID, "err", err)
+			return
+		}
+	} else {
+		// 首次上报（如禁用 mTLS 路径未在注册时持久化能力），创建记录
+		rec := model.NodeCapability{
+			NodeID:           nodeID,
+			Distro:           cap.Distro,
+			KernelVersion:    cap.KernelVersion,
+			IptablesVersion:  cap.IptablesVersion,
+			SelectedBackend:  cap.SelectedBackend.String(),
+			BackendAvailable: &available,
+			BackendReason:    reason,
+			NftSupported:     cap.NftSupported,
+			DockerPresent:    cap.DockerPresent,
+			K8sPresent:       cap.KubernetesPresent,
+			Raw:              string(raw),
+			UpdatedAt:        now,
+		}
+		if err := s.DB.WithContext(ctx).Create(&rec).Error; err != nil {
+			s.Log.Warn("create capability", "node_id", nodeID, "err", err)
+			return
+		}
+	}
+
+	// 状态切换：仅 ACTIVE <-> ABNORMAL，PENDING 等其他状态不动
+	if !available {
+		s.transitionForBackend(ctx, nodeID, model.NodeStatusActive, model.NodeStatusAbnormal, "node.abnormal", reason)
+	} else {
+		s.transitionForBackend(ctx, nodeID, model.NodeStatusAbnormal, model.NodeStatusActive, "node.recovered", "")
+	}
+}
+
+// transitionForBackend 在节点处于 from 状态时切换到 to 并写审计；非 from 状态则跳过。
+func (s *Service) transitionForBackend(ctx context.Context, nodeID string, from, to model.NodeStatus, action, reason string) {
+	res := s.DB.WithContext(ctx).
+		Model(&model.Node{}).
+		Where("id = ? AND status = ?", nodeID, from).
+		Update("status", to)
+	if res.Error != nil {
+		s.Log.Warn("transition node status", "node_id", nodeID, "from", from, "to", to, "err", res.Error)
+		return
+	}
+	if res.RowsAffected == 0 {
+		return // 节点不在 from 状态，无需切换
+	}
+	s.Log.Info("node status transitioned by backend availability", "node_id", nodeID, "from", from, "to", to, "reason", reason)
+	if s.Audit != nil {
+		detail, _ := json.Marshal(map[string]any{"from": from, "to": to, "reason": reason})
+		_ = s.Audit.Write(ctx, model.AuditLog{
+			Actor:  "agent",
+			Action: action,
+			NodeID: nodeID,
+			Detail: string(detail),
+		})
+	}
+}
+
+// parseBackendAvailable 从 Capability.extra 解析后端可用性标记。
+// 约定："backend_available=true|false" 与 "backend_reason:<文本>"。
+// 未携带标记时默认可用（向后兼容旧版 Agent）。
+func parseBackendAvailable(extra []string) (bool, string) {
+	available := true
+	reason := ""
+	for _, e := range extra {
+		switch {
+		case strings.HasPrefix(e, "backend_available="):
+			available = strings.TrimPrefix(e, "backend_available=") == "true"
+		case strings.HasPrefix(e, "backend_reason:"):
+			reason = strings.TrimPrefix(e, "backend_reason:")
+		}
+	}
+	return available, reason
 }
 
 // onIptablesRules 持久化 Agent 刚上报的规则，并唤醒等待实时拉取的调用方。

@@ -41,7 +41,14 @@
         </el-table-column>
         <el-table-column label="状态" min-width="90">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small">{{ getStatusLabel(row.status) }}</el-tag>
+            <el-tooltip
+              v-if="row.status === 'ABNORMAL' && row.capability?.backend_reason"
+              :content="'后端不可用：' + row.capability.backend_reason"
+              placement="top"
+            >
+              <el-tag :type="getStatusType(row.status)" size="small" effect="dark">{{ getStatusLabel(row.status) }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="getStatusType(row.status)" size="small">{{ getStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column v-if="columnVisible.system" label="系统" min-width="140">
@@ -165,7 +172,21 @@
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="防火墙后端">
-          {{ getBackendLabel(detailNode.capability?.selected_backend) }}
+          <div class="backend-cell">
+            <el-tag :type="getBackendType(detailNode.capability?.selected_backend)" size="small">
+              {{ getBackendLabel(detailNode.capability?.selected_backend) }}
+            </el-tag>
+            <el-tag
+              v-if="detailNode.capability?.backend_available === false"
+              type="danger"
+              size="small"
+              effect="dark"
+            >后端服务不可用</el-tag>
+            <span
+              v-if="detailNode.capability?.backend_available === false && detailNode.capability?.backend_reason"
+              class="backend-reason"
+            >{{ detailNode.capability.backend_reason }}</span>
+          </div>
         </el-descriptions-item>
         <el-descriptions-item label="iptables版本">
           {{ detailNode.capability?.iptables_version || '-' }}
@@ -433,12 +454,12 @@ const getBackendType = (backend) => {
 }
 
 const getStatusLabel = (status) => {
-  const map = { 'ACTIVE': '在线', 'PENDING': '待审核', 'OFFLINE': '离线', 'ARCHIVED': '已归档' }
+  const map = { 'ACTIVE': '在线', 'PENDING': '待审核', 'OFFLINE': '离线', 'ARCHIVED': '已归档', 'ABNORMAL': '异常' }
   return map[status] || status || '未知'
 }
 
 const getStatusType = (status) => {
-  const map = { 'ACTIVE': 'success', 'PENDING': 'warning', 'OFFLINE': 'danger', 'ARCHIVED': 'info' }
+  const map = { 'ACTIVE': 'success', 'PENDING': 'warning', 'OFFLINE': 'danger', 'ARCHIVED': 'info', 'ABNORMAL': 'danger' }
   return map[status] || 'info'
 }
 
@@ -823,6 +844,8 @@ onMounted(loadNodes)
 .col-settings-title { font-size: 12px; color: #909399; margin-bottom: 4px; }
 .mono { font-family: 'Courier New', Courier, monospace; }
 .node-id { font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; word-break: break-all; }
+.backend-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.backend-reason { font-size: 12px; color: #f56c6c; }
 .muted { color: #999; }
 .small { font-size: 12px; }
 

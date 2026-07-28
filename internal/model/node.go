@@ -13,6 +13,7 @@ type NodeStatus string
 const (
 	NodeStatusPending  NodeStatus = "PENDING"  // registered, awaiting admin approval
 	NodeStatusActive   NodeStatus = "ACTIVE"   // approved, may receive rule dispatch
+	NodeStatusAbnormal NodeStatus = "ABNORMAL" // 在线但防火墙后端不可用，需登录节点排查
 	NodeStatusOffline  NodeStatus = "OFFLINE"  // being decommissioned
 	NodeStatusArchived NodeStatus = "ARCHIVED" // retired, kept for audit
 )
@@ -35,17 +36,19 @@ type Node struct {
 
 // NodeCapability is the latest probe result reported by a node's Agent.
 type NodeCapability struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	NodeID          string    `gorm:"size:64;uniqueIndex" json:"node_id"`
-	Distro          string    `gorm:"size:128" json:"distro"`
-	KernelVersion   string    `gorm:"size:128" json:"kernel_version"`
-	IptablesVersion string    `gorm:"size:64" json:"iptables_version"`
-	SelectedBackend string    `gorm:"size:32" json:"selected_backend"`
-	NftSupported    bool      `json:"nft_supported"`
-	DockerPresent   bool      `json:"docker_present"`
-	K8sPresent      bool      `json:"k8s_present"`
-	Raw             string    `gorm:"type:text" json:"raw"` // JSON snapshot of full capability
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	NodeID           string    `gorm:"size:64;uniqueIndex" json:"node_id"`
+	Distro           string    `gorm:"size:128" json:"distro"`
+	KernelVersion    string    `gorm:"size:128" json:"kernel_version"`
+	IptablesVersion  string    `gorm:"size:64" json:"iptables_version"`
+	SelectedBackend  string    `gorm:"size:32" json:"selected_backend"`
+	BackendAvailable *bool     `gorm:"index" json:"backend_available"` // nil=未上报；true/false=Agent 探测结果
+	BackendReason    string    `gorm:"size:255" json:"backend_reason"` // 后端不可用原因，引导管理员排查
+	NftSupported     bool      `json:"nft_supported"`
+	DockerPresent    bool      `json:"docker_present"`
+	K8sPresent       bool      `json:"k8s_present"`
+	Raw              string    `gorm:"type:text" json:"raw"` // JSON snapshot of full capability
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // Certificate binds an issued client certificate fingerprint to a node

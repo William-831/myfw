@@ -162,15 +162,20 @@ func run() error {
 	}
 	defer streamConn.Close()
 
-	// 5. 根据探测结果构建防火墙驱动
+	// 5. 根据探测结果构建防火墙驱动，并验证后端是否可正常执行命令
 	drv := selectDriver(cap, log)
 	if drv != nil {
 		if err := drv.Init(ctx); err != nil {
 			log.Warn("driver init failed; agent will run without an active driver", "err", err)
 			drv = nil
+			markBackendAvailability(cap, false, "后端初始化失败: "+err.Error())
 		} else {
 			log.Info("firewall driver ready", "backend", cap.SelectedBackend.String())
+			markBackendAvailability(cap, true, "")
 		}
+	} else {
+		// 未检测到可用后端（非 Linux 主机或 iptables/nftables 均缺失）
+		markBackendAvailability(cap, false, "未检测到可用防火墙后端")
 	}
 
 	// 6. 上报 iptables 规则到 Controller
@@ -282,6 +287,23 @@ func selectDriver(cap *myfwv1.Capability, log *slog.Logger) agentdriver.Driver {
 		return nftdriver.New(nftdriver.ShellExec{}, cap.SelectedBackend)
 	}
 	return nil
+}
+
+// markBackendAvailability 将后端可用性探测结果写入 capability.extra，
+// Controller 据此将节点置为"异常"并展示具体原因。复用 extra 字段以避免改 proto。
+// 驱动初始化成功即代表后端可正常执行命令；失败或无后端则标记不可用并附带原因。
+func markBackendAvailability(cap *myfwv1.Capability, ok bool, reason string) {
+	if cap == nil {
+		return
+	}
+	if ok {
+		cap.Extra = append(cap.Extra, "backend_available=true")
+		return
+	}
+	cap.Extra = append(cap.Extra, "backend_available=false")
+	if reason != "" {
+		cap.Extra = append(cap.Extra, "backend_reason:"+reason)
+	}
 }
 
 func newLogger() *slog.Logger {
