@@ -1,0 +1,29 @@
+# 调试用 docker-compose:Controller 以容器运行,二进制/前端/CA/DB 全部挂载宿主机产物。
+# 改 Go 代码:go build + docker restart(秒级,不重建镜像)。
+# 改前端:npm run build + 浏览器刷新(无需重启容器)。
+# 详见 docs/remote-debug.md
+version: "3.9"
+
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.debug
+    image: myfw-controller-debug:latest
+    container_name: myfw-controller
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Web(浏览器访问)
+      - "9090:9090"   # gRPC mTLS(Agent 连)
+    volumes:
+      # 后端二进制:宿主机编译产物挂载为只读(必须先 go build,否则会被当成目录挂载)
+      - ./dist/myfw-controller:/usr/local/bin/myfw-controller:ro
+      # 前端构建产物:rebuild 后即时生效
+      - ./web/dist:/var/www/myfw:ro
+      # 开发 CA + Controller 服务端证书
+      - ./dev-ca:/etc/myfw/ca:ro
+      # SQLite 数据持久化
+      - ./data:/var/lib/myfw
+      # 容器内 Controller 配置(容器绝对路径)
+      - ./configs/controller-debug.yaml:/etc/myfw/config.yaml:ro
+    command: ["/usr/local/bin/myfw-controller", "--config", "/etc/myfw/config.yaml"]

@@ -1,0 +1,26 @@
+# 本地验证用配置：禁用 gRPC mTLS，SQLite 落地到 ./dev.db
+server:
+  web:
+    listen: ":8080"
+  grpc:
+    listen: ":9090"
+    tls:
+      disable: true
+
+database:
+  driver: sqlite
+  dsn: ./dev.db
+
+ca:
+  agent_cert_ttl: 8760h
+  agent_cert_renew_before: 720h
+
+bootstrap:
+  token_ttl: 15m
+
+audit:
+  retention_days: 365
+
+log:
+  level: debug
+  format: text

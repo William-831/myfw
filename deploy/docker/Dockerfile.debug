@@ -1,0 +1,6 @@
+# 调试用 Controller 运行时镜像:仅 alpine + 证书/时区,不含后端二进制与前端。
+# 后端二进制由宿主机编译后挂载,前端 dist 挂载,改代码无需重建镜像。
+# 详见 docs/remote-debug.md
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+EXPOSE 8080 9090

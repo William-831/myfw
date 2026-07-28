@@ -1,0 +1,35 @@
+# Controller 调试配置(容器内绝对路径,挂载点见 docker-compose.debug.yml)。
+# 与 controller-container.yaml 的区别:log.level=debug,专用于远程调试。
+server:
+  web:
+    listen: ":8080"
+  grpc:
+    listen: ":9090"
+    tls:
+      ca_file: /etc/myfw/ca/ca.pem
+      cert_file: /etc/myfw/ca/server.crt
+      key_file: /etc/myfw/ca/server.key
+      client_auth: require_and_verify
+
+database:
+  driver: sqlite
+  dsn: /var/lib/myfw/dev.db
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 30m
+
+ca:
+  key_file: /etc/myfw/ca/ca.key
+  cert_file: /etc/myfw/ca/ca.pem
+  agent_cert_ttl: 8760h
+  agent_cert_renew_before: 720h
+
+bootstrap:
+  token_ttl: 15m
+
+audit:
+  retention_days: 365
+
+log:
+  level: debug
+  format: text

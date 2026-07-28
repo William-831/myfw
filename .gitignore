@@ -43,6 +43,9 @@ web/.vite/
 .env.*
 !.env.example
 
+# Agent 本地联调配置(含一次性 bootstrap_token,勿提交)
+dev-agent.yaml
+
 # ---- Logs ----
 *.log
 logs/
@@ -50,6 +53,7 @@ logs/
 # ---- IDE / Editor ----
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
