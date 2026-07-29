@@ -19,6 +19,7 @@ type Policy struct {
 	DestinationGroup string    `gorm:"size:64" json:"destination_group"` // 引用 AddressGroup.name
 	MatchMark        uint32    `json:"match_mark"`                       // 匹配条件:已打标(与 Action=MARK 打标正交)
 	Group            string    `gorm:"size:64" json:"group"`             // 逻辑分组(展示与编排)
+	Chain            string    `gorm:"size:64" json:"chain"`             // 指定子链(MYFW-<name>),空则按 action/direction 落父链
 	Priority         int       `gorm:"index" json:"priority"`
 	Description      string    `gorm:"size:512" json:"description"`
 	Targets          string    `gorm:"type:text" json:"targets"` // JSON-encoded []node_id or label selector

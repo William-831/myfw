@@ -17,6 +17,7 @@ func AllModels() []any {
 		&AuditLog{},
 		&IptablesRule{},
 		&AddressGroup{},
+		&CustomChain{},
 		&User{},
 	}
 }

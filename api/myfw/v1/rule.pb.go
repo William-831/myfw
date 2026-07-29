@@ -41,6 +41,7 @@ type CompiledRule struct {
 	SourceGroup      string                 `protobuf:"bytes,12,opt,name=source_group,json=sourceGroup,proto3" json:"source_group,omitempty"`                // 引用 AddressSet.name,编译为 set 匹配(多 CIDR)
 	DestinationGroup string                 `protobuf:"bytes,13,opt,name=destination_group,json=destinationGroup,proto3" json:"destination_group,omitempty"` // 引用 AddressSet.name
 	MatchMark        uint32                 `protobuf:"varint,14,opt,name=match_mark,json=matchMark,proto3" json:"match_mark,omitempty"`                     // 匹配条件:已打标(与 action=MARK 打标正交)
+	Chain            string                 `protobuf:"bytes,15,opt,name=chain,proto3" json:"chain,omitempty"`                                               // 指定落到的子链(MYFW-<name>),空则按 action/direction 落父链
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -173,6 +174,13 @@ func (x *CompiledRule) GetMatchMark() uint32 {
 	return 0
 }
 
+func (x *CompiledRule) GetChain() string {
+	if x != nil {
+		return x.Chain
+	}
+	return ""
+}
+
 // RuleSet is the full desired state for a node's MYFW namespace at a given
 // policy version. Apply is all-or-nothing against this set.
 type RuleSet struct {
@@ -182,6 +190,7 @@ type RuleSet struct {
 	Rules         []*CompiledRule        `protobuf:"bytes,3,rep,name=rules,proto3" json:"rules,omitempty"`
 	ExpectedHash  string                 `protobuf:"bytes,4,opt,name=expected_hash,json=expectedHash,proto3" json:"expected_hash,omitempty"` // hash of the normalized set, for drift checks
 	Sets          []*AddressSet          `protobuf:"bytes,5,rep,name=sets,proto3" json:"sets,omitempty"`                                     // 期望地址组态,随版本原子下发到 Agent
+	CustomChains  []*CustomChainDef      `protobuf:"bytes,6,rep,name=custom_chains,json=customChains,proto3" json:"custom_chains,omitempty"` // 用户自定义子链定义,随版本下发
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -251,6 +260,13 @@ func (x *RuleSet) GetSets() []*AddressSet {
 	return nil
 }
 
+func (x *RuleSet) GetCustomChains() []*CustomChainDef {
+	if x != nil {
+		return x.CustomChains
+	}
+	return nil
+}
+
 // AddressSet 是下发给 Agent 的地址组期望态:一个组对应节点上的一个 ipset / nft set
 // (MYFW-<name>),Policy 通过 source_group / destination_group 引用其名称。
 type AddressSet struct {
@@ -313,11 +329,73 @@ func (x *AddressSet) GetMembers() []string {
 	return nil
 }
 
+// CustomChainDef 用户自定义子链定义:子链 MYFW-<name> 从父链 jump 进来,
+// Policy 通过 chain 字段指定规则落到子链,用于规则按业务归类。
+type CustomChainDef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`     // 子链名(MYFW-<name>)
+	Parent        string                 `protobuf:"bytes,2,opt,name=parent,proto3" json:"parent,omitempty"` // 父链(MYFW-INPUT/FORWARD/OUTPUT/PREROUTING/POSTROUTING/MANGLE)
+	Table         string                 `protobuf:"bytes,3,opt,name=table,proto3" json:"table,omitempty"`   // 表(filter/nat/mangle),与父链一致
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CustomChainDef) Reset() {
+	*x = CustomChainDef{}
+	mi := &file_myfw_v1_rule_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CustomChainDef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CustomChainDef) ProtoMessage() {}
+
+func (x *CustomChainDef) ProtoReflect() protoreflect.Message {
+	mi := &file_myfw_v1_rule_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CustomChainDef.ProtoReflect.Descriptor instead.
+func (*CustomChainDef) Descriptor() ([]byte, []int) {
+	return file_myfw_v1_rule_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CustomChainDef) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CustomChainDef) GetParent() string {
+	if x != nil {
+		return x.Parent
+	}
+	return ""
+}
+
+func (x *CustomChainDef) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
 var File_myfw_v1_rule_proto protoreflect.FileDescriptor
 
 const file_myfw_v1_rule_proto_rawDesc = "" +
 	"\n" +
-	"\x12myfw/v1/rule.proto\x12\amyfw.v1\x1a\x14myfw/v1/common.proto\"\xd9\x03\n" +
+	"\x12myfw/v1/rule.proto\x12\amyfw.v1\x1a\x14myfw/v1/common.proto\"\xef\x03\n" +
 	"\fCompiledRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
 	"\tdirection\x18\x02 \x01(\x0e2\x12.myfw.v1.DirectionR\tdirection\x12\x16\n" +
@@ -335,18 +413,24 @@ const file_myfw_v1_rule_proto_rawDesc = "" +
 	"\fsource_group\x18\f \x01(\tR\vsourceGroup\x12+\n" +
 	"\x11destination_group\x18\r \x01(\tR\x10destinationGroup\x12\x1d\n" +
 	"\n" +
-	"match_mark\x18\x0e \x01(\rR\tmatchMark\"\xb7\x01\n" +
+	"match_mark\x18\x0e \x01(\rR\tmatchMark\x12\x14\n" +
+	"\x05chain\x18\x0f \x01(\tR\x05chain\"\xf5\x01\n" +
 	"\aRuleSet\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x03R\aversion\x12+\n" +
 	"\x05rules\x18\x03 \x03(\v2\x15.myfw.v1.CompiledRuleR\x05rules\x12#\n" +
 	"\rexpected_hash\x18\x04 \x01(\tR\fexpectedHash\x12'\n" +
-	"\x04sets\x18\x05 \x03(\v2\x13.myfw.v1.AddressSetR\x04sets\"N\n" +
+	"\x04sets\x18\x05 \x03(\v2\x13.myfw.v1.AddressSetR\x04sets\x12<\n" +
+	"\rcustom_chains\x18\x06 \x03(\v2\x17.myfw.v1.CustomChainDefR\fcustomChains\"N\n" +
 	"\n" +
 	"AddressSet\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x18\n" +
-	"\amembers\x18\x03 \x03(\tR\amembersB\"Z iptables-tool/api/myfw/v1;myfwv1b\x06proto3"
+	"\amembers\x18\x03 \x03(\tR\amembers\"R\n" +
+	"\x0eCustomChainDef\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06parent\x18\x02 \x01(\tR\x06parent\x12\x14\n" +
+	"\x05table\x18\x03 \x01(\tR\x05tableB\"Z iptables-tool/api/myfw/v1;myfwv1b\x06proto3"
 
 var (
 	file_myfw_v1_rule_proto_rawDescOnce sync.Once
@@ -360,26 +444,28 @@ func file_myfw_v1_rule_proto_rawDescGZIP() []byte {
 	return file_myfw_v1_rule_proto_rawDescData
 }
 
-var file_myfw_v1_rule_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_myfw_v1_rule_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_myfw_v1_rule_proto_goTypes = []any{
-	(*CompiledRule)(nil), // 0: myfw.v1.CompiledRule
-	(*RuleSet)(nil),      // 1: myfw.v1.RuleSet
-	(*AddressSet)(nil),   // 2: myfw.v1.AddressSet
-	(Direction)(0),       // 3: myfw.v1.Direction
-	(Protocol)(0),        // 4: myfw.v1.Protocol
-	(Action)(0),          // 5: myfw.v1.Action
+	(*CompiledRule)(nil),   // 0: myfw.v1.CompiledRule
+	(*RuleSet)(nil),        // 1: myfw.v1.RuleSet
+	(*AddressSet)(nil),     // 2: myfw.v1.AddressSet
+	(*CustomChainDef)(nil), // 3: myfw.v1.CustomChainDef
+	(Direction)(0),         // 4: myfw.v1.Direction
+	(Protocol)(0),          // 5: myfw.v1.Protocol
+	(Action)(0),            // 6: myfw.v1.Action
 }
 var file_myfw_v1_rule_proto_depIdxs = []int32{
-	3, // 0: myfw.v1.CompiledRule.direction:type_name -> myfw.v1.Direction
-	4, // 1: myfw.v1.CompiledRule.protocol:type_name -> myfw.v1.Protocol
-	5, // 2: myfw.v1.CompiledRule.action:type_name -> myfw.v1.Action
+	4, // 0: myfw.v1.CompiledRule.direction:type_name -> myfw.v1.Direction
+	5, // 1: myfw.v1.CompiledRule.protocol:type_name -> myfw.v1.Protocol
+	6, // 2: myfw.v1.CompiledRule.action:type_name -> myfw.v1.Action
 	0, // 3: myfw.v1.RuleSet.rules:type_name -> myfw.v1.CompiledRule
 	2, // 4: myfw.v1.RuleSet.sets:type_name -> myfw.v1.AddressSet
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	3, // 5: myfw.v1.RuleSet.custom_chains:type_name -> myfw.v1.CustomChainDef
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_myfw_v1_rule_proto_init() }
@@ -394,7 +480,7 @@ func file_myfw_v1_rule_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_myfw_v1_rule_proto_rawDesc), len(file_myfw_v1_rule_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

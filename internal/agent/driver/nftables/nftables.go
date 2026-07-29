@@ -107,6 +107,14 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 		}
 	}
 
+	// 同步用户自定义子链(nft 后端当前为 no-op,待 nft 环境联调)
+	if err := d.syncCustomChains(ctx, ruleSet.GetCustomChains()); err != nil {
+		return "", err
+	}
+	chainToTable := make(map[string]string)
+	for _, cc := range ruleSet.GetCustomChains() {
+		chainToTable[cc.Name] = cc.Table
+	}
 	rules := ruleSet.GetRules()
 	sorted := make([]*myfwv1.CompiledRule, len(rules))
 	copy(sorted, rules)
@@ -118,7 +126,7 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 	})
 
 	for _, r := range sorted {
-		family, chain, err := targetChainFor(r)
+		family, chain, err := targetChainForRule(r, chainToTable)
 		if err != nil {
 			return "", err
 		}
@@ -298,6 +306,17 @@ func targetChainFor(r *myfwv1.CompiledRule) (string, string, error) {
 	}
 	return "", "", fmt.Errorf("cannot map rule %q: direction=%v action=%v",
 		r.Id, r.Direction, r.Action)
+}
+
+// targetChainForRule nft 后端暂不支持自定义子链(table/family 映射待联调),
+// 回退到 targetChainFor。chainToTable 参数保留以对齐 iptables driver 签名。
+func targetChainForRule(r *myfwv1.CompiledRule, chainToTable map[string]string) (string, string, error) {
+	return targetChainFor(r)
+}
+
+// syncCustomChains nft 后端同步自定义子链:当前为 no-op(nft family/table 映射待联调)。
+func (d *Driver) syncCustomChains(ctx context.Context, chains []*myfwv1.CustomChainDef) error {
+	return nil
 }
 
 func compileRule(r *myfwv1.CompiledRule) (string, error) {

@@ -26,15 +26,15 @@ type Compiler struct {
 func New(db *gorm.DB) *Compiler { return &Compiler{DB: db} }
 
 // CompileForNode returns the ordered list of CompiledRule that apply to
-// nodeID, plus the AddressSets referenced by those rules, derived from every
-// ENABLED policy whose targets include the node. Both slices are stable
-// (rules sorted by priority ASC then policy id ASC; sets sorted by name), so
+// nodeID, plus the AddressSets and CustomChains referenced, derived from every
+// ENABLED policy whose targets include the node. All slices are stable
+// (rules by priority ASC then policy id ASC; sets/customChains by name), so
 // the same input state always compiles to the same hash on the Agent side.
-func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, []*myfwv1.AddressSet, error) {
+func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, []*myfwv1.AddressSet, []*myfwv1.CustomChainDef, error) {
 	// Load node (needed for label matching, once we support labels).
 	var node model.Node
 	if err := c.DB.WithContext(ctx).Where("id = ?", nodeID).First(&node).Error; err != nil {
-		return nil, nil, fmt.Errorf("compiler: load node %s: %w", nodeID, err)
+		return nil, nil, nil, fmt.Errorf("compiler: load node %s: %w", nodeID, err)
 	}
 	nodeLabels := parseLabels(node.Labels)
 
@@ -46,7 +46,7 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		Order("priority ASC, id ASC").
 		Find(&policies).Error
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	out := make([]*myfwv1.CompiledRule, 0, len(policies))
@@ -55,14 +55,14 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		p := &policies[i]
 		spec, err := policy.ParseTargets(p)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if !matches(&node, nodeLabels, spec) {
 			continue
 		}
 		cr, err := compileOne(p)
 		if err != nil {
-			return nil, nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
+			return nil, nil, nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
 		}
 		out = append(out, cr)
 		// 收集策略引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
@@ -75,9 +75,31 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 	}
 	sets, err := c.loadAddressSets(ctx, setNames)
 	if err != nil {
-		return nil, nil, fmt.Errorf("compiler: load address sets: %w", err)
+		return nil, nil, nil, fmt.Errorf("compiler: load address sets: %w", err)
 	}
-	return out, sets, nil
+	customChains, err := c.loadCustomChains(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("compiler: load custom chains: %w", err)
+	}
+	return out, sets, customChains, nil
+}
+
+// loadCustomChains 加载所有启用的自定义子链,转为下发的 CustomChainDef 期望态。
+// 按 name 排序保证输出稳定。
+func (c *Compiler) loadCustomChains(ctx context.Context) ([]*myfwv1.CustomChainDef, error) {
+	var chains []model.CustomChain
+	if err := c.DB.WithContext(ctx).Where("enabled = ?", true).Order("name ASC").Find(&chains).Error; err != nil {
+		return nil, err
+	}
+	out := make([]*myfwv1.CustomChainDef, 0, len(chains))
+	for i := range chains {
+		out = append(out, &myfwv1.CustomChainDef{
+			Name:   chains[i].Name,
+			Parent: chains[i].Parent,
+			Table:  chains[i].Table,
+		})
+	}
+	return out, nil
 }
 
 // loadAddressSets 按 name 集合加载 AddressGroup,转为下发的 AddressSet 期望态。
@@ -243,6 +265,7 @@ func compileOne(p *model.Policy) (*myfwv1.CompiledRule, error) {
 		SourceGroup:      p.SourceGroup,
 		DestinationGroup: p.DestinationGroup,
 		MatchMark:        p.MatchMark,
+		Chain:            p.Chain,
 		Priority:         int32(p.Priority),
 		Description:      p.Description,
 	}, nil

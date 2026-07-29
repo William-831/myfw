@@ -164,6 +164,16 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 		}
 	}
 
+	// 同步用户自定义子链:创建 + 父链 jump + flush(准备重建规则)
+	if err := d.syncCustomChains(ctx, ruleSet.GetCustomChains()); err != nil {
+		return "", err
+	}
+	// 子链名 -> table 映射,供 targetChainForRule 查询
+	chainToTable := make(map[string]string)
+	for _, cc := range ruleSet.GetCustomChains() {
+		chainToTable[cc.Name] = cc.Table
+	}
+
 	// Sort by priority (asc) then by ID for determinism, so identical inputs
 	// produce identical iptables state (and identical hashes).
 	rules := ruleSet.GetRules()
@@ -178,7 +188,7 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 
 	// Emit each rule as an -A into the corresponding managed chain.
 	for _, r := range sorted {
-		table, chain, err := targetChainFor(r)
+		table, chain, err := targetChainForRule(r, chainToTable)
 		if err != nil {
 			return "", err
 		}
@@ -227,6 +237,28 @@ func (d *Driver) ipsetRun(ctx context.Context, args ...string) (string, error) {
 			strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// syncCustomChains 同步用户自定义子链:创建(-N 幂等)+ 父链追加 jump(-A,幂等)+
+// flush 子链(准备重建规则)。子链名 MYFW-<name>,从父链 jump 进来。
+func (d *Driver) syncCustomChains(ctx context.Context, chains []*myfwv1.CustomChainDef) error {
+	for _, cc := range chains {
+		name := "MYFW-" + cc.Name
+		if _, err := d.Exec.Run(ctx, "-t", cc.Table, "-N", name); err != nil {
+			if !isChainExists(err) {
+				return fmt.Errorf("create custom chain %s/%s: %w", cc.Table, name, err)
+			}
+		}
+		if _, err := d.Exec.Run(ctx, "-t", cc.Table, "-C", cc.Parent, "-j", name); err != nil {
+			if _, err := d.Exec.Run(ctx, "-t", cc.Table, "-A", cc.Parent, "-j", name); err != nil {
+				return fmt.Errorf("append jump %s -> %s: %w", cc.Parent, name, err)
+			}
+		}
+		if _, err := d.Exec.Run(ctx, "-t", cc.Table, "-F", name); err != nil {
+			return fmt.Errorf("flush custom chain %s/%s: %w", cc.Table, name, err)
+		}
+	}
+	return nil
 }
 
 // Snapshot dumps every managed chain via `-S` and joins the output into a
@@ -424,6 +456,19 @@ func targetChainFor(r *myfwv1.CompiledRule) (string, string, error) {
 	}
 	return "", "", fmt.Errorf("cannot map rule %q: direction=%v action=%v",
 		r.Id, r.Direction, r.Action)
+}
+
+// targetChainForRule 优先用规则指定的子链(r.Chain),table 从 chainToTable 查;
+// 未指定则回退到 targetChainFor(按 action/direction 落父链)。
+func targetChainForRule(r *myfwv1.CompiledRule, chainToTable map[string]string) (string, string, error) {
+	if r.Chain != "" {
+		table, ok := chainToTable[r.Chain]
+		if !ok {
+			return "", "", fmt.Errorf("rule %q: unknown custom chain %q", r.Id, r.Chain)
+		}
+		return table, "MYFW-" + r.Chain, nil
+	}
+	return targetChainFor(r)
 }
 
 // compileRule turns a CompiledRule into a list of iptables args (starting

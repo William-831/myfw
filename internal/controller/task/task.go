@@ -78,7 +78,7 @@ func (d *Dispatcher) ApplyToNodes(ctx context.Context, nodeIDs []string, opts Ap
 	// --- Dispatch ---------------------------------------------------------
 	for i, id := range nodeIDs {
 		outcomes[i].NodeID = id
-		rules, sets, err := d.Comp.CompileForNode(ctx, id)
+		rules, sets, customChains, err := d.Comp.CompileForNode(ctx, id)
 		if err != nil {
 			outcomes[i].Error = "compile: " + err.Error()
 			continue
@@ -92,10 +92,11 @@ func (d *Dispatcher) ApplyToNodes(ctx context.Context, nodeIDs []string, opts Ap
 				Apply: &myfwv1.ApplyTask{
 					TaskId: tid,
 					RuleSet: &myfwv1.RuleSet{
-						NodeId:  id,
-						Version: time.Now().Unix(),
-						Rules:   rules,
-						Sets:    sets,
+						NodeId:       id,
+						Version:      time.Now().Unix(),
+						Rules:        rules,
+						Sets:         sets,
+						CustomChains: customChains,
 					},
 					ConfirmDeadlineUnix: time.Now().Add(opts.ConfirmDeadline).Unix(),
 				},

@@ -355,6 +355,11 @@
         <el-form-item label="分组">
           <el-input v-model="policyForm.group" placeholder="逻辑分组名,如 whitelist / business(可选)" />
         </el-form-item>
+        <el-form-item label="目标链">
+          <el-select v-model="policyForm.chain" clearable placeholder="自定义子链(可选,默认落父链)">
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="优先级" prop="priority">
           <el-slider v-model="policyForm.priority" :min="1" :max="100" :step="1" show-input />
         </el-form-item>
@@ -484,7 +489,7 @@ import {
   submitPolicyChange, getPolicyVersions, approvePolicyVersion, rejectPolicyVersion,
   applyPolicy as apiApplyPolicy, applyAllPolicies, getNodes,
   batchTogglePolicies, batchDeletePolicies, batchApplyToNodes,
-  detectConflicts, getChainTree, getAddressGroups
+  detectConflicts, getChainTree, getAddressGroups, getCustomChains
 } from '@/api'
 
 // 状态
@@ -496,6 +501,7 @@ const expertMode = ref(false)
 const policies = ref([])
 const allNodes = ref([])
 const addressGroups = ref([])
+const customChains = ref([])
 const selectedIds = ref([])
 const conflicts = ref([])
 
@@ -539,6 +545,7 @@ const policyForm = reactive({
   destination_group: '',
   match_mark: 0,
   group: '',
+  chain: '',
   priority: 50,
   description: '',
   targets: { node_ids: [], labels: [] },
@@ -551,12 +558,18 @@ const buildPreviewCommand = (f) => {
   // 表/链映射:DNAT/SNAT/MARK 走 nat/mangle,其余按方向走 filter
   let table = 'filter'
   let chain = 'MYFW-INPUT'
-  switch (f.action) {
-    case 'DNAT': table = 'nat'; chain = 'MYFW-PREROUTING'; break
-    case 'SNAT': table = 'nat'; chain = 'MYFW-POSTROUTING'; break
-    case 'MARK': table = 'mangle'; chain = 'MYFW-MANGLE'; break
-    default:
-      chain = { INBOUND: 'MYFW-INPUT', OUTBOUND: 'MYFW-OUTPUT', FORWARD: 'MYFW-FORWARD' }[f.direction] || 'MYFW-INPUT'
+  if (f.chain) {
+    chain = `MYFW-${f.chain}`
+    const cc = (customChains.value || []).find(c => c.name === f.chain)
+    table = cc ? cc.table : 'filter'
+  } else {
+    switch (f.action) {
+      case 'DNAT': table = 'nat'; chain = 'MYFW-PREROUTING'; break
+      case 'SNAT': table = 'nat'; chain = 'MYFW-POSTROUTING'; break
+      case 'MARK': table = 'mangle'; chain = 'MYFW-MANGLE'; break
+      default:
+        chain = { INBOUND: 'MYFW-INPUT', OUTBOUND: 'MYFW-OUTPUT', FORWARD: 'MYFW-FORWARD' }[f.direction] || 'MYFW-INPUT'
+    }
   }
   const parts = ['iptables', '-t', table, '-A', chain]
   if (f.source) parts.push('-s', f.source)
@@ -692,10 +705,11 @@ const formatDate = (d) => {
 const loadData = async () => {
   loading.value = true
   try {
-    const [policiesData, nodesData, groupsData] = await Promise.all([getPolicies(), getNodes(), getAddressGroups()])
+    const [policiesData, nodesData, groupsData, chainsData] = await Promise.all([getPolicies(), getNodes(), getAddressGroups(), getCustomChains()])
     policies.value = (policiesData.policies || []).map(p => ({ ...p, _applying: false }))
     allNodes.value = nodesData.nodes || []
     addressGroups.value = groupsData.address_groups || []
+    customChains.value = chainsData.custom_chains || []
   } catch {
     ElMessage.error('加载数据失败')
   } finally {
@@ -802,7 +816,7 @@ const openAddDialog = () => {
     name: '', direction: 'INBOUND', source: '', destination: '',
     protocol: 'ANY', port_range: '', action: 'ACCEPT',
     mark: 0, nat_to: '', source_group: '', destination_group: '',
-    match_mark: 0, group: '', priority: 50, description: '',
+    match_mark: 0, group: '', chain: '', priority: 50, description: '',
     targets: { node_ids: [], labels: [] }, enabled: true
   })
   selectedNodeIds.value = []
@@ -815,7 +829,7 @@ const editPolicy = (p) => {
     destination: p.destination, protocol: p.protocol, port_range: p.port_range,
     action: p.action, mark: p.mark || 0, nat_to: p.nat_to || '',
     source_group: p.source_group || '', destination_group: p.destination_group || '',
-    match_mark: p.match_mark || 0, group: p.group || '',
+    match_mark: p.match_mark || 0, group: p.group || '', chain: p.chain || '',
     priority: p.priority, description: p.description || '', enabled: p.enabled
   })
   selectedNodeIds.value = getPolicyTargets(p)

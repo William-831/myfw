@@ -44,6 +44,7 @@ type PolicyInput struct {
 	DestinationGroup string      `json:"destination_group"`
 	MatchMark        uint32      `json:"match_mark"`
 	Group            string      `json:"group"`
+	Chain            string      `json:"chain"`
 	Priority         int         `json:"priority"`
 	Description      string      `json:"description"`
 	Targets          TargetsSpec `json:"targets"`
@@ -75,6 +76,7 @@ func (s *Service) Create(ctx context.Context, in PolicyInput, author string) (*m
 		DestinationGroup: in.DestinationGroup,
 		MatchMark:        in.MatchMark,
 		Group:            in.Group,
+		Chain:            in.Chain,
 		Priority:         in.Priority,
 		Description:      in.Description,
 		Targets:          string(targetsJSON),
@@ -126,6 +128,7 @@ func (s *Service) Update(ctx context.Context, id uint, in PolicyInput, author st
 		p.DestinationGroup = in.DestinationGroup
 		p.MatchMark = in.MatchMark
 		p.Group = in.Group
+		p.Chain = in.Chain
 		p.Priority = in.Priority
 		p.Description = in.Description
 		p.Targets = string(targetsJSON)
@@ -285,6 +288,7 @@ func (s *Service) SubmitChange(ctx context.Context, id uint, in PolicyInput, aut
 		DestinationGroup: in.DestinationGroup,
 		MatchMark:        in.MatchMark,
 		Group:            in.Group,
+		Chain:            in.Chain,
 		Priority:         in.Priority,
 		Description:      in.Description,
 		Targets:          string(targetsJSON),

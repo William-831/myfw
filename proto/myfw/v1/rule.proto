@@ -25,6 +25,7 @@ message CompiledRule {
   string source_group = 12;      // 引用 AddressSet.name,编译为 set 匹配(多 CIDR)
   string destination_group = 13; // 引用 AddressSet.name
   uint32 match_mark = 14;        // 匹配条件:已打标(与 action=MARK 打标正交)
+  string chain = 15;             // 指定落到的子链(MYFW-<name>),空则按 action/direction 落父链
 }
 
 // RuleSet is the full desired state for a node's MYFW namespace at a given
@@ -35,6 +36,7 @@ message RuleSet {
   repeated CompiledRule rules = 3;
   string expected_hash = 4;      // hash of the normalized set, for drift checks
   repeated AddressSet sets = 5;  // 期望地址组态,随版本原子下发到 Agent
+  repeated CustomChainDef custom_chains = 6;  // 用户自定义子链定义,随版本下发
 }
 
 // AddressSet 是下发给 Agent 的地址组期望态:一个组对应节点上的一个 ipset / nft set
@@ -43,4 +45,12 @@ message AddressSet {
   string name = 1;               // whitelist / blacklist / 自定义,节点集合名 MYFW-<name>
   string kind = 2;               // whitelist | blacklist | custom
   repeated string members = 3;   // CIDR 列表
+}
+
+// CustomChainDef 用户自定义子链定义:子链 MYFW-<name> 从父链 jump 进来,
+// Policy 通过 chain 字段指定规则落到子链,用于规则按业务归类。
+message CustomChainDef {
+  string name = 1;               // 子链名(MYFW-<name>)
+  string parent = 2;             // 父链(MYFW-INPUT/FORWARD/OUTPUT/PREROUTING/POSTROUTING/MANGLE)
+  string table = 3;              // 表(filter/nat/mangle),与父链一致
 }

@@ -22,6 +22,10 @@
           <el-icon><Coin /></el-icon>
           <span>地址组</span>
         </el-menu-item>
+        <el-menu-item index="/custom-chains">
+          <el-icon><Share /></el-icon>
+          <span>自定义链</span>
+        </el-menu-item>
         <el-menu-item index="/approve">
           <el-icon><CircleCheck /></el-icon>
           <span>审批中心</span>
@@ -90,6 +94,7 @@ import {
   CircleCheck,
   Document,
   Coin,
+  Share,
   User,
   ArrowDown,
   Key,
@@ -107,6 +112,7 @@ const pageTitles = {
   '/nodes': '节点管理',
   '/policies': '策略管理',
   '/address-groups': '地址组管理',
+  '/custom-chains': '自定义链',
   '/approve': '审批中心',
   '/audit': '审计日志'
 }

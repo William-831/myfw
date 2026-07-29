@@ -59,6 +59,13 @@ export const createAddressGroup = (data) => service.post('/v1/address-groups', d
 export const updateAddressGroup = (id, data) => service.put(`/v1/address-groups/${id}`, data)
 export const deleteAddressGroup = (id) => service.delete(`/v1/address-groups/${id}`)
 
+// 自定义链(业务子链 MYFW-<name>)
+export const getCustomChains = () => service.get('/v1/custom-chains')
+export const getCustomChain = (id) => service.get(`/v1/custom-chains/${id}`)
+export const createCustomChain = (data) => service.post('/v1/custom-chains', data)
+export const updateCustomChain = (id, data) => service.put(`/v1/custom-chains/${id}`, data)
+export const deleteCustomChain = (id) => service.delete(`/v1/custom-chains/${id}`)
+
 // 策略批量操作
 export const batchTogglePolicies = (ids, enabled) =>
   service.post('/v1/iptables/batch-toggle', { ids, enabled })

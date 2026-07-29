@@ -33,6 +33,11 @@ const routes = [
         component: () => import('@/views/AddressGroups.vue')
       },
       {
+        path: 'custom-chains',
+        name: 'CustomChains',
+        component: () => import('@/views/CustomChains.vue')
+      },
+      {
         path: 'approve',
         name: 'Approve',
         component: () => import('@/views/Approve.vue')
