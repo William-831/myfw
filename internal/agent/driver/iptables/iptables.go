@@ -338,6 +338,12 @@ func (d *Driver) Restore(ctx context.Context, payload string) error {
 		if line == "" {
 			continue
 		}
+		if strings.HasPrefix(line, "# ipset/") {
+			// ipset 内容不 Restore(由 Apply 的 syncSets 重建),跳过整段,避免把
+			// `Name: MYFW-whitelist` 等 ipset list 行当 iptables 规则执行而报错。
+			curTable, curChain = "ipset", ""
+			continue
+		}
 		if strings.HasPrefix(line, "# ") {
 			parts := strings.SplitN(strings.TrimPrefix(line, "# "), "/", 2)
 			if len(parts) != 2 {
@@ -345,6 +351,9 @@ func (d *Driver) Restore(ctx context.Context, payload string) error {
 			}
 			curTable, curChain = parts[0], parts[1]
 			continue
+		}
+		if curTable == "ipset" {
+			continue // 跳过 ipset list 内容
 		}
 		if curTable == "" || curChain == "" {
 			return fmt.Errorf("restore: rule outside a chain block: %q", line)

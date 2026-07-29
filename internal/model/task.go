@@ -21,6 +21,8 @@ const (
 type Task struct {
 	ID           string     `gorm:"primaryKey;size:64" json:"id"`
 	NodeID       string     `gorm:"size:64;index" json:"node_id"`
+	PolicyID     uint       `gorm:"index" json:"policy_id"`
+	PolicyName   string     `gorm:"size:255" json:"policy_name"` // 策略名快照,审批展示用(避免 policy 改/删后丢失)
 	Status       TaskStatus `gorm:"size:24;index" json:"status"`
 	Version      int64      `json:"version"`
 	DiffBefore   string     `gorm:"type:text" json:"diff_before"`

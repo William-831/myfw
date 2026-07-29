@@ -43,6 +43,7 @@
         <el-option label="已启用" :value="true" />
         <el-option label="已禁用" :value="false" />
       </el-select>
+      <el-input v-model="filterPort" placeholder="端口" clearable style="width: 120px" @input="handleSearch" />
       <!-- 主机筛选 -->
       <el-popover placement="bottom" :width="400" trigger="click">
         <template #reference>
@@ -511,6 +512,7 @@ const filterDirection = ref('')
 const filterAction = ref('')
 const filterEnabled = ref('')
 const selectedHosts = ref([])
+const filterPort = ref('')
 const hostSearch = ref('')
 
 // 对话框
@@ -636,6 +638,7 @@ const filteredPolicies = computed(() => {
     if (filterDirection.value && p.direction !== filterDirection.value) return false
     if (filterAction.value && p.action !== filterAction.value) return false
     if (filterEnabled.value !== '' && p.enabled !== filterEnabled.value) return false
+    if (filterPort.value && !(p.port_range || '').includes(filterPort.value)) return false
     // 主机筛选
     if (selectedHosts.value.length > 0) {
       const targets = getPolicyTargets(p)
@@ -724,6 +727,7 @@ const resetSearch = () => {
   filterDirection.value = ''
   filterAction.value = ''
   filterEnabled.value = ''
+  filterPort.value = ''
   selectedHosts.value = []
 }
 

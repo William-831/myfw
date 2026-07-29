@@ -128,14 +128,25 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		opts.ConfirmDeadline = co.DefaultConfirmDeadline
 	}
 
+	// 查策略名(快照存入 Task,审批展示用,避免 policy 改/删后丢失)
+	var policyName string
+	if policyID > 0 {
+		var p model.Policy
+		if err := co.DB.WithContext(ctx).Select("name").First(&p, policyID).Error; err == nil {
+			policyName = p.Name
+		}
+	}
+
 	tasks := make([]*model.Task, 0, len(nodeIDs))
 	err := co.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, id := range nodeIDs {
 			t := &model.Task{
-				ID:      "t_" + uuid.NewString(),
-				NodeID:  id,
-				Status:  model.TaskPendingApproval,
-				Version: time.Now().Unix(),
+				ID:         "t_" + uuid.NewString(),
+				NodeID:     id,
+				PolicyID:   policyID,
+				PolicyName: policyName,
+				Status:     model.TaskPendingApproval,
+				Version:    time.Now().Unix(),
 			}
 			if err := tx.Create(t).Error; err != nil {
 				return err
@@ -353,14 +364,17 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		co.audit(ctx, "agent", "task.apply_failed", []*model.Task{&t}, map[string]any{"msg": res.Message})
 		return
 	}
-	t.Status = model.TaskConfirmWait
+	// apply 成功即生效:直接 CONFIRMED,不走 confirm_wait 自动回滚(简化流程,
+	// 避免用户忘了 confirm 导致超时回滚看似"应用失败")。确认保护期作为高危场景
+	// 可选,默认关闭。
+	t.Status = model.TaskConfirmed
 	t.ResultHash = res.ResultHash
 	if err := co.DB.WithContext(ctx).Save(&t).Error; err != nil {
-		co.Log.Warn("save confirm_wait", "task_id", t.ID, "err", err)
+		co.Log.Warn("save confirmed", "task_id", t.ID, "err", err)
 		return
 	}
 	co.audit(ctx, "agent", "task.applying_ok", []*model.Task{&t}, map[string]any{"hash": res.ResultHash})
-	co.armRollbackTimer(&t)
+	co.sendConfirmToAgent(ctx, &t) // 释放 Agent 保留的快照
 }
 
 // armRollbackTimer schedules an auto-rollback at t.ConfirmDeadline. If the
