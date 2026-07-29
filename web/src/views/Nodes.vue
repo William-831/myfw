@@ -306,7 +306,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="链">
-          <el-select v-model="ruleOpForm.chain" filterable allow-create default-first-option style="width: 200px" placeholder="如 INPUT">
+          <el-select v-model="ruleOpForm.chain" filterable allow-create default-first-option style="width: 200px" placeholder="如 MYFW-INPUT">
             <el-option v-for="ch in chainOptions" :key="ch" :label="ch" :value="ch" />
           </el-select>
         </el-form-item>
@@ -737,17 +737,17 @@ const ruleOpSaving = ref(false)
 const ruleOpMode = ref('structured')
 const ruleOpTitle = ref('')
 const ruleOpForm = reactive({
-  op: 'add', table: 'filter', chain: 'INPUT', position: 1,
+  op: 'add', table: 'filter', chain: 'MYFW-INPUT', position: 1,
   rule_line: '', action: 'ACCEPT', protocol: 'tcp',
   source: '', destination: '', port: ''
 })
 
-// 各表标准链,用于链下拉选项(filterable + allow-create 兼容 MYFW-* 等自定义链回显)
+// 各表 MYFW 托管链,用于链下拉选项(节点级直操作只允许 MYFW-*,内置链由平台 jump 接管)
 const CHAINS_BY_TABLE = {
-  filter: ['INPUT', 'FORWARD', 'OUTPUT'],
-  nat: ['PREROUTING', 'INPUT', 'OUTPUT', 'POSTROUTING'],
-  mangle: ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT', 'POSTROUTING'],
-  raw: ['PREROUTING', 'OUTPUT']
+  filter: ['MYFW-INPUT', 'MYFW-OUTPUT', 'MYFW-FORWARD'],
+  nat: ['MYFW-PREROUTING', 'MYFW-POSTROUTING'],
+  mangle: ['MYFW-MANGLE'],
+  raw: []
 }
 const chainOptions = computed(() => CHAINS_BY_TABLE[ruleOpForm.table] || [])
 
@@ -756,7 +756,7 @@ const handleAddRule = () => {
   ruleOpMode.value = 'structured'
   ruleOpForm.op = 'add'
   ruleOpForm.table = activeTable.value || 'filter'
-  ruleOpForm.chain = 'INPUT'
+  ruleOpForm.chain = 'MYFW-INPUT'
   ruleOpForm.position = 1
   ruleOpForm.rule_line = ''
   ruleOpForm.action = 'ACCEPT'
@@ -772,7 +772,7 @@ const handleEditRule = (row) => {
   ruleOpMode.value = 'expert'
   ruleOpForm.op = 'replace'
   ruleOpForm.table = activeTable.value || row.table_type || 'filter'
-  ruleOpForm.chain = row.chain || 'INPUT'
+  ruleOpForm.chain = row.chain || 'MYFW-INPUT'
   ruleOpForm.position = row.index || 1
   ruleOpForm.rule_line = row.rule_line || ''
   ruleOpDialogVisible.value = true
@@ -782,7 +782,7 @@ const handleDeleteRule = (row) => {
   ruleOpTitle.value = '删除规则'
   ruleOpForm.op = 'delete'
   ruleOpForm.table = activeTable.value || row.table_type || 'filter'
-  ruleOpForm.chain = row.chain || 'INPUT'
+  ruleOpForm.chain = row.chain || 'MYFW-INPUT'
   ruleOpForm.position = row.index || 1
   ruleOpForm.rule_line = row.rule_line || ''
   ruleOpDialogVisible.value = true

@@ -190,6 +190,11 @@ func buildIptablesArgs(op *myfwv1.RuleOperation) ([]string, error) {
 	if chain == "" {
 		return nil, errors.New("chain required")
 	}
+	// 收敛 MYFW:节点级直操作只能改 MYFW-* 自定义链,拒绝直接操作内置链
+	// (INPUT/FORWARD/OUTPUT/PREROUTING/POSTROUTING),内置链由平台 jump 接管。
+	if !strings.HasPrefix(chain, "MYFW-") {
+		return nil, errors.New("chain must be MYFW-* (内置链由平台 jump 接管,不直接操作)")
+	}
 	var flag string
 	switch op.Op {
 	case myfwv1.RuleOpType_RULE_OP_ADD:
