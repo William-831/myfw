@@ -1,7 +1,7 @@
 # 开发方案
 
-> 版本：v0.2
-> 更新日期：2026-07-27
+> 版本：v0.3
+> 更新日期：2026-07-28
 > 配套文档：[design.md](./design.md)、[deployment.md](./deployment.md)、[progress.md](./progress.md)
 
 ---
