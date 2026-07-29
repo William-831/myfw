@@ -264,38 +264,23 @@ func (c *Collector) CollectIptablesRulesForHTTP() (map[string]map[string][]strin
 			continue
 		}
 
-		lines := strings.Split(string(output), "\n")
-		currentChain := ""
-		var rules []string
-
-		for _, line := range lines {
+		if result[table] == nil {
+			result[table] = make(map[string][]string)
+		}
+		// iptables -S 每行格式 "-A CHAIN <spec>"(或 -N/-P 声明,无规则体)。
+		// 直接按 -A 行自带的真实链名归类,不依赖 -N/-P 的声明顺序,
+		// 否则所有规则会被错归到最后一个 -N/-P 链(如 MYFW-OUTPUT)。
+		for _, line := range strings.Split(string(output), "\n") {
 			line = strings.TrimSpace(line)
-			if line == "" {
+			if !strings.HasPrefix(line, "-A ") {
 				continue
 			}
-
-			if strings.HasPrefix(line, "-N ") || strings.HasPrefix(line, "-P ") {
-				if currentChain != "" && len(rules) > 0 {
-					if result[table] == nil {
-						result[table] = make(map[string][]string)
-					}
-					result[table][currentChain] = rules
-				}
-				parts := strings.SplitN(line, " ", 2)
-				if len(parts) == 2 {
-					currentChain = parts[1]
-					rules = nil
-				}
-			} else if strings.HasPrefix(line, "-A ") {
-				rules = append(rules, line)
+			parts := strings.SplitN(line, " ", 3) // ["-A", "CHAIN", "<spec>"]
+			if len(parts) < 2 {
+				continue
 			}
-		}
-
-		if currentChain != "" && len(rules) > 0 {
-			if result[table] == nil {
-				result[table] = make(map[string][]string)
-			}
-			result[table][currentChain] = rules
+			chain := parts[1]
+			result[table][chain] = append(result[table][chain], line)
 		}
 	}
 
