@@ -78,7 +78,7 @@ func (d *Dispatcher) ApplyToNodes(ctx context.Context, nodeIDs []string, opts Ap
 	// --- Dispatch ---------------------------------------------------------
 	for i, id := range nodeIDs {
 		outcomes[i].NodeID = id
-		rules, err := d.Comp.CompileForNode(ctx, id)
+		rules, sets, err := d.Comp.CompileForNode(ctx, id)
 		if err != nil {
 			outcomes[i].Error = "compile: " + err.Error()
 			continue
@@ -95,6 +95,7 @@ func (d *Dispatcher) ApplyToNodes(ctx context.Context, nodeIDs []string, opts Ap
 						NodeId:  id,
 						Version: time.Now().Unix(),
 						Rules:   rules,
+						Sets:    sets,
 					},
 					ConfirmDeadlineUnix: time.Now().Add(opts.ConfirmDeadline).Unix(),
 				},

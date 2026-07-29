@@ -118,14 +118,19 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-// Apply flushes each managed chain and refills it from `rules`, preserving
-// system chains and their jumps. Returns the hash of the resulting normalized
-// state.
-func (d *Driver) Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (string, error) {
+// Apply syncs the address sets to ipset, flushes each managed chain and
+// refills it from ruleSet.Rules, preserving system chains and their jumps.
+// Returns the hash of the resulting normalized state.
+func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, error) {
 	// Sanity: Init must have been called at least once, but we don't want to
 	// silently re-init here — that could hide operator mistakes. However
 	// Apply should still be usable end-to-end, so ensure chains exist.
 	if err := d.Init(ctx); err != nil {
+		return "", err
+	}
+
+	// 先同步地址组到 ipset(期望态)。空 sets 时为空操作,不触碰 ipset。
+	if err := d.syncSets(ctx, ruleSet.GetSets()); err != nil {
 		return "", err
 	}
 
@@ -139,6 +144,7 @@ func (d *Driver) Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (strin
 
 	// Sort by priority (asc) then by ID for determinism, so identical inputs
 	// produce identical iptables state (and identical hashes).
+	rules := ruleSet.GetRules()
 	sorted := make([]*myfwv1.CompiledRule, len(rules))
 	copy(sorted, rules)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -167,9 +173,44 @@ func (d *Driver) Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (strin
 	return d.Hash(ctx)
 }
 
+// syncSets 把期望地址组态同步到节点 ipset。每个 set 名为 MYFW-<name>,
+// 类型 hash:net(支持 CIDR)。先 create(-exist 幂等)再 flush+add 成员。
+// 简化实现:flush+add 非原子,大集合有短暂窗口;后续可改 ipset swap 原子切换。
+func (d *Driver) syncSets(ctx context.Context, sets []*myfwv1.AddressSet) error {
+	for _, s := range sets {
+		name := "MYFW-" + s.Name
+		if _, err := d.ipsetRun(ctx, "create", name, "hash:net", "-exist"); err != nil {
+			return fmt.Errorf("ipset create %s: %w", name, err)
+		}
+		if _, err := d.ipsetRun(ctx, "flush", name); err != nil {
+			return fmt.Errorf("ipset flush %s: %w", name, err)
+		}
+		for _, m := range s.Members {
+			if _, err := d.ipsetRun(ctx, "add", name, m, "-exist"); err != nil {
+				return fmt.Errorf("ipset add %s %s: %w", name, m, err)
+			}
+		}
+	}
+	return nil
+}
+
+// ipsetRun 执行 ipset 命令,返回 stdout;stderr 合并入错误。
+func (d *Driver) ipsetRun(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "ipset", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("ipset %s: %w: %s",
+			strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 // Snapshot dumps every managed chain via `-S` and joins the output into a
 // single deterministic payload. Format: for each chain in managedChains, a
-// header line "# table/chain" followed by the -S output.
+// header line "# table/chain" followed by the -S output. MYFW-* ipset 内容一并
+// 纳入,使 drift/Hash 覆盖地址组成员变化。
 func (d *Driver) Snapshot(ctx context.Context) (string, string, error) {
 	var b strings.Builder
 	for _, mc := range managedChains {
@@ -187,8 +228,40 @@ func (d *Driver) Snapshot(ctx context.Context) (string, string, error) {
 			b.WriteByte('\n')
 		}
 	}
+	// 纳入 MYFW-* ipset 内容,使 Hash 覆盖地址组成员变化。
+	if names, err := d.ipsetListNames(ctx); err == nil {
+		for _, name := range names {
+			if !strings.HasPrefix(name, "MYFW-") {
+				continue
+			}
+			out, err := d.ipsetRun(ctx, "list", name)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(&b, "# ipset/%s\n%s", name, out)
+			if !strings.HasSuffix(out, "\n") {
+				b.WriteByte('\n')
+			}
+		}
+	}
 	payload := b.String()
 	return payload, hashString(payload), nil
+}
+
+// ipsetListNames 列出节点上所有 ipset 名称。
+func (d *Driver) ipsetListNames(ctx context.Context) ([]string, error) {
+	out, err := d.ipsetRun(ctx, "list", "-name")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }
 
 // Restore re-applies a Snapshot payload. It flushes every managed chain and
@@ -336,6 +409,17 @@ func compileRule(r *myfwv1.CompiledRule, chain string) ([]string, error) {
 			return nil, fmt.Errorf("rule %q: port range requires a protocol", r.Id)
 		}
 		args = append(args, "--dport", strings.ReplaceAll(r.PortRange, "-", ":"))
+	}
+	// 地址组匹配(多 CIDR,经 ipset)。SourceGroup/DestinationGroup 引用 MYFW-<name>。
+	if r.SourceGroup != "" {
+		args = append(args, "-m", "set", "--match-set", "MYFW-"+r.SourceGroup, "src")
+	}
+	if r.DestinationGroup != "" {
+		args = append(args, "-m", "set", "--match-set", "MYFW-"+r.DestinationGroup, "dst")
+	}
+	// 匹配已打标记的流量(与 Action=MARK 打标正交)。
+	if r.MatchMark != 0 {
+		args = append(args, "-m", "mark", "--mark", fmt.Sprintf("%d", r.MatchMark))
 	}
 
 	// Target.

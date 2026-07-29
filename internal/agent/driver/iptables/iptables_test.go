@@ -86,7 +86,7 @@ func TestApplyPlacesRulesInRightChains(t *testing.T) {
 		},
 	}
 
-	hash, err := d.Apply(ctx, rules)
+	hash, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestApplyFlushesBeforeRefilling(t *testing.T) {
 		{Id: "a", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "1.1.1.1", Action: myfwv1.Action_ACTION_ACCEPT},
 		{Id: "b", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "2.2.2.2", Action: myfwv1.Action_ACTION_ACCEPT},
 	}
-	if _, err := d.Apply(ctx, first); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: first}); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(fake.Tables[tableFilter][chainInput]); got != 2 {
@@ -131,7 +131,7 @@ func TestApplyFlushesBeforeRefilling(t *testing.T) {
 		{Id: "c", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "3.3.3.3", Action: myfwv1.Action_ACTION_ACCEPT},
 	}
 
-	if _, err := d.Apply(ctx, second); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: second}); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(fake.Tables[tableFilter][chainInput]); got != 1 {
@@ -152,7 +152,7 @@ func TestSnapshotAndRestoreRoundTrip(t *testing.T) {
 		{Id: "a", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "5.6.7.8", Action: myfwv1.Action_ACTION_ACCEPT},
 		{Id: "b", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "9.10.11.12", Action: myfwv1.Action_ACTION_DROP},
 	}
-	if _, err := d.Apply(ctx, rules); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +162,7 @@ func TestSnapshotAndRestoreRoundTrip(t *testing.T) {
 	}
 
 	// Change state, then restore.
-	if _, err := d.Apply(ctx, nil); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Restore(ctx, payload); err != nil {
@@ -188,11 +188,11 @@ func TestHashIsDeterministicAcrossRuleOrder(t *testing.T) {
 	}
 	reversed := []*myfwv1.CompiledRule{base[1], base[0]}
 
-	h1, err := d1.Apply(ctx, base)
+	h1, err := d1.Apply(ctx, &myfwv1.RuleSet{Rules: base})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := d2.Apply(ctx, reversed)
+	h2, err := d2.Apply(ctx, &myfwv1.RuleSet{Rules: reversed})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,14 +16,14 @@ type fakeDriver struct {
 	ApplyHash    string
 	ApplyErr     error
 	RestoreErr   error
-	ApplyRules   []*myfwv1.CompiledRule
+	ApplyRules   *myfwv1.RuleSet
 	RestoreCalls []string
 }
 
 func (f *fakeDriver) Snapshot(ctx context.Context) (string, string, error) {
 	return f.SnapshotOut, "sha256:snap", f.SnapshotErr
 }
-func (f *fakeDriver) Apply(ctx context.Context, r []*myfwv1.CompiledRule) (string, error) {
+func (f *fakeDriver) Apply(ctx context.Context, r *myfwv1.RuleSet) (string, error) {
 	f.ApplyRules = r
 	return f.ApplyHash, f.ApplyErr
 }
@@ -42,7 +42,7 @@ func TestOnApplySuccess(t *testing.T) {
 	if !res.Ok || res.ResultHash != "sha256:new" {
 		t.Fatalf("unexpected: %+v", res)
 	}
-	if len(f.ApplyRules) != 1 {
+	if len(f.ApplyRules.GetRules()) != 1 {
 		t.Fatalf("driver never saw rules")
 	}
 	if len(f.RestoreCalls) != 0 {

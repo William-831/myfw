@@ -278,7 +278,7 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 	co.audit(ctx, reviewer, "task.approve", []*model.Task{&task}, nil)
 
 	// 2. Compile & send. compile errors mark the task FAILED.
-	rules, err := co.Comp.CompileForNode(ctx, task.NodeID)
+	rules, sets, err := co.Comp.CompileForNode(ctx, task.NodeID)
 	if err != nil {
 		co.markFailed(ctx, task.ID, "compile: "+err.Error())
 		return err
@@ -292,6 +292,7 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 					NodeId:  task.NodeID,
 					Version: task.Version,
 					Rules:   rules,
+					Sets:    sets,
 				},
 				ConfirmDeadlineUnix: deadline.Unix(),
 			},

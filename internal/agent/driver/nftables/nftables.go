@@ -78,8 +78,11 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-func (d *Driver) Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (string, error) {
+func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, error) {
 	if err := d.Init(ctx); err != nil {
+		return "", err
+	}
+	if err := d.syncSets(ctx, ruleSet.GetSets()); err != nil {
 		return "", err
 	}
 	for _, mc := range managedChains {
@@ -88,6 +91,7 @@ func (d *Driver) Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (strin
 		}
 	}
 
+	rules := ruleSet.GetRules()
 	sorted := make([]*myfwv1.CompiledRule, len(rules))
 	copy(sorted, rules)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -112,6 +116,31 @@ func (d *Driver) Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (strin
 	}
 
 	return d.Hash(ctx)
+}
+
+// syncSets 把期望地址组态同步到节点 nft set。每个 set 在 myfw 表内,类型
+// ipv4_addr + flags interval(支持 CIDR 范围)。已存在则复用,flush 后重灌成员。
+func (d *Driver) syncSets(ctx context.Context, sets []*myfwv1.AddressSet) error {
+	for _, s := range sets {
+		if _, err := d.Exec.Run(ctx, "add", "set", "inet", tableName, s.Name, "{ type ipv4_addr; flags interval; }"); err != nil {
+			// set 已存在则复用(nft 报 "already exists",复用 isChainExists 判定)。
+			if !isChainExists(err) {
+				return fmt.Errorf("nft add set %s: %w", s.Name, err)
+			}
+		}
+		// 清空成员后重新灌入。
+		_, _ = d.Exec.Run(ctx, "flush", "set", "inet", tableName, s.Name)
+		if len(s.Members) > 0 {
+			elem := make([]string, len(s.Members))
+			for i, m := range s.Members {
+				elem[i] = m
+			}
+			if _, err := d.Exec.Run(ctx, "add", "element", "inet", tableName, s.Name, "{ "+strings.Join(elem, ", ")+" }"); err != nil {
+				return fmt.Errorf("nft add element %s: %w", s.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (d *Driver) Snapshot(ctx context.Context) (string, string, error) {
@@ -282,6 +311,17 @@ func compileRule(r *myfwv1.CompiledRule) (string, error) {
 			exprs = append(exprs, fmt.Sprintf("tcp dport %s-%s", portParts[0], portParts[1]))
 		}
 	}
+	// 地址组匹配(多 CIDR,经 nft set)。
+	if r.SourceGroup != "" {
+		exprs = append(exprs, fmt.Sprintf("ip saddr @%s", r.SourceGroup))
+	}
+	if r.DestinationGroup != "" {
+		exprs = append(exprs, fmt.Sprintf("ip daddr @%s", r.DestinationGroup))
+	}
+	// 匹配已打标记的流量(与 ACTION_MARK 打标正交)。
+	if r.MatchMark != 0 {
+		exprs = append(exprs, fmt.Sprintf("meta mark %d", r.MatchMark))
+	}
 	switch r.Action {
 	case myfwv1.Action_ACTION_ACCEPT:
 		exprs = append(exprs, "accept")
@@ -289,6 +329,8 @@ func compileRule(r *myfwv1.CompiledRule) (string, error) {
 		exprs = append(exprs, "drop")
 	case myfwv1.Action_ACTION_REJECT:
 		exprs = append(exprs, "reject")
+	case myfwv1.Action_ACTION_MARK:
+		exprs = append(exprs, fmt.Sprintf("meta mark set 0x%x", r.Mark))
 	case myfwv1.Action_ACTION_DNAT:
 		if r.NatTo == "" {
 			return "", fmt.Errorf("rule %q: DNAT requires nat_to", r.Id)

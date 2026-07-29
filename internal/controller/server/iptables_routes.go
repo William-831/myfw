@@ -61,7 +61,7 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 	// 策略漂移检测：对比策略编译期望态 vs 节点真实 MYFW 规则
 	g.GET("/drift/:node_id", func(c *gin.Context) {
 		nodeID := c.Param("node_id")
-		expected, err := comp.CompileForNode(c.Request.Context(), nodeID)
+		expected, _, err := comp.CompileForNode(c.Request.Context(), nodeID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

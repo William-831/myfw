@@ -22,4 +22,6 @@ services:
       - ./configs/controller-container.yaml:/etc/myfw/config.yaml:ro
       # 前端静态资源（web/dist -> /var/www/myfw）
       - ./web/dist:/var/www/myfw:ro
+      # Controller 二进制:host go build 后挂载覆盖,绕过 docker build 拉基础镜像(arm64 镜像问题)
+      - ./dist/myfw-controller:/usr/local/bin/myfw-controller:ro
     restart: unless-stopped

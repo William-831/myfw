@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"gorm.io/gorm"
@@ -25,14 +26,15 @@ type Compiler struct {
 func New(db *gorm.DB) *Compiler { return &Compiler{DB: db} }
 
 // CompileForNode returns the ordered list of CompiledRule that apply to
-// nodeID, derived from every ENABLED policy whose targets include the node.
-// The result is stable (sorted by priority ASC then policy id ASC), so the
-// same input state always compiles to the same hash on the Agent side.
-func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, error) {
+// nodeID, plus the AddressSets referenced by those rules, derived from every
+// ENABLED policy whose targets include the node. Both slices are stable
+// (rules sorted by priority ASC then policy id ASC; sets sorted by name), so
+// the same input state always compiles to the same hash on the Agent side.
+func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, []*myfwv1.AddressSet, error) {
 	// Load node (needed for label matching, once we support labels).
 	var node model.Node
 	if err := c.DB.WithContext(ctx).Where("id = ?", nodeID).First(&node).Error; err != nil {
-		return nil, fmt.Errorf("compiler: load node %s: %w", nodeID, err)
+		return nil, nil, fmt.Errorf("compiler: load node %s: %w", nodeID, err)
 	}
 	nodeLabels := parseLabels(node.Labels)
 
@@ -44,26 +46,68 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		Order("priority ASC, id ASC").
 		Find(&policies).Error
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	out := make([]*myfwv1.CompiledRule, 0, len(policies))
+	setNames := make(map[string]struct{})
 	for i := range policies {
 		p := &policies[i]
 		spec, err := policy.ParseTargets(p)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !matches(&node, nodeLabels, spec) {
 			continue
 		}
 		cr, err := compileOne(p)
 		if err != nil {
-			return nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
+			return nil, nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
 		}
 		out = append(out, cr)
+		// 收集策略引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
+		if p.SourceGroup != "" {
+			setNames[p.SourceGroup] = struct{}{}
+		}
+		if p.DestinationGroup != "" {
+			setNames[p.DestinationGroup] = struct{}{}
+		}
 	}
-	return out, nil
+	sets, err := c.loadAddressSets(ctx, setNames)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compiler: load address sets: %w", err)
+	}
+	return out, sets, nil
+}
+
+// loadAddressSets 按 name 集合加载 AddressGroup,转为下发的 AddressSet 期望态。
+// 按 name 排序保证输出稳定,使同输入编译出同 hash。
+func (c *Compiler) loadAddressSets(ctx context.Context, names map[string]struct{}) ([]*myfwv1.AddressSet, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	nameList := make([]string, 0, len(names))
+	for n := range names {
+		nameList = append(nameList, n)
+	}
+	var groups []model.AddressGroup
+	if err := c.DB.WithContext(ctx).Where("name IN ?", nameList).Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
+	sets := make([]*myfwv1.AddressSet, 0, len(groups))
+	for i := range groups {
+		var members []string
+		if groups[i].Members != "" {
+			_ = json.Unmarshal([]byte(groups[i].Members), &members)
+		}
+		sets = append(sets, &myfwv1.AddressSet{
+			Name:    groups[i].Name,
+			Kind:    groups[i].Kind,
+			Members: members,
+		})
+	}
+	return sets, nil
 }
 
 // TargetNodes returns the node ids a single policy applies to. Used by the
@@ -187,17 +231,20 @@ func compileOne(p *model.Policy) (*myfwv1.CompiledRule, error) {
 	}
 
 	return &myfwv1.CompiledRule{
-		Id:          "p" + strconv.FormatUint(uint64(p.ID), 10),
-		Direction:   dir,
-		Source:      p.Source,
-		Destination: p.Destination,
-		Protocol:    proto,
-		PortRange:   p.PortRange,
-		Action:      act,
-		Mark:        p.Mark,
-		NatTo:       p.NatTo,
-		Priority:    int32(p.Priority),
-		Description: p.Description,
+		Id:               "p" + strconv.FormatUint(uint64(p.ID), 10),
+		Direction:        dir,
+		Source:           p.Source,
+		Destination:      p.Destination,
+		Protocol:         proto,
+		PortRange:        p.PortRange,
+		Action:           act,
+		Mark:             p.Mark,
+		NatTo:            p.NatTo,
+		SourceGroup:      p.SourceGroup,
+		DestinationGroup: p.DestinationGroup,
+		MatchMark:        p.MatchMark,
+		Priority:         int32(p.Priority),
+		Description:      p.Description,
 	}, nil
 }
 

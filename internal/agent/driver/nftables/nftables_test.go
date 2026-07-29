@@ -50,7 +50,7 @@ func TestApply(t *testing.T) {
 			Priority: 10,
 		},
 	}
-	hash, err := d.Apply(context.Background(), rules)
+	hash, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules})
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestSnapshot(t *testing.T) {
 			Priority: 10,
 		},
 	}
-	if _, err := d.Apply(context.Background(), rules); err != nil {
+	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules}); err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
 	payload, hash, err := d.Snapshot(context.Background())
@@ -120,7 +120,7 @@ func TestRestore(t *testing.T) {
 			Priority: 10,
 		},
 	}
-	if _, err := d.Apply(context.Background(), rules); err != nil {
+	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules}); err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
 	payload, _, err := d.Snapshot(context.Background())
@@ -151,7 +151,7 @@ func TestHash(t *testing.T) {
 			Priority: 10,
 		},
 	}
-	if _, err := d.Apply(context.Background(), rules); err != nil {
+	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules}); err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
 	hash1, err := d.Hash(context.Background())
@@ -204,7 +204,7 @@ func TestApplyTwoRules(t *testing.T) {
 			Priority: 20,
 		},
 	}
-	_, err := d.Apply(context.Background(), rules)
+	_, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules})
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestFlushBeforeFill(t *testing.T) {
 			Priority: 10,
 		},
 	}
-	if _, err := d.Apply(context.Background(), rules1); err != nil {
+	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules1}); err != nil {
 		t.Fatalf("first Apply failed: %v", err)
 	}
 	rules2 := []*myfwv1.CompiledRule{
@@ -244,7 +244,7 @@ func TestFlushBeforeFill(t *testing.T) {
 			Priority: 10,
 		},
 	}
-	if _, err := d.Apply(context.Background(), rules2); err != nil {
+	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules2}); err != nil {
 		t.Fatalf("second Apply failed: %v", err)
 	}
 	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 1 {
@@ -269,7 +269,7 @@ func TestSnapshotFormat(t *testing.T) {
 			Priority:   10,
 		},
 	}
-	if _, err := d.Apply(context.Background(), rules); err != nil {
+	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules}); err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
 	payload, _, err := d.Snapshot(context.Background())

@@ -17,7 +17,7 @@ import (
 // Driver is the subset of driver.Driver that Handler needs. Kept small so it
 // can be faked by tests without pulling in every method.
 type Driver interface {
-	Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (string, error)
+	Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, error)
 	Snapshot(ctx context.Context) (payload string, hash string, err error)
 	Restore(ctx context.Context, payload string) error
 }
@@ -82,7 +82,7 @@ func (h *Handler) OnApply(ctx context.Context, task *myfwv1.ApplyTask) *myfwv1.T
 	}
 	h.last[task.TaskId] = snap
 
-	hash, err := h.D.Apply(ctx, task.RuleSet.Rules)
+	hash, err := h.D.Apply(ctx, task.RuleSet)
 	if err != nil {
 		// Best-effort self-rollback: try to restore the snapshot we just took
 		// so a mid-Apply failure doesn't leave the host in a bad state. If

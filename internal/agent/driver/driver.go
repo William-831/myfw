@@ -23,10 +23,11 @@ type Driver interface {
 	// route traffic from the system chains into MYFW. Idempotent.
 	Init(ctx context.Context) error
 
-	// Apply converges the MYFW namespace to exactly `rules`. Rules outside
-	// the MYFW namespace are never touched. Returns the hash of the
-	// resulting normalized state so the Controller can confirm convergence.
-	Apply(ctx context.Context, rules []*myfwv1.CompiledRule) (hash string, err error)
+	// Apply converges the MYFW namespace to exactly the rules and address
+	// sets in `ruleSet`. Rules outside the MYFW namespace are never touched.
+	// Returns the hash of the resulting normalized state so the Controller
+	// can confirm convergence.
+	Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (hash string, err error)
 
 	// Snapshot serializes the current MYFW namespace so it can later be
 	// restored verbatim. Format is opaque to callers.

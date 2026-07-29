@@ -67,14 +67,14 @@ func TestCompileForNodePicksExplicitTargets(t *testing.T) {
 	}
 
 	// n_a should see it, n_b should not.
-	got, err := c.CompileForNode(ctx, "n_a")
+	got, _, err := c.CompileForNode(ctx, "n_a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].PortRange != "22" {
 		t.Fatalf("n_a: unexpected: %+v", got)
 	}
-	got, err = c.CompileForNode(ctx, "n_b")
+	got, _, err = c.CompileForNode(ctx, "n_b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestCompileForNodeSkipsDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := c.CompileForNode(ctx, "n_a")
+	got, _, err := c.CompileForNode(ctx, "n_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestCompileForNodeStableOrder(t *testing.T) {
 	mkOne("first", 10)
 	mkOne("third", 30)
 
-	got, err := c.CompileForNode(ctx, "n_a")
+	got, _, err := c.CompileForNode(ctx, "n_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestLabelSelectorMatchesIntersection(t *testing.T) {
 		"n_edge":      0,
 	}
 	for id, want := range cases {
-		got, err := c.CompileForNode(ctx, id)
+		got, _, err := c.CompileForNode(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -203,7 +203,7 @@ func TestCompileActionsMapCorrectly(t *testing.T) {
 		}
 	}
 
-	got, err := c.CompileForNode(ctx, "n_a")
+	got, _, err := c.CompileForNode(ctx, "n_a")
 	if err != nil {
 		t.Fatal(err)
 	}
