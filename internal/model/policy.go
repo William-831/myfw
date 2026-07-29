@@ -5,22 +5,26 @@ import "time"
 // Policy is an abstract, cloud-security-group-style access rule authored by an
 // admin (design.md § 6). It is compiled into CompiledRules before dispatch.
 type Policy struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Name        string    `gorm:"size:255" json:"name"`
-	Direction   string    `gorm:"size:16" json:"direction"`    // INBOUND/OUTBOUND/FORWARD
-	Source      string    `gorm:"size:128" json:"source"`      // IP/CIDR, empty = any
-	Destination string    `gorm:"size:128" json:"destination"` // IP/CIDR, empty = any
-	Protocol    string    `gorm:"size:16" json:"protocol"`     // TCP/UDP/ICMP/ANY
-	PortRange   string    `gorm:"size:64" json:"port_range"`
-	Action      string    `gorm:"size:16" json:"action"`
-	Mark        uint32    `json:"mark"`
-	NatTo       string    `gorm:"size:128" json:"nat_to"`
-	Priority    int       `gorm:"index" json:"priority"`
-	Description string    `gorm:"size:512" json:"description"`
-	Targets     string    `gorm:"type:text" json:"targets"` // JSON-encoded []node_id or label selector
-	Enabled     bool      `gorm:"index" json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Name             string    `gorm:"size:255" json:"name"`
+	Direction        string    `gorm:"size:16" json:"direction"`        // INBOUND/OUTBOUND/FORWARD
+	Source           string    `gorm:"size:128" json:"source"`          // IP/CIDR, empty = any
+	Destination      string    `gorm:"size:128" json:"destination"`     // IP/CIDR, empty = any
+	Protocol         string    `gorm:"size:16" json:"protocol"`         // TCP/UDP/ICMP/ANY
+	PortRange        string    `gorm:"size:64" json:"port_range"`
+	Action           string    `gorm:"size:16" json:"action"`
+	Mark             uint32    `json:"mark"`
+	NatTo            string    `gorm:"size:128" json:"nat_to"`
+	SourceGroup      string    `gorm:"size:64" json:"source_group"`      // 引用 AddressGroup.name,编译为 set 匹配
+	DestinationGroup string    `gorm:"size:64" json:"destination_group"` // 引用 AddressGroup.name
+	MatchMark        uint32    `json:"match_mark"`                       // 匹配条件:已打标(与 Action=MARK 打标正交)
+	Group            string    `gorm:"size:64" json:"group"`             // 逻辑分组(展示与编排)
+	Priority         int       `gorm:"index" json:"priority"`
+	Description      string    `gorm:"size:512" json:"description"`
+	Targets          string    `gorm:"type:text" json:"targets"` // JSON-encoded []node_id or label selector
+	Enabled          bool      `gorm:"index" json:"enabled"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // PolicyVersion records an immutable snapshot of a policy's fields at the time

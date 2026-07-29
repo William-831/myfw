@@ -31,19 +31,23 @@ type TargetsSpec struct {
 
 // PolicyInput is the fields a client may set on Create/Update.
 type PolicyInput struct {
-	Name        string      `json:"name"`
-	Direction   string      `json:"direction"`
-	Source      string      `json:"source"`
-	Destination string      `json:"destination"`
-	Protocol    string      `json:"protocol"`
-	PortRange   string      `json:"port_range"`
-	Action      string      `json:"action"`
-	Mark        uint32      `json:"mark"`
-	NatTo       string      `json:"nat_to"`
-	Priority    int         `json:"priority"`
-	Description string      `json:"description"`
-	Targets     TargetsSpec `json:"targets"`
-	Enabled     bool        `json:"enabled"`
+	Name             string      `json:"name"`
+	Direction        string      `json:"direction"`
+	Source           string      `json:"source"`
+	Destination      string      `json:"destination"`
+	Protocol         string      `json:"protocol"`
+	PortRange        string      `json:"port_range"`
+	Action           string      `json:"action"`
+	Mark             uint32      `json:"mark"`
+	NatTo            string      `json:"nat_to"`
+	SourceGroup      string      `json:"source_group"`
+	DestinationGroup string      `json:"destination_group"`
+	MatchMark        uint32      `json:"match_mark"`
+	Group            string      `json:"group"`
+	Priority         int         `json:"priority"`
+	Description      string      `json:"description"`
+	Targets          TargetsSpec `json:"targets"`
+	Enabled          bool        `json:"enabled"`
 }
 
 // Create inserts a new Policy row and its initial PolicyVersion (v1). The two
@@ -58,19 +62,23 @@ func (s *Service) Create(ctx context.Context, in PolicyInput, author string) (*m
 	}
 
 	p := &model.Policy{
-		Name:        in.Name,
-		Direction:   in.Direction,
-		Source:      in.Source,
-		Destination: in.Destination,
-		Protocol:    in.Protocol,
-		PortRange:   in.PortRange,
-		Action:      in.Action,
-		Mark:        in.Mark,
-		NatTo:       in.NatTo,
-		Priority:    in.Priority,
-		Description: in.Description,
-		Targets:     string(targetsJSON),
-		Enabled:     in.Enabled,
+		Name:             in.Name,
+		Direction:        in.Direction,
+		Source:           in.Source,
+		Destination:      in.Destination,
+		Protocol:         in.Protocol,
+		PortRange:        in.PortRange,
+		Action:           in.Action,
+		Mark:             in.Mark,
+		NatTo:            in.NatTo,
+		SourceGroup:      in.SourceGroup,
+		DestinationGroup: in.DestinationGroup,
+		MatchMark:        in.MatchMark,
+		Group:            in.Group,
+		Priority:         in.Priority,
+		Description:      in.Description,
+		Targets:          string(targetsJSON),
+		Enabled:          in.Enabled,
 	}
 
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -114,6 +122,10 @@ func (s *Service) Update(ctx context.Context, id uint, in PolicyInput, author st
 		p.Action = in.Action
 		p.Mark = in.Mark
 		p.NatTo = in.NatTo
+		p.SourceGroup = in.SourceGroup
+		p.DestinationGroup = in.DestinationGroup
+		p.MatchMark = in.MatchMark
+		p.Group = in.Group
 		p.Priority = in.Priority
 		p.Description = in.Description
 		p.Targets = string(targetsJSON)
@@ -260,19 +272,23 @@ func (s *Service) SubmitChange(ctx context.Context, id uint, in PolicyInput, aut
 		return nil, fmt.Errorf("policy: marshal targets: %w", err)
 	}
 	p := &model.Policy{
-		Name:        in.Name,
-		Direction:   in.Direction,
-		Source:      in.Source,
-		Destination: in.Destination,
-		Protocol:    in.Protocol,
-		PortRange:   in.PortRange,
-		Action:      in.Action,
-		Mark:        in.Mark,
-		NatTo:       in.NatTo,
-		Priority:    in.Priority,
-		Description: in.Description,
-		Targets:     string(targetsJSON),
-		Enabled:     in.Enabled,
+		Name:             in.Name,
+		Direction:        in.Direction,
+		Source:           in.Source,
+		Destination:      in.Destination,
+		Protocol:         in.Protocol,
+		PortRange:        in.PortRange,
+		Action:           in.Action,
+		Mark:             in.Mark,
+		NatTo:            in.NatTo,
+		SourceGroup:      in.SourceGroup,
+		DestinationGroup: in.DestinationGroup,
+		MatchMark:        in.MatchMark,
+		Group:            in.Group,
+		Priority:         in.Priority,
+		Description:      in.Description,
+		Targets:          string(targetsJSON),
+		Enabled:          in.Enabled,
 	}
 	p.ID = id
 	buf, err := json.Marshal(p)

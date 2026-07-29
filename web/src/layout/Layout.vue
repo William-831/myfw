@@ -18,6 +18,10 @@
           <el-icon><Lock /></el-icon>
           <span>策略管理</span>
         </el-menu-item>
+        <el-menu-item index="/address-groups">
+          <el-icon><Coin /></el-icon>
+          <span>地址组</span>
+        </el-menu-item>
         <el-menu-item index="/approve">
           <el-icon><CircleCheck /></el-icon>
           <span>审批中心</span>
@@ -85,6 +89,7 @@ import {
   Lock,
   CircleCheck,
   Document,
+  Coin,
   User,
   ArrowDown,
   Key,
@@ -101,6 +106,7 @@ const pageTitles = {
   '/dashboard': '系统概览',
   '/nodes': '节点管理',
   '/policies': '策略管理',
+  '/address-groups': '地址组管理',
   '/approve': '审批中心',
   '/audit': '审计日志'
 }

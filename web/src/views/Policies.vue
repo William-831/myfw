@@ -307,6 +307,18 @@
           </el-form-item>
         </div>
         <div class="form-row">
+          <el-form-item label="源地址组" class="form-col">
+            <el-select v-model="policyForm.source_group" clearable placeholder="引用地址组(多 CIDR 匹配)">
+              <el-option v-for="g in addressGroups" :key="g.id" :label="`${g.name} (${g.kind})`" :value="g.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="目的地址组" class="form-col">
+            <el-select v-model="policyForm.destination_group" clearable placeholder="引用地址组(多 CIDR 匹配)">
+              <el-option v-for="g in addressGroups" :key="g.id" :label="`${g.name} (${g.kind})`" :value="g.name" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="form-row">
           <el-form-item label="协议" prop="protocol" class="form-col">
             <el-select v-model="policyForm.protocol" style="width: 100%">
               <el-option label="任意" value="ANY" />
@@ -331,6 +343,17 @@
         </el-form-item>
         <el-form-item v-if="policyForm.action === 'DNAT' || policyForm.action === 'SNAT'" label="NAT目标">
           <el-input v-model="policyForm.nat_to" placeholder="例如: 192.168.1.100:8080" />
+        </el-form-item>
+        <el-form-item v-if="policyForm.action === 'MARK'" label="标记值">
+          <el-input-number v-model="policyForm.mark" :min="1" :max="4294967295" controls-position="right" style="width: 200px" />
+          <span class="form-hint">打标记动作的 mark 值</span>
+        </el-form-item>
+        <el-form-item label="匹配标记">
+          <el-input-number v-model="policyForm.match_mark" :min="0" :max="4294967295" controls-position="right" style="width: 200px" />
+          <span class="form-hint">填 &gt;0 表示仅匹配已打此 mark 的流量(与打标动作正交)</span>
+        </el-form-item>
+        <el-form-item label="分组">
+          <el-input v-model="policyForm.group" placeholder="逻辑分组名,如 whitelist / business(可选)" />
         </el-form-item>
         <el-form-item label="优先级" prop="priority">
           <el-slider v-model="policyForm.priority" :min="1" :max="100" :step="1" show-input />
@@ -461,7 +484,7 @@ import {
   submitPolicyChange, getPolicyVersions, approvePolicyVersion, rejectPolicyVersion,
   applyPolicy as apiApplyPolicy, applyAllPolicies, getNodes,
   batchTogglePolicies, batchDeletePolicies, batchApplyToNodes,
-  detectConflicts, getChainTree
+  detectConflicts, getChainTree, getAddressGroups
 } from '@/api'
 
 // 状态
@@ -472,6 +495,7 @@ const checkingConflicts = ref(false)
 const expertMode = ref(false)
 const policies = ref([])
 const allNodes = ref([])
+const addressGroups = ref([])
 const selectedIds = ref([])
 const conflicts = ref([])
 
@@ -511,6 +535,10 @@ const policyForm = reactive({
   action: 'ACCEPT',
   mark: 0,
   nat_to: '',
+  source_group: '',
+  destination_group: '',
+  match_mark: 0,
+  group: '',
   priority: 50,
   description: '',
   targets: { node_ids: [], labels: [] },
@@ -536,6 +564,9 @@ const buildPreviewCommand = (f) => {
   const proto = { TCP: 'tcp', UDP: 'udp', ICMP: 'icmp' }[f.protocol] || ''
   if (proto) parts.push('-p', proto)
   if (f.port_range) parts.push('--dport', String(f.port_range).replace(/-/g, ':'))
+  if (f.source_group) parts.push('-m', 'set', '--match-set', `MYFW-${f.source_group}`, 'src')
+  if (f.destination_group) parts.push('-m', 'set', '--match-set', `MYFW-${f.destination_group}`, 'dst')
+  if (f.match_mark > 0) parts.push('-m', 'mark', '--mark', String(f.match_mark))
   switch (f.action) {
     case 'ACCEPT': parts.push('-j', 'ACCEPT'); break
     case 'DROP': parts.push('-j', 'DROP'); break
@@ -661,9 +692,10 @@ const formatDate = (d) => {
 const loadData = async () => {
   loading.value = true
   try {
-    const [policiesData, nodesData] = await Promise.all([getPolicies(), getNodes()])
+    const [policiesData, nodesData, groupsData] = await Promise.all([getPolicies(), getNodes(), getAddressGroups()])
     policies.value = (policiesData.policies || []).map(p => ({ ...p, _applying: false }))
     allNodes.value = nodesData.nodes || []
+    addressGroups.value = groupsData.address_groups || []
   } catch {
     ElMessage.error('加载数据失败')
   } finally {
@@ -769,7 +801,8 @@ const openAddDialog = () => {
   Object.assign(policyForm, {
     name: '', direction: 'INBOUND', source: '', destination: '',
     protocol: 'ANY', port_range: '', action: 'ACCEPT',
-    mark: 0, nat_to: '', priority: 50, description: '',
+    mark: 0, nat_to: '', source_group: '', destination_group: '',
+    match_mark: 0, group: '', priority: 50, description: '',
     targets: { node_ids: [], labels: [] }, enabled: true
   })
   selectedNodeIds.value = []
@@ -781,6 +814,8 @@ const editPolicy = (p) => {
     name: p.name, direction: p.direction, source: p.source,
     destination: p.destination, protocol: p.protocol, port_range: p.port_range,
     action: p.action, mark: p.mark || 0, nat_to: p.nat_to || '',
+    source_group: p.source_group || '', destination_group: p.destination_group || '',
+    match_mark: p.match_mark || 0, group: p.group || '',
     priority: p.priority, description: p.description || '', enabled: p.enabled
   })
   selectedNodeIds.value = getPolicyTargets(p)
@@ -1188,4 +1223,5 @@ onMounted(loadData)
 /* 表单布局 */
 .form-row { display: flex; gap: 16px; }
 .form-col { flex: 1; }
+.form-hint { margin-left: 12px; font-size: 12px; color: #94a3b8; }
 </style>

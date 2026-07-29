@@ -28,6 +28,11 @@ const routes = [
         component: () => import('@/views/Policies.vue')
       },
       {
+        path: 'address-groups',
+        name: 'AddressGroups',
+        component: () => import('@/views/AddressGroups.vue')
+      },
+      {
         path: 'approve',
         name: 'Approve',
         component: () => import('@/views/Approve.vue')

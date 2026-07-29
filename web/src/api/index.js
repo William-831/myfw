@@ -52,6 +52,13 @@ export const deletePolicy = (id) => service.delete(`/v1/policies/${id}`)
 export const applyPolicy = (id, data) => service.post(`/v1/policies/${id}/apply`, data)
 export const applyAllPolicies = (data) => service.post('/v1/policies/apply-all', data)
 
+// 地址组(白/黑名单 IP 段集合)
+export const getAddressGroups = () => service.get('/v1/address-groups')
+export const getAddressGroup = (id) => service.get(`/v1/address-groups/${id}`)
+export const createAddressGroup = (data) => service.post('/v1/address-groups', data)
+export const updateAddressGroup = (id, data) => service.put(`/v1/address-groups/${id}`, data)
+export const deleteAddressGroup = (id) => service.delete(`/v1/address-groups/${id}`)
+
 // 策略批量操作
 export const batchTogglePolicies = (ids, enabled) =>
   service.post('/v1/iptables/batch-toggle', { ids, enabled })
