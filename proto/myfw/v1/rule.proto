@@ -22,6 +22,9 @@ message CompiledRule {
   string nat_to = 9;             // used when action = DNAT/SNAT ("ip" or "ip:port")
   int32 priority = 10;           // lower = evaluated first
   string description = 11;
+  string source_group = 12;      // 引用 AddressSet.name,编译为 set 匹配(多 CIDR)
+  string destination_group = 13; // 引用 AddressSet.name
+  uint32 match_mark = 14;        // 匹配条件:已打标(与 action=MARK 打标正交)
 }
 
 // RuleSet is the full desired state for a node's MYFW namespace at a given
@@ -31,4 +34,13 @@ message RuleSet {
   int64 version = 2;             // monotonic policy version
   repeated CompiledRule rules = 3;
   string expected_hash = 4;      // hash of the normalized set, for drift checks
+  repeated AddressSet sets = 5;  // 期望地址组态,随版本原子下发到 Agent
+}
+
+// AddressSet 是下发给 Agent 的地址组期望态:一个组对应节点上的一个 ipset / nft set
+// (MYFW-<name>),Policy 通过 source_group / destination_group 引用其名称。
+message AddressSet {
+  string name = 1;               // whitelist / blacklist / 自定义,节点集合名 MYFW-<name>
+  string kind = 2;               // whitelist | blacklist | custom
+  repeated string members = 3;   // CIDR 列表
 }
