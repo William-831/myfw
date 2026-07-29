@@ -15,6 +15,8 @@ import (
 // Driver is the subset of driver.Driver needed for Watchdog.
 type Driver interface {
 	Hash(ctx context.Context) (string, error)
+	// EnsureJumps 校验并修复系统链 jump 顺序(position 1 == MYFW-*),抗 docker/k8s 重启。
+	EnsureJumps(ctx context.Context) error
 }
 
 // Reporter sends drift reports and sync requests back to the Controller.
@@ -119,6 +121,14 @@ func (w *Watchdog) loop() {
 // checkOnce computes the current hash and compares it with the expected hash.
 // Reports drift if they differ.
 func (w *Watchdog) checkOnce() {
+	// 先校验并修复系统链 jump 顺序(position 1 == MYFW-*),抗 docker/k8s 重启导致
+	// 的 jump 被挤后。ensureJump 幂等,顺序正确时为空操作。
+	if err := w.D.EnsureJumps(w.ctx); err != nil {
+		if w.Log != nil {
+			w.Log.Warn("watchdog: ensure jumps failed", "err", err)
+		}
+	}
+
 	w.mu.RLock()
 	expected := w.expectedHash
 	w.mu.RUnlock()

@@ -118,6 +118,17 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
+// EnsureJumps 校验所有系统链 position 1 == MYFW-*,不是则按 ensureJump 重排。
+// 供 watchdog 定期调用,抗 docker/k8s 重启导致的 jump 顺序错乱。
+func (d *Driver) EnsureJumps(ctx context.Context) error {
+	for _, j := range systemJumps {
+		if err := d.ensureJump(ctx, j.table, j.sysChain, j.myfwChain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Apply syncs the address sets to ipset, flushes each managed chain and
 // refills it from ruleSet.Rules, preserving system chains and their jumps.
 // Returns the hash of the resulting normalized state.

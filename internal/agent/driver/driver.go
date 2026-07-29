@@ -29,6 +29,10 @@ type Driver interface {
 	// can confirm convergence.
 	Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (hash string, err error)
 
+	// EnsureJumps 校验并修复系统链 jump 顺序(position 1 == MYFW-*),抗 docker/k8s
+	// 重启导致的 jump 被挤后。watchdog 定期调用;nftables driver 为空操作。
+	EnsureJumps(ctx context.Context) error
+
 	// Snapshot serializes the current MYFW namespace so it can later be
 	// restored verbatim. Format is opaque to callers.
 	Snapshot(ctx context.Context) (payload string, hash string, err error)

@@ -78,6 +78,12 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
+// EnsureJumps 对 nftables 为空操作:nft 用 hook chain 直接接管,不插 iptables 系统链,
+// 无 jump 顺序问题。存在仅为满足 watchdog.Driver 接口。
+func (d *Driver) EnsureJumps(ctx context.Context) error {
+	return nil
+}
+
 func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, error) {
 	if err := d.Init(ctx); err != nil {
 		return "", err

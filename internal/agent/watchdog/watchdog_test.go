@@ -22,6 +22,10 @@ func (f *fakeDriver) Hash(ctx context.Context) (string, error) {
 	return f.hash, f.err
 }
 
+func (f *fakeDriver) EnsureJumps(ctx context.Context) error {
+	return nil
+}
+
 func (f *fakeDriver) setHash(hash string) {
 	f.mu.Lock()
 	f.hash = hash
