@@ -271,8 +271,8 @@ go-iptablesops/                  # 目录名；Go 模块名为 iptables-tool（�
   }
   ```
 - [ ] `internal/agent/driver/iptables/`：
-  - 创建 `MYFW-INPUT` / `MYFW-OUTPUT` / `MYFW-FORWARD` / `MYFW-NAT` 链
-  - 在系统链 `INPUT`/`OUTPUT`/`FORWARD` 顶部插入跳转规则
+  - 创建 6 条 MYFW 链：filter `MYFW-INPUT`/`MYFW-OUTPUT`/`MYFW-FORWARD`、nat `MYFW-PREROUTING`/`MYFW-POSTROUTING`、mangle `MYFW-MANGLE`
+  - 在系统链 `INPUT`/`OUTPUT`/`FORWARD`/`PREROUTING`/`POSTROUTING` 顶部插入跳转规则（ensureJump 顶部精准 + 幂等重排，见 design.md §8）
   - Apply：把标准规则对象翻译成 iptables 命令，只操作 MYFW 命名空间
   - Diff：读取当前 MYFW 内容，与期望态对比
   - Snapshot / Restore：用 `iptables-save` / `iptables-restore`，但仅限 MYFW 命名空间
@@ -386,6 +386,26 @@ go-iptablesops/                  # 目录名；Go 模块名为 iptables-tool（�
 - [ ] Agent 产物：`.tar.gz` 打包 `myfw-agent` + `install.sh` + `myfw-agent.service`
 - [ ] （可选）`.deb` / `.rpm`
 - [ ] GitHub Actions / 类似 CI 自动构建 tag 版本
+
+---
+
+### M14. 地址组 + ipset/nft set + mark 联动（已实现）
+
+**目标**：白/黑名单多 CIDR + mark 标记联动，管控 Docker 暴露端口流量。
+
+**已交付**：
+
+- [x] `AddressGroup` model + CRUD API + 前端地址组管理页
+- [x] proto 扩展（`CompiledRule` +`source_group`/`destination_group`/`match_mark`，`RuleSet` +`sets`，新增 `AddressSet`）
+- [x] compiler `CompileForNode` 返回 `(rules, sets)`；driver `Apply(*RuleSet)` 原子下发 sets（iptables `ipset` + nft `set`）
+- [x] `compileRule` 加 `-m set`/`-m mark`；nft 补 `ACTION_MARK`；实测 ipset + mark+白名单联动在节点生效
+
+### M14+. MYFW 收敛理念落地（P1-P4）
+
+- [~] **P1** ensureJump 顶部精准重排 + ESTABLISHED 放行（重排已实现，ESTABLISHED 进行中）
+- [ ] **P2** 节点直操作收敛 MYFW（拒绝直接操作内置链）
+- [ ] **P3** watchdog jump 顺序自愈（抗 docker/k8s 重启）
+- [ ] **P4** 自定义链 web 管理（`CustomChain` model + driver 动态子链 + 策略指定链）
 
 ---
 

@@ -8,7 +8,7 @@
 >
 > **安全基线**：Controller ↔ Agent 通信 **强制 mTLS**，明文连接一律拒绝。节点身份采用「Agent 生成候选 ID + Controller 审核入库 + 证书指纹绑定」的三段式方案（详见第 13 节）。
 >
-> **数据层约定**：生产使用现成的 OceanBase（外部资源，通过环境变量注入连接串）；开发环境使用 SQLite。业务代码统一走 GORM，不做数据库自动降级（详见第 2 节）。
+> **数据层约定**：当前部署使用 SQLite（开发与远程部署均用）；生产可切换 MySQL/OceanBase（通过环境变量注入连接串，规划中）。业务代码统一走 GORM，不做数据库自动降级（详见第 2 节）。
 
 ---
 
@@ -192,7 +192,15 @@ Controller 的数据库连接**优先从环境变量读取**,配置文件字段�
 | **IptablesDriver** | 传统 Linux 环境 | iptables-legacy / iptables-nft / 相关 Go 库 |
 | **NftablesDriver** | 现代 Linux 系统 | nft 原生接口 / nftables 库直接操作 Netfilter |
 
-### 4.4 未来扩展
+### 4.4 地址组与 sets 下发
+
+`Apply(ctx, *RuleSet)` 接收完整期望态（rules + sets），地址组（`AddressGroup`）编译为 `AddressSet` 随 RuleSet 原子下发：
+
+- iptables driver：`ipset create/flush/add` 同步 `MYFW-<name>` 集合（hash:net）；
+- nftables driver：`nft add set/flush/add element` 同步 set（ipv4_addr + interval）；
+- `compileRule` 将 `source_group`/`destination_group` 编译为 `-m set --match-set` / `ip saddr @set`，`match_mark` 编译为 `-m mark --mark` / `meta mark`，`MARK` 动作编译为 `--set-mark` / `meta mark set`。
+
+### 4.5 未来扩展
 
 - **eBPF Driver**：实现更加高级的数据面控制能力；
 - 扩展新 Driver **无需修改** Controller 和策略模型。
@@ -232,12 +240,17 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 | 字段 | 说明 |
 |---|---|
 | 方向 | INBOUND / OUTBOUND / FORWARD |
-| 源地址 | IP / CIDR / 分组 |
-| 目标地址 | IP / CIDR / 分组 |
+| 源地址 | IP / CIDR（单值，空表示任意） |
+| 目标地址 | IP / CIDR（单值，空表示任意） |
+| 源地址组 | 引用 `AddressGroup.name`，编译为 `ipset`/`nft set` 匹配（多 CIDR） |
+| 目标地址组 | 引用 `AddressGroup.name` |
 | 协议类型 | TCP / UDP / ICMP / ANY |
 | 端口范围 | 单端口 / 范围 |
-| 动作类型 | ACCEPT / DROP / REJECT / MARK / DNAT / SNAT … |
-| 优先级 | 数值序 |
+| 动作类型 | ACCEPT / DROP / REJECT / MARK / DNAT / SNAT |
+| 标记值（mark） | `action=MARK` 时打标的 mark 值 |
+| 匹配标记（match_mark） | 匹配已打标流量（与 MARK 打标正交） |
+| 优先级 | 数值序（小者先评估） |
+| 分组（group） | 逻辑分组（展示与编排） |
 | 描述信息 | 可读说明 |
 | 生效节点 | 节点 / 节点组 |
 
@@ -254,16 +267,31 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 
 ## 7. 规则所有权隔离（MYFW 命名空间）
 
-为解决 Linux 环境中多来源防火墙规则并存的问题，系统设计严格的规则所有权隔离机制。
+为解决 Linux 环境中多来源防火墙规则并存的问题，系统设计严格的规则所有权隔离机制。**所有平台策略不直接操作内置链**，全部收敛在 Agent 维护的 MYFW 自定义链内；内置链仅在顶部插一条 jump 将流量导入 MYFW 管理链，从而与 Docker、Kubernetes 或手工配置的系统规则共存且互不干扰。
 
 ### 7.1 命名空间
 
 | 后端 | 命名空间形式 |
 |---|---|
-| iptables | 自定义链：`MYFW-INPUT` / `MYFW-FORWARD` / `MYFW-NAT` … |
-| nftables | 独立 `MYFW table` 与 chain |
+| iptables | 6 条自定义链：filter 表 `MYFW-INPUT`/`MYFW-OUTPUT`/`MYFW-FORWARD`、nat 表 `MYFW-PREROUTING`/`MYFW-POSTROUTING`、mangle 表 `MYFW-MANGLE` |
+| iptables 地址组 | `ipset` 集合 `MYFW-<name>`（hash:net，多 CIDR） |
+| nftables | 独立 `myfw` table + chain（inet/ip family） |
+| nftables 地址组 | nft `set` `MYFW-<name>`（type ipv4_addr + flags interval） |
 
-### 7.2 权限边界
+### 7.2 规则落点映射
+
+策略规则按 action + direction 自动落到对应 MYFW 链：
+
+| 策略 | 落点 |
+|---|---|
+| INBOUND | filter/MYFW-INPUT |
+| OUTBOUND | filter/MYFW-OUTPUT |
+| FORWARD | filter/MYFW-FORWARD |
+| DNAT | nat/MYFW-PREROUTING |
+| SNAT | nat/MYFW-POSTROUTING |
+| MARK（打标） | mangle/MYFW-MANGLE |
+
+### 7.3 权限边界
 
 | 规则来源 | Agent 权限 |
 |---|---|
@@ -280,14 +308,24 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 
 | 后端 | 接管方式 |
 |---|---|
-| iptables | 在 `INPUT` / `OUTPUT` / `FORWARD` 等系统链中插入跳转规则，将流量导入 MYFW 管理链 |
-| nftables | 通过独立 table、chain 和 hook 机制接管 |
+| iptables | 在 `INPUT`/`OUTPUT`/`FORWARD`/`PREROUTING`/`POSTROUTING` 系统链顶部插入 `-j MYFW-*`，将流量导入 MYFW 管理链 |
+| nftables | 通过独立 `myfw` table、chain 和 hook 机制接管 |
 
-**安全策略**：
+### 8.1 顶部精准插入（ensureJump）
 
-- 执行跳转规则操作前，对目标链、规则位置、已有规则上下文进行严格检测；
-- **不覆盖** 其他系统规则；
-- **不改变** Docker、Kubernetes 原有网络逻辑；
+MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-USER`/`DOCKER`、K8s 的 `KUBE-*` 等规则生效），确保平台策略不被抢占：
+
+- 校验系统链第一条规则是否为 `-j MYFW-*`，是则跳过；
+- 否则删除现有任意位置的 MYFW jump（避免重复），再 `-I 1` 插到顶部；
+- 每次 `Apply` 时执行；watchdog 定期校验自愈（抗 Docker/K8s 重启导致的顺序错乱，见 §12）。
+
+### 8.2 ESTABLISHED 放行
+
+`MYFW-INPUT`/`MYFW-FORWARD`/`MYFW-OUTPUT` 首条插 `-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`，放行已建立连接的回包。这是 MYFW-FORWARD 提前到 DOCKER 之前的必要前提——否则 Docker 回包不再被 docker 的 ESTABLISHED ACCEPT 放行，会因平台 DROP 策略断开现有连接。
+
+### 8.3 共存原则
+
+- **不覆盖** 其他系统规则；**不改变** Docker、Kubernetes 原有网络逻辑；
 - 外部规则发生变化时，系统 **不强制恢复整个防火墙**，只维护自身管理范围。
 
 ---
@@ -301,27 +339,28 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 - `filter`：访问控制
 - `nat`：地址转换
 - `mangle`：数据包标记
-- `raw`：基础控制
 
-### 9.2 支持的链
+### 9.2 支持的链（MYFW 命名空间内）
 
-`INPUT` / `OUTPUT` / `FORWARD` / `PREROUTING` / `POSTROUTING`
+`MYFW-INPUT` / `MYFW-OUTPUT` / `MYFW-FORWARD` / `MYFW-PREROUTING` / `MYFW-POSTROUTING` / `MYFW-MANGLE`
 
 ### 9.3 支持的能力
 
-- 入 / 出方向访问控制
-- 转发控制
-- DNAT 端口映射
-- SNAT 地址转换
-- IP 黑名单 / 白名单
-- 网段限制
-- 协议限制
-- 端口限制
-- 基于 `mangle MARK` 的数据包标签
+- 入 / 出 / 转发方向访问控制
+- DNAT 端口映射 / SNAT 地址转换
+- **地址组（白/黑名单）**：`AddressGroup` 维护多 CIDR 集合，编译为 `ipset`/`nft set`（`-m set --match-set` / `ip saddr @set`），一条规则匹配海量 CIDR，O(1) 查找
+- 协议 / 端口限制
+- **MARK 打标**（mangle）+ **match_mark 匹配**（filter）：打标与匹配正交，可组合联动
 
-### 9.4 联动能力
+### 9.4 mark + 白名单联动
 
-通过 MARK 标记，可进一步与 Linux Traffic Control、策略路由或其他网络系统联动，实现更加复杂的网络控制。
+典型场景「仅白名单 IP 可访问打了 mark 的业务流量」：
+
+1. 策略 A（mangle/MYFW-MANGLE）：给业务端口流量 `MARK --set-mark 100`
+2. 策略 B（filter/MYFW-FORWARD）：`match_mark=100` + `source_group=whitelist` -> ACCEPT
+3. 策略 C（filter/MYFW-FORWARD）：`match_mark=100` -> DROP（兜底）
+
+按优先级顺序匹配：白名单 IP 的 mark=100 流量先 ACCEPT，其余落到 DROP。对 Docker 暴露端口流量（经 DNAT 走 FORWARD）同样适用——用宿主端口在 mangle 打标，FORWARD 匹配标 + 白名单，不依赖容器 IP。
 
 ---
 
@@ -333,6 +372,10 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 |---|---|---|
 | **普通模式** | 日常运维 | 云安全组式：源 / 目标 / 协议 / 端口 / 动作 |
 | **专家模式** | 高级管理员 | 底层 Driver 实际生成的规则结构（iptables/nftables 的 table/chain/rule） |
+
+### 10.1 节点级直操作收敛 MYFW
+
+节点管理页的「编辑规则」（单条增删改插）只能操作 `MYFW-*` 链，拒绝直接操作 `INPUT`/`FORWARD`/`OUTPUT`/`PREROUTING`/`POSTROUTING` 等内置链。从入口堵住绕过平台直接改内置链，确保所有平台下发的规则都落在 MYFW 命名空间内。
 
 ---
 
@@ -372,6 +415,10 @@ Agent 内部设计 Watchdog 机制，用于持续检测自身管理区域状态�
   - 上报告警到 Controller；
   - 根据配置：自动恢复 或 等待管理员确认。
 - **不检测**：Docker / Kubernetes / 管理员手工规则 —— 避免误报。
+
+### 12.1 jump 顺序自愈
+
+watchdog 定期（30s）校验各系统链 position 1 是否仍为 `-j MYFW-*`。Docker/K8s 重启后若 MYFW jump 被挤到后面，自动按 §8.1 的 ensureJump 逻辑重排回 position 1，确保平台策略始终先于 DOCKER/KUBE 生效。
 
 ---
 

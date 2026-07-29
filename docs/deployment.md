@@ -5,9 +5,8 @@
 > 配套文档：[design.md](./design.md)
 >
 > **部署形态约定**：
-> - Controller：Docker Compose
-> - OceanBase：**外部现成资源**，本文档不负责部署，仅约定 Controller 如何通过环境变量接入
-> - 开发环境：Controller 走 SQLite，无需 OB
+> - Controller：Docker Compose；镜像内 `go build` 编译，或 host 编译二进制后挂载（绕过 docker build 拉基础镜像）
+> - 数据库：当前部署用 SQLite；生产可切换 MySQL/OceanBase（外部资源，环境变量注入，规划中）
 > - Agent：裸机 systemd，不提供容器镜像
 
 ---
@@ -303,6 +302,7 @@ services:
       - /opt/myfw/controller/config.yaml:/etc/myfw/config.yaml:ro
       - /opt/myfw/ca:/etc/myfw/ca:ro
       - /opt/myfw/controller/data:/var/lib/myfw
+      - /opt/myfw/dist/myfw-controller:/usr/local/bin/myfw-controller:ro   # host 编译二进制挂载（绕过 docker build）
     command: ["--config", "/etc/myfw/config.yaml"]
     # 出方向要能到外部 OB(2881);如果 OB 只对特定网段开放,这里可能需要
     # extra_hosts 或加 network_mode: host,按实际环境调整

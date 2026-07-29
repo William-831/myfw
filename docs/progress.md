@@ -1,6 +1,6 @@
 # 开发进度
 
-> 更新日期：2026-07-28
+> 更新日期：2026-07-29
 > 配套文档：[development-plan.md](./development-plan.md)
 >
 > **图例**：`[ ]` 未开始 · `[~]` 进行中 · `[x]` 已完成 · `[-]` 已跳过
@@ -22,7 +22,7 @@
 | M8 | Watchdog 漂移检测 | `[x]` | 2026-07-21 |  | v0.1.0-m8 | 30s Hash 对比 + 漂移上报 + AutoRecover 开关 |
 | M9 | NftablesDriver | `[x]` | 2026-07-21 |  | v0.1.0-m9 | inet/ip family + 5 chain + fakeexec 测试 |
 | M10 | 状态采集 | `[x]` | 2026-07-21 |  | v0.1.0-m10 | CPU/内存/网络/连接数采集 + StateReport 上报 |
-| M11 | Web 前端 | `[~]` | 2026-07-21 |  | v0.1.0-m11 | 登录/节点/策略/审批/审计/Dashboard 就位；差 Controller 反代静态资源 |
+| M11 | Web 前端 | `[x]` | 2026-07-21 | 2026-07-29 | v0.1.0-m11 | 登录/节点/策略/审批/审计/Dashboard/地址组就位；Controller 反代静态资源 |
 | M12 | 审计 / 告警 / 观测 | `[x]` | 2026-07-21 | 2026-07-23 | v0.1.0-m12 | CSV 导出 + /metrics + webhook 告警 |
 | M13 | 打包分发 | `[ ]` |  |  |  | 待启动 |
 
@@ -235,3 +235,6 @@
 - **2026-07-23** - M12 达成：审计日志 CSV 导出（支持筛选）；Prometheus 指标暴露 `/metrics`；告警 webhook 渠道。tag 待补打。
 - **2026-07-27** - 工程整理与安全增强：① 清理本地构建产物 / 依赖 / 证书（`agent.exe`、`controller.exe`、`dist/`、`deploy-package/`、`dev-ca/`、`deploy-cert/`、`web/node_modules`、`.mimicode` 等），补全 `.gitignore`（`/deploy-package/`、`/deploy-cert/`、`*.srl`、`*.ext`、`/.mimicode/` 等），移除遗留 `main.go` 与 `internal/shared/`。② 新增 `internal/security/` 模块：会话令牌（HMAC-SHA256）+ 防重放（nonce）+ IP 钉扎 + 证书自动轮换（短证书 24h），作为 gRPC 统一安全拦截器，在 mTLS 之上叠加应用层安全。③ 新增 `internal/model/iptables.go` 与 `stream.proto` 的 `IptablesRules` / `IptablesChain` / `SyncRulesRequest` 消息，支持节点 iptables 规则上报与同步。④ Controller 拆分 audit / dashboard / iptables / node / task 等 REST 路由文件。⑤ 同步修订 `design.md` / `deployment.md` / `development-plan.md` 至最新代码。⑥ 约定本地仅维护源代码，编译 / 测试 / 打包统一在远程 Linux 服务器执行；后续里程碑以 Git tag 标记节点。
 - **2026-07-27** - Tag 核对与补全：核实 M0-M11 的 tag 此前已标记于初始提交 `265aa51`（`feat: 初始化项目，完成 M0-M11 核心功能`），本次补打 `v0.1.0-m12` 指向 `d30677c`（M12 + 工程整理）。至此 M0-M12 全部 tag 就位，可通过 `git checkout <tag>` 回退到任意里程碑节点查看代码。
+- **2026-07-29** - 前端 UI 重构（商务质感 Dashboard：StatusPanel 环形饼图 + AuditFeed 时间线，一屏不滚动）+ 修改密码（`User` model + sha256+salt + `/auth/change-password`，兼容 admin/admin123）+ 节点规则查看显示 IP（非主机名）+ 编辑规则链下拉可选 + 链分组折叠。Agent 改 systemd 启动；规则查看链归类修复（collector 按 `-A CHAIN` 真实链，解决 MYFW-OUTPUT 显示不全）；灾备 `auto_reregister`（Controller 库重建时 Agent 自动补录 node+certificate）+ `scripts/rebootstrap-agents.sh`（CA 丢失批量重接入）。
+- **2026-07-29** - 地址组（`AddressGroup`）+ ipset/nft set + mark 联动：proto 扩展（`CompiledRule` +`source_group`/`destination_group`/`match_mark`，`RuleSet` +`sets`，新增 `AddressSet`）；compiler `CompileForNode` 返回 `(rules, sets)` 收集地址组；driver `Apply` 改签名 `*RuleSet`，sets 原子下发（iptables `ipset` + nft `set`）；`compileRule` 加 `-m set`/`-m mark`，nft 补 `ACTION_MARK`。实测 ipset + mark+白名单联动在节点生效。proto 生成改用 `buf generate`（本地无 protoc 时）；Controller 改 host `go build` 二进制 + compose 挂载（绕过 docker build 拉基础镜像 arm64/DNS 问题）。
+- **2026-07-29** - MYFW 收敛理念落地（P1-P4）：P1 `ensureJump` 顶部精准重排（校验 position 1 + 幂等重排）+ ESTABLISHED 放行（进行中）；P2 节点直操作收敛 MYFW（规划）；P3 watchdog jump 顺序自愈（规划）；P4 自定义链 web 管理（规划）。
