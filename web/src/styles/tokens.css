@@ -1,0 +1,96 @@
+:root {
+  /* 中性色阶(slate 系,全站底色) */
+  --c-bg: #fafbfc;
+  --c-surface: #ffffff;
+  --c-surface-2: #f8fafc;           /* 次级面 / hover 底 */
+  --c-border: #eef0f3;              /* 卡片边框,近隐形 */
+  --c-border-soft: #f1f3f5;         /* 内部分隔线,极浅 */
+  --c-text-1: #0f172a;              /* 主文字 */
+  --c-text-2: #475569;              /* 次文字 */
+  --c-text-3: #94a3b8;              /* 弱文字 / 标签 */
+
+  /* 品牌与操作色 */
+  --c-primary: #4f46e5;             /* indigo,现代商务 */
+  --c-primary-soft: rgba(79, 70, 229, 0.08);
+  --c-sidebar: #0f172a;
+
+  /* 状态色(降饱和商务化) */
+  --c-success: #10b981;             /* emerald */
+  --c-warning: #f59e0b;             /* amber */
+  --c-danger: #f43f5e;              /* rose */
+  --c-info: #64748b;
+  --c-muted: #cbd5e1;               /* 离线 / 弱状态 */
+
+  /* 尺寸 / 阴影 / 字体 token */
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-xs: 4px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-hover: 0 8px 24px rgba(15, 23, 42, 0.06);
+  --font-sans: 'Inter', 'PingFang SC', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --gap: 16px;
+  --gap-sm: 12px;
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Element Plus 主题跟随 */
+  --el-color-primary: var(--c-primary);
+  --el-color-success: var(--c-success);
+  --el-color-warning: var(--c-warning);
+  --el-color-danger: var(--c-danger);
+  --el-color-info: var(--c-info);
+  --el-border-radius-base: var(--radius-sm);
+  --el-font-family: var(--font-sans);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--c-bg);
+  color: var(--c-text-2);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 统一 Element Plus 卡片为商务质感 */
+.el-card {
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.el-card__header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--c-border);
+  font-weight: 600;
+  color: var(--c-text-1);
+}
+
+/* 全站滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

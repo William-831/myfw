@@ -34,6 +34,7 @@ service.interceptors.response.use(
 
 // 认证
 export const login = (data) => service.post('/v1/auth/login', data)
+export const changePassword = (data) => service.post('/v1/auth/change-password', data)
 
 // 节点管理
 export const getNodes = () => service.get('/v1/nodes/list')

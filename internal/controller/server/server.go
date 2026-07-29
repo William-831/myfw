@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -96,14 +97,20 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 	}, log)
 
 	// 使用安全拦截器替代原有的 authUnary/authStream
+	adeps := authDeps{
+		db:             db,
+		disableMTLS:    cfg.Server.GRPC.TLS.Disable,
+		autoReregister: cfg.Security.AutoReregister,
+		audit:          auditSink,
+	}
 	opts = append(opts,
 		grpc.ChainUnaryInterceptor(
 			secInterceptor.UnaryServerInterceptor(),
-			legacyAuthUnary(db, cfg.Server.GRPC.TLS.Disable),
+			legacyAuthUnary(adeps),
 		),
 		grpc.ChainStreamInterceptor(
 			secInterceptor.StreamServerInterceptor(),
-			legacyAuthStream(db, cfg.Server.GRPC.TLS.Disable),
+			legacyAuthStream(adeps),
 		),
 	)
 
@@ -170,11 +177,19 @@ var bootstrapMethods = map[string]bool{
 	"/myfw.v1.Registration/Register": true,
 }
 
+// authDeps 封装 gRPC 业务层认证所需依赖
+type authDeps struct {
+	db             *gorm.DB
+	disableMTLS    bool
+	autoReregister bool
+	audit          *audit.Sink
+}
+
 // legacyAuthUnary 保留原有的数据库级认证检查（证书吊销、节点状态等）。
 // 安全拦截器处理 mTLS + 会话层认证，这里做业务层二次校验。
-func legacyAuthUnary(db *gorm.DB, disableMTLS bool) grpc.UnaryServerInterceptor {
+func legacyAuthUnary(deps authDeps) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if err := checkAuth(ctx, info.FullMethod, db, disableMTLS); err != nil {
+		if err := checkAuth(ctx, info.FullMethod, deps); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
@@ -182,9 +197,9 @@ func legacyAuthUnary(db *gorm.DB, disableMTLS bool) grpc.UnaryServerInterceptor 
 }
 
 // legacyAuthStream 流式RPC的业务层认证。
-func legacyAuthStream(db *gorm.DB, disableMTLS bool) grpc.StreamServerInterceptor {
+func legacyAuthStream(deps authDeps) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := checkAuth(ss.Context(), info.FullMethod, db, disableMTLS); err != nil {
+		if err := checkAuth(ss.Context(), info.FullMethod, deps); err != nil {
 			return err
 		}
 		return handler(srv, ss)
@@ -192,11 +207,12 @@ func legacyAuthStream(db *gorm.DB, disableMTLS bool) grpc.StreamServerIntercepto
 }
 
 // checkAuth 业务层认证：验证证书是否被吊销、节点是否归档。
-func checkAuth(ctx context.Context, method string, db *gorm.DB, disableMTLS bool) error {
+// 库无证书记录但 CA 验证通过时,若开启 auto_reregister,自动重注册存量 Agent。
+func checkAuth(ctx context.Context, method string, deps authDeps) error {
 	if bootstrapMethods[method] {
 		return nil
 	}
-	if disableMTLS {
+	if deps.disableMTLS {
 		return nil
 	}
 
@@ -220,7 +236,18 @@ func checkAuth(ctx context.Context, method string, db *gorm.DB, disableMTLS bool
 	fp := pki.Fingerprint(cert)
 
 	var row model.Certificate
-	if err := db.WithContext(ctx).Where("fingerprint = ?", fp).First(&row).Error; err != nil {
+	if err = deps.db.WithContext(ctx).Where("fingerprint = ?", fp).First(&row).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return status.Error(codes.Unauthenticated, "certificate lookup failed")
+		}
+		// CA 已验证通过(否则 mTLS 握手到不了此处),库无记录:
+		// Controller 数据库重建场景,自动重注册存量 Agent
+		if deps.autoReregister {
+			if rerr := autoReregister(ctx, deps.db, cert, nodeID, fp, deps.audit); rerr != nil {
+				return status.Errorf(codes.Internal, "auto reregister: %v", rerr)
+			}
+			return nil
+		}
 		return status.Error(codes.Unauthenticated, "unknown certificate")
 	}
 	if row.Revoked {
@@ -230,11 +257,69 @@ func checkAuth(ctx context.Context, method string, db *gorm.DB, disableMTLS bool
 		return status.Error(codes.Unauthenticated, "certificate/node id mismatch")
 	}
 	var node model.Node
-	if err := db.WithContext(ctx).Where("id = ?", nodeID).First(&node).Error; err != nil {
+	if err := deps.db.WithContext(ctx).Where("id = ?", nodeID).First(&node).Error; err != nil {
 		return status.Error(codes.Unauthenticated, "unknown node")
 	}
 	if node.Status == model.NodeStatusArchived {
 		return status.Error(codes.PermissionDenied, "node archived")
+	}
+	return nil
+}
+
+// autoReregister 在 Controller 数据库重建后,为已通过 CA 验证的存量 Agent
+// 补录 node(ACTIVE) + certificate 记录,使其无需重新 bootstrap 即可恢复接入。
+// 幂等:fingerprint 唯一索引保证并发/重复调用只创建一次。
+func autoReregister(ctx context.Context, db *gorm.DB, cert *x509.Certificate, nodeID, fp string, auditSink *audit.Sink) error {
+	now := time.Now().UTC()
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// node 不存在则创建(ACTIVE:CA 签发即代表此前已批准,重建不应改变信任)
+		var node model.Node
+		if err := tx.Where("id = ?", nodeID).First(&node).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			node = model.Node{
+				ID:        nodeID,
+				Status:    model.NodeStatusActive,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := tx.Create(&node).Error; err != nil {
+				return err
+			}
+		}
+		// certificate 不存在则补录(用证书实际有效期)
+		var row model.Certificate
+		if err := tx.Where("fingerprint = ?", fp).First(&row).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			row = model.Certificate{
+				NodeID:      nodeID,
+				Fingerprint: fp,
+				SerialHex:   cert.SerialNumber.Text(16),
+				NotBefore:   cert.NotBefore.UTC(),
+				NotAfter:    cert.NotAfter.UTC(),
+				CreatedAt:   now,
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				// 并发时唯一索引冲突 = 已被其他请求创建,视为成功
+				return nil
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// 审计(尽力而为,不影响重注册结果)
+	if auditSink != nil {
+		_ = auditSink.Write(ctx, model.AuditLog{
+			Actor:  "system",
+			Action: "node.auto_reregister",
+			NodeID: nodeID,
+			Detail: fmt.Sprintf(`{"fingerprint":"%s","reason":"controller db rebuilt"}`, fp),
+		})
 	}
 	return nil
 }

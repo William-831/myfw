@@ -19,6 +19,7 @@ type Config struct {
 	Bootstrap BootstrapConfig `yaml:"bootstrap"`
 	Audit     AuditConfig     `yaml:"audit"`
 	Log       LogConfig       `yaml:"log"`
+	Security  SecurityConfig  `yaml:"security"`
 }
 
 type ServerConfig struct {
@@ -75,6 +76,14 @@ type LogConfig struct {
 	Format string `yaml:"format"`
 }
 
+// SecurityConfig holds trust-recovery toggles.
+type SecurityConfig struct {
+	// AutoReregister:Controller 数据库重建后,对已通过 CA 验证的存量 Agent
+	// 自动补录 node(ACTIVE)+certificate,使其无需重新 bootstrap 即可恢复接入。
+	// 前提:CA(dev-ca)未丢失。CA 丢失时旧证书签名失效,走正常 bootstrap 流程。
+	AutoReregister bool `yaml:"auto_reregister"`
+}
+
 // Default returns a Config with sane built-in defaults.
 func Default() Config {
 	return Config{
@@ -87,6 +96,7 @@ func Default() Config {
 		Bootstrap: BootstrapConfig{TokenTTL: 15 * time.Minute},
 		Audit:     AuditConfig{RetentionDays: 365},
 		Log:       LogConfig{Level: "info", Format: "text"},
+		Security:  SecurityConfig{AutoReregister: true},
 	}
 }
 

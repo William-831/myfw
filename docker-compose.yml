@@ -9,6 +9,10 @@ services:
     ports:
       - "8080:8080"
       - "9090:9090"
+    environment:
+      # DSN 走 env(见 config.go),指定挂载路径以持久化,避免容器重建丢库
+      - MYFW_DB_DRIVER=sqlite
+      - MYFW_DB_DSN=/var/lib/myfw/dev.db
     volumes:
       # CA 证书只读挂载（含 ca.key 供 Controller 签发 Agent 证书）
       - ./dev-ca:/etc/myfw/ca:ro

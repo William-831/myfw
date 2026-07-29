@@ -7,7 +7,7 @@
 > 部署形态约定:
 > - **Controller**:Docker 容器(alpine 运行时),二进制/前端/CA/DB 全部挂载宿主机产物。
 > - **前端**:本地 `npm run build` 产物 `web/dist` 上传后挂载进容器,与镜像解耦(持久化)。
-> - **Agent**:远程工作目录 `go build`,前台 `sudo` 运行,不用 systemd。
+> - **Agent**:远程工作目录 `go build`,用 systemd。
 > - **数据库**:SQLite(挂载持久化),不接 OceanBase。
 > - **同步**:本地攒改动 → 大版本/核心功能升级 → 经确认 → push gitee → 远程 pull。
 
@@ -308,6 +308,8 @@ sudo $HOME/go/bin/dlv debug ./cmd/agent --headless --listen=0.0.0.0:2346 --api-v
 | 8080/9090 起不来 | 端口被占 | `ss -lntp \| grep -E '8080\|9090'`;`docker ps` 看是否有残留容器 |
 | Agent 显示「后端不可用」 | 无 iptables 或非 root | `sudo` 运行;确认主机有 iptables/nftables |
 | `docker restart` 后旧逻辑仍在 | 二进制没重新编译 | 先 `go build` 再 `docker restart` |
+| 重建容器后 Agent `unknown certificate`/节点掉线 | `MYFW_DB_DSN` 未设,数据写进容器内 `/src/dev.db`,重建即丢 | `docker-compose.yml` 设 `MYFW_DB_DSN=/var/lib/myfw/dev.db`,数据落挂载的 `data/` |
+| Controller 数据库损坏重建,存量 Agent 怎么恢复 | `certificates` 表空,mTLS 拒绝旧证书 | CA(dev-ca)仍在:开启 `security.auto_reregister`(默认开),Agent 自动重注册恢复 ACTIVE;CA 也丢:`scripts/rebootstrap-agents.sh` 批量重新接入 |
 
 ---
 
@@ -320,6 +322,7 @@ sudo $HOME/go/bin/dlv debug ./cmd/agent --headless --listen=0.0.0.0:2346 --api-v
 | `deploy/docker/Dockerfile.debug` | 调试运行时镜像(alpine) | 是 |
 | `configs/controller-debug.yaml` | 容器内 Controller 配置(容器路径) | 是 |
 | `scripts/upload-frontend.sh` | 本地构建前端并上传远程(本地运行) | 是 |
+| `scripts/rebootstrap-agents.sh` | CA 丢失后批量重新 bootstrap Agent(本地运行) | 是 |
 | `dev-ca/` | 开发 CA | 否(git-ignored) |
 | `data/` | SQLite 数据 | 否 |
 | `dist/` | 后端/Agent 编译产物(远程) | 否 |

@@ -211,7 +211,7 @@
     </el-dialog>
 
     <!-- iptables 规则对话框（Tab 分类 + 筛选 + 查看完整命令） -->
-    <el-dialog v-model="rulesDialogVisible" :title="`iptables 规则 - ${rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
+    <el-dialog v-model="rulesDialogVisible" :title="`iptables 规则 - ${rulesNode.ip || rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
       <div v-loading="rulesLoading">
         <div v-if="!rulesLoading && Object.keys(iptablesRules).length === 0" class="empty-state">
           暂无规则数据。Agent 启动后会自动上报当前 iptables 规则。
@@ -305,7 +305,9 @@
           </el-select>
         </el-form-item>
         <el-form-item label="链">
-          <el-input v-model="ruleOpForm.chain" style="width: 200px" placeholder="如 INPUT" />
+          <el-select v-model="ruleOpForm.chain" filterable allow-create default-first-option style="width: 200px" placeholder="如 INPUT">
+            <el-option v-for="ch in chainOptions" :key="ch" :label="ch" :value="ch" />
+          </el-select>
         </el-form-item>
         <el-form-item label="模式">
           <el-radio-group v-model="ruleOpMode">
@@ -427,7 +429,7 @@ const detailNode = reactive({
 })
 
 // iptables 规则
-const rulesNode = reactive({ id: '', hostname: '' })
+const rulesNode = reactive({ id: '', hostname: '', ip: '' })
 const iptablesRules = ref({})
 const activeTable = ref('filter')
 const ruleSearch = ref('')
@@ -687,6 +689,7 @@ const handleView = async (row) => {
 const handleViewRules = async (row) => {
   rulesNode.id = row.id
   rulesNode.hostname = row.hostname
+  rulesNode.ip = row.ip
   rulesLoading.value = true
   rulesDialogVisible.value = true
   // 重置筛选
@@ -729,6 +732,15 @@ const ruleOpForm = reactive({
   rule_line: '', action: 'ACCEPT', protocol: 'tcp',
   source: '', destination: '', port: ''
 })
+
+// 各表标准链,用于链下拉选项(filterable + allow-create 兼容 MYFW-* 等自定义链回显)
+const CHAINS_BY_TABLE = {
+  filter: ['INPUT', 'FORWARD', 'OUTPUT'],
+  nat: ['PREROUTING', 'INPUT', 'OUTPUT', 'POSTROUTING'],
+  mangle: ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT', 'POSTROUTING'],
+  raw: ['PREROUTING', 'OUTPUT']
+}
+const chainOptions = computed(() => CHAINS_BY_TABLE[ruleOpForm.table] || [])
 
 const handleAddRule = () => {
   ruleOpTitle.value = '添加规则'
