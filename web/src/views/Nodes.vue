@@ -245,12 +245,13 @@
                 <el-badge :value="getTableRuleCount(chains)" type="info" class="tab-badge" />
               </template>
               <div v-for="(rules, chain) in chains" :key="chain" v-show="showChain(chain)" class="rule-chain-section">
-                <div class="chain-header">
+                <div class="chain-header" @click="toggleChain(table, chain)">
+                  <el-icon class="chain-toggle" :class="{ 'is-collapsed': isChainCollapsed(table, chain) }"><CaretBottom /></el-icon>
                   <el-icon><Connection /></el-icon>
                   <span class="chain-name">{{ chain }}</span>
                   <el-tag size="small">{{ filterRules(rules).length }}/{{ rules.length }} 条</el-tag>
                 </div>
-                <el-table :data="filterRules(rules).map((r, i) => ({ ...r, index: i + 1 }))" size="small" border stripe style="margin-bottom: 12px">
+                <el-table v-show="!isChainCollapsed(table, chain)" :data="filterRules(rules).map((r, i) => ({ ...r, index: i + 1 }))" size="small" border stripe style="margin-bottom: 12px">
                   <el-table-column label="#" width="50" align="center">
                     <template #default="{ row }">{{ row.index }}</template>
                   </el-table-column>
@@ -385,7 +386,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Connection, Setting, ArrowDown, Search } from '@element-plus/icons-vue'
+import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom } from '@element-plus/icons-vue'
 import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule, getNodeDrift } from '@/api'
 
 const loading = ref(false)
@@ -435,6 +436,14 @@ const activeTable = ref('filter')
 const ruleSearch = ref('')
 const ruleTypeFilter = ref('all')
 const ruleChainFilter = ref('')
+
+// 链折叠状态:key = `${table}:${chain}`,点击链头切换展开/收起
+const collapsedChains = reactive({})
+const toggleChain = (table, chain) => {
+  const key = `${table}:${chain}`
+  collapsedChains[key] = !collapsedChains[key]
+}
+const isChainCollapsed = (table, chain) => !!collapsedChains[`${table}:${chain}`]
 
 // 工具函数
 const getBackendLabel = (backend) => {
@@ -865,7 +874,10 @@ onMounted(loadNodes)
 .rule-count { font-size: 12px; color: #909399; margin-left: auto; }
 .tab-badge { margin-left: 6px; }
 .rule-chain-section { margin-bottom: 16px; }
-.chain-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #374151; }
+.chain-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #374151; cursor: pointer; user-select: none; }
+.chain-header:hover .chain-name { color: #2563eb; }
+.chain-toggle { transition: transform 0.2s; }
+.chain-toggle.is-collapsed { transform: rotate(-90deg); }
 .chain-name { font-weight: 600; }
 .rule-code { font-family: 'Courier New', Courier, monospace; font-size: 12px; color: #1f2937; }
 .empty-state { text-align: center; padding: 40px; color: #999; }
