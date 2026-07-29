@@ -33,10 +33,10 @@ fi
 # 2. 校验本地产物
 [[ -f web/dist/index.html ]] || { echo "[upload] 构建产物缺失:web/dist/index.html"; exit 1; }
 
-# 3. 清理远程旧 dist 并上传新产物
+# 3. 清空远程 dist 内容(保留目录 inode,避免容器 bind mount 指向旧 inode 失效)并上传
 echo "[upload] 上传 -> ${REMOTE}:${DEST}/web/dist"
-ssh "$REMOTE" "rm -rf ${DEST}/web/dist && mkdir -p ${DEST}/web"
-scp -C -r web/dist "${REMOTE}:${DEST}/web/"
+ssh "$REMOTE" "mkdir -p ${DEST}/web/dist && rm -rf ${DEST}/web/dist/*"
+scp -C -r web/dist/* "${REMOTE}:${DEST}/web/dist/"
 
 # 4. 远程校验
 if ssh "$REMOTE" "test -f ${DEST}/web/dist/index.html"; then

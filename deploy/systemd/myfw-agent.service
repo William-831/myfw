@@ -1,21 +1,18 @@
+# MYFW Agent systemd 单元(裸机部署,需 root 操作 Netfilter/iptables)
+# 部署: scp 到 /etc/systemd/system/ 后 systemctl daemon-reload && systemctl enable --now myfw-agent
+# 日志: journalctl -u myfw-agent -f
 [Unit]
-Description=MYFW Agent
-Documentation=https://github.com/mrblack/iptables-tool
+Description=MYFW Agent(防火墙执行面)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/myfw-agent --config /etc/myfw-agent/agent.yaml
+WorkingDirectory=/home/myFW
+ExecStart=/home/myFW/dist/myfw-agent --config /home/myFW/agent.yaml
 Restart=on-failure
-RestartSec=3s
-
-# Agent must operate Netfilter directly.
-User=root
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-NoNewPrivileges=false
-
-ReadWritePaths=/var/lib/myfw-agent /etc/myfw-agent
+RestartSec=5
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

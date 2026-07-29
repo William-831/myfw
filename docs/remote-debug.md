@@ -28,7 +28,7 @@
 **与上文 debug 方案的关键差异**(实际环境以本节为准):
 - **gitee 不可达**:本地与远程均无法解析 `gitee.com`,`git pull/push` 不可行。代码同步走「本地打包 scp 上传」(见下)。
 - **部署形态**:实际用 `docker-compose.yml` + `deploy/docker/Dockerfile.compose`(容器内 `go build -mod=vendor` 编译后端并打入镜像,**非**挂载宿主机二进制),配置 `configs/controller-container.yaml`。
-- **Agent**:`go build -o dist/myfw-agent ./cmd/agent` 后,`nohup ./dist/myfw-agent --config agent.yaml > agent.log 2>&1 &` 后台运行;证书/身份在 `/home/myFW`(`agent.yaml` 配 `data_dir: /home/myFW`)。
+- **Agent**:`go build -o dist/myfw-agent ./cmd/agent` 后由 **systemd** 管理(unit 见 `deploy/systemd/myfw-agent.service`);证书/身份在 `/home/myFW`(`agent.yaml` 配 `data_dir: /home/myFW`),日志 `journalctl -u myfw-agent -f`,开机自启 + 崩溃自动重启。
 
 ### 打包替换升级(因 gitee 不通,替代 git pull)
 
@@ -56,6 +56,9 @@ done                                   # 恢复运行时数据(节点身份/CA/D
 tar xzf /tmp/myfw-dist.tar.gz -C /home/myFW/web/               # 前端 dist
 docker-compose up -d --build           # 重建镜像+启动(容器内 go build)
 CGO_ENABLED=0 go build -mod=vendor -o dist/myfw-agent ./cmd/agent   # 编译 Agent
+# Agent 由 systemd 管理(首次需上传 unit 并 enable;后续改动 systemctl restart myfw-agent)
+scp deploy/systemd/myfw-agent.service root@192.168.80.249:/etc/systemd/system/  # 仅首次部署
+ssh root@192.168.80.249 "systemctl daemon-reload && systemctl restart myfw-agent"
 ```
 
 ### Agent 重新接入(Controller 数据库为空时)
