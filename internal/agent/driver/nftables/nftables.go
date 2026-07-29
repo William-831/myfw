@@ -90,6 +90,16 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 			return "", err
 		}
 	}
+	// 过滤链首条放行已建立连接,避免策略 DROP 误伤回包(对应 iptables driver 的
+	// ESTABLISHED ACCEPT)。
+	for _, mc := range managedChains {
+		if mc.chain != "INPUT" && mc.chain != "OUTPUT" && mc.chain != "FORWARD" {
+			continue
+		}
+		if err := d.addRule(ctx, mc.family, mc.chain, "ct state established,related accept"); err != nil {
+			return "", fmt.Errorf("ensure established accept %s/%s: %w", mc.family, mc.chain, err)
+		}
+	}
 
 	rules := ruleSet.GetRules()
 	sorted := make([]*myfwv1.CompiledRule, len(rules))

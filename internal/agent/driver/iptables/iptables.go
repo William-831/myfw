@@ -141,6 +141,17 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 			return "", fmt.Errorf("flush %s/%s: %w", mc.table, mc.chain, err)
 		}
 	}
+	// 过滤链首条放行已建立连接,避免策略 DROP 误伤回包(尤其 MYFW-FORWARD 提前到
+	// DOCKER 之前后,Docker 回包不再被 docker 的 ESTABLISHED ACCEPT 放行)。
+	for _, mc := range managedChains {
+		if mc.chain != chainInput && mc.chain != chainOutput && mc.chain != chainForward {
+			continue
+		}
+		if _, err := d.Exec.Run(ctx, "-t", mc.table, "-A", mc.chain,
+			"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"); err != nil {
+			return "", fmt.Errorf("ensure established accept %s/%s: %w", mc.table, mc.chain, err)
+		}
+	}
 
 	// Sort by priority (asc) then by ID for determinism, so identical inputs
 	// produce identical iptables state (and identical hashes).
@@ -345,17 +356,41 @@ func (d *Driver) ensureChain(ctx context.Context, table, chain string) error {
 	return nil
 }
 
-// ensureJump inserts "-j myfwChain" at position 1 of the system chain if the
-// same jump isn't already present anywhere in that chain.
+// ensureJump 保证系统链 position 1 是 "-j myfwChain"。若已是则跳过;否则删除现有
+// 任意位置的 myfwChain jump(避免重复)再 -I 1 到顶部。这样 MYFW 始终在内置链最前,
+// 先于 Docker 的 DOCKER-USER/DOCKER 等规则生效,确保平台策略不被抢占。
+// 删除到重插间有毫秒级空窗,可接受。
 func (d *Driver) ensureJump(ctx context.Context, table, sysChain, myfwChain string) error {
-	// -C returns 0 if the rule exists.
-	if _, err := d.Exec.Run(ctx, "-t", table, "-C", sysChain, "-j", myfwChain); err == nil {
+	if d.jumpAtTop(ctx, table, sysChain, myfwChain) {
 		return nil
+	}
+	// 删除现有任意位置的 myfwChain jump(-D 幂等,循环删直到无)。
+	for {
+		if _, err := d.Exec.Run(ctx, "-t", table, "-D", sysChain, "-j", myfwChain); err != nil {
+			break
+		}
 	}
 	if _, err := d.Exec.Run(ctx, "-t", table, "-I", sysChain, "1", "-j", myfwChain); err != nil {
 		return fmt.Errorf("insert jump %s -> %s: %w", sysChain, myfwChain, err)
 	}
 	return nil
+}
+
+// jumpAtTop 检查系统链第一条规则是否为 -j myfwChain。
+func (d *Driver) jumpAtTop(ctx context.Context, table, sysChain, myfwChain string) bool {
+	out, err := d.Exec.Run(ctx, "-t", table, "-S", sysChain)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// 第一条非空规则即 position 1
+		return strings.Contains(line, "-j "+myfwChain)
+	}
+	return false
 }
 
 // targetChainFor returns the (table, chain) that a compiled rule belongs in.
