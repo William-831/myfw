@@ -405,7 +405,7 @@ go-iptablesops/                  # 目录名；Go 模块名为 iptables-tool（�
 - [~] **P1** ensureJump 顶部精准重排 + ESTABLISHED 放行（重排已实现，ESTABLISHED 进行中）
 - [ ] **P2** 节点直操作收敛 MYFW（拒绝直接操作内置链）
 - [ ] **P3** watchdog jump 顺序自愈（抗 docker/k8s 重启）
-- [ ] **P4** 自定义链 web 管理（`CustomChain` model + driver 动态子链 + 策略指定链）
+- [x] **P4** 自定义链 web 管理（`CustomChain` model + driver `syncCustomChains` + `Policy.chain` + 前端管理页，已实测）
 
 ---
 

@@ -275,6 +275,7 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 |---|---|
 | iptables | 6 条自定义链：filter 表 `MYFW-INPUT`/`MYFW-OUTPUT`/`MYFW-FORWARD`、nat 表 `MYFW-PREROUTING`/`MYFW-POSTROUTING`、mangle 表 `MYFW-MANGLE` |
 | iptables 地址组 | `ipset` 集合 `MYFW-<name>`（hash:net，多 CIDR） |
+| iptables 自定义子链 | 用户子链 `MYFW-<name>`（从父链 jump，`Policy.chain` 指定，见 §7.4） |
 | nftables | 独立 `myfw` table + chain（inet/ip family） |
 | nftables 地址组 | nft `set` `MYFW-<name>`（type ipv4_addr + flags interval） |
 
@@ -299,6 +300,10 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 | 非 MYFW 前缀（root 手工、DOCKER 链、KUBE 链、其他系统服务） | **仅读取和展示，不改不删** |
 
 **核心原则**：Agent 只拥有自身命名空间范围内的规则管理权限，实现多来源规则共存。
+
+### 7.4 自定义子链（P4）
+
+用户可在 Web 上创建自定义子链 `MYFW-<name>`，指定父链（6 条 MYFW 链之一）。`syncCustomChains` 在 Apply 时创建子链（`-N` 幂等）+ 父链追加 jump（`-A` 幂等）+ flush 子链。策略通过 `chain` 字段指定规则落到子链（`targetChainForRule` 优先子链），未指定则按 action/direction 落父链。用于规则按业务归类，父链清爽。
 
 ---
 
