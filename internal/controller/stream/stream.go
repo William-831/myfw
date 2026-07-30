@@ -11,10 +11,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -409,6 +411,36 @@ func (s *Service) SendRuleOperation(ctx context.Context, nodeID string, op *myfw
 			}
 		case <-time.After(timeout):
 			return nil, errors.New("timeout waiting for rule operation result")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// execSeq 为专家模式命令生成唯一 task_id 的自增计数器
+var execSeq uint64
+
+// SendExecAndWait 下发裸 iptables 命令到 Agent 并等待 TaskResult（专家模式）。
+// 命令白名单校验由 Agent 侧 OnExec 保证；本方法仅负责下发与同步等待。
+func (s *Service) SendExecAndWait(ctx context.Context, nodeID, command string, timeout time.Duration) (*myfwv1.TaskResult, error) {
+	taskID := fmt.Sprintf("exec-%d", atomic.AddUint64(&execSeq, 1))
+	ch, cancel := s.SubscribeTaskResults()
+	defer cancel()
+	if err := s.Reg.Send(nodeID, &myfwv1.ControllerToAgent{
+		Payload: &myfwv1.ControllerToAgent_ExecCommand{
+			ExecCommand: &myfwv1.ExecCommand{TaskId: taskID, Command: command},
+		},
+	}); err != nil {
+		return nil, err
+	}
+	for {
+		select {
+		case res := <-ch:
+			if res.TaskId == taskID {
+				return res, nil
+			}
+		case <-time.After(timeout):
+			return nil, errors.New("timeout waiting for exec result")
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}

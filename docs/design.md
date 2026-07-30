@@ -398,6 +398,18 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 
 节点管理页的「编辑规则」（单条增删改插）只能操作 `MYFW-*` 链，拒绝直接操作 `INPUT`/`FORWARD`/`OUTPUT`/`PREROUTING`/`POSTROUTING` 等内置链。从入口堵住绕过平台直接改内置链，确保所有平台下发的规则都落在 MYFW 命名空间内。
 
+### 10.2 专家模式：裸 iptables 命令通道（REPL 终端）
+
+专家模式除展示底层规则结构外，另提供一条**裸 iptables 命令执行通道**，供高级管理员在节点上直接敲入 iptables 命令排障：
+
+- **协议**：`stream.proto` 新增 `ControllerToAgent.exec_command`（`ExecCommand{task_id, command}`），复用 `TaskResult` 回传（`ok`=exit 0，`message`=stdout/stderr）。
+- **白名单**：Agent 侧 `handler.OnExec` 校验命令首 token 必须属于 iptables 族（`iptables`/`ip6tables`/`iptables-save`/`iptables-restore`/`nft`），拒绝任意 shell 命令，防止退化为 webshell。
+- **交互**：前端「专家终端」页（`/expert`）为 REPL 面板——节点选择 + 命令历史输出区（成功绿/失败红）+ 输入框回车提交 + ↑↓ 回溯历史 + 常用命令快捷按钮。
+- **危险命令二次确认**：`-F`/`-P ... DROP`/`-X` 等清空/改默认策略/删链操作前端弹窗二次确认。
+- **强审计**：每条命令经 `POST /api/v1/iptables/exec/:node_id` 下发，Controller 写审计日志（操作人/节点/命令/输出）。
+
+> ⚠️ 此通道**绕过 MYFW 命名空间、快照、保护期**，`iptables -F`/`-P DROP` 等可导致节点失联且平台无法回滚。仅限高级管理员 knowingly 接受风险时使用，靠白名单 + 强审计 + 二次确认兜底。
+
 ---
 
 ## 11. 安全变更控制
@@ -423,6 +435,17 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 - **确认保护期**：防止错误策略导致服务器失联。
 - **自动 Rollback**：超时未确认自动回滚。
 - **全过程审计**：操作者、目标节点、变更内容、执行结果、恢复记录均入库。
+
+### 11.3 当前简化：单用户 root 跳过审批与保护期
+
+当前为单用户体系（`admin` 即 root，未引入多用户/角色），上述完整审批+保护期流程按以下方式简化：
+
+- **跳过审批**：前端 apply 默认 `auto_approve=true`，提交后直接进入下发执行，不生成 `pending_approval` 待审批任务（root 自己审批自己无安全价值）。
+- **跳过保护期**：Agent Apply 成功后直接置 `CONFIRMED`，不走 `confirm_wait`，不触发超时自动回滚（避免管理员忘记 confirm 导致超时回滚看似"应用失败"）。
+- **强审计留痕**：`Coordinator.Submit` 在 `AutoApprove=true` 时审计 detail 标记 `skip_approval=true` + `reason`，事后可完整追溯。
+- **保留兜底**：`confirm_wait`/`autoRollback`/`recoverOnStart` 全套保护期代码仍在，仅默认旁路。未来引入普通用户/多用户后，普通用户恢复完整审批+保护期流程，root 维持跳过。
+
+> 专家模式裸命令通道（§10.2）同样绕过保护期，靠白名单 + 强审计 + 二次确认兜底。
 
 ---
 

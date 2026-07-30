@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -11,12 +12,13 @@ import (
 	"gorm.io/gorm"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
+	"iptables-tool/internal/controller/audit"
 	"iptables-tool/internal/controller/compiler"
 	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/model"
 )
 
-func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service, comp *compiler.Compiler) {
+func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service, comp *compiler.Compiler, auditSink *audit.Sink) {
 	g := r.Group("/api/v1/iptables")
 
 	// 获取节点规则列表（准实时：先向 Agent 拉取最新规则写入 DB，再返回）
@@ -162,6 +164,47 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 		}
 		tree := buildChainTree(rules)
 		c.JSON(http.StatusOK, tree)
+	})
+
+	// 专家模式:执行裸 iptables 命令(iptables 族白名单校验在 Agent 侧),同步等待回复。
+	// 此通道绕过 MYFW 命名空间/快照/保护期,强审计记录操作人/节点/命令/输出。
+	g.POST("/exec/:node_id", func(c *gin.Context) {
+		nodeID := c.Param("node_id")
+		var body struct {
+			Command string `json:"command"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.TrimSpace(body.Command) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "command is required"})
+			return
+		}
+		if streamSvc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "stream service unavailable"})
+			return
+		}
+		res, err := streamSvc.SendExecAndWait(c.Request.Context(), nodeID, body.Command, 10*time.Second)
+		if err != nil {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
+			return
+		}
+		// 强审计:记录操作人/节点/命令/输出,便于事后追溯
+		if auditSink != nil {
+			detail, _ := json.Marshal(map[string]any{
+				"command": body.Command,
+				"ok":      res.Ok,
+				"output":  res.Message,
+			})
+			_ = auditSink.Write(c.Request.Context(), model.AuditLog{
+				Actor:  actor(c),
+				Action: "iptables.exec",
+				NodeID: nodeID,
+				Detail: string(detail),
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": res.Ok, "output": res.Message})
 	})
 
 	// 批量操作: 启用/禁用策略

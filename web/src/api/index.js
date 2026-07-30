@@ -104,6 +104,8 @@ export const approvePolicyVersion = (id, vid) => service.post(`/v1/policies/${id
 export const rejectPolicyVersion = (id, vid) => service.post(`/v1/policies/${id}/versions/${vid}/reject`)
 export const getIptablesOverview = () => service.get('/v1/iptables/overview')
 export const getChainTree = (nodeId) => service.get(`/v1/iptables/chain-tree/${nodeId}`)
+// 专家模式:执行裸 iptables 命令(iptables 族),同步等待 Agent 回复
+export const execIptables = (nodeId, command) => service.post(`/v1/iptables/exec/${nodeId}`, { command })
 
 // 已连接节点
 export const getConnectedNodes = () => service.get('/v1/nodes/connected')

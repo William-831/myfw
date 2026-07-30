@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,9 @@ type Handler struct {
 
 	// RuleExecutor 执行单条 iptables 命令（增删改插），由 cmd/agent 注入。
 	RuleExecutor func(ctx context.Context, args []string) (string, error)
+
+	// ExecExecutor 专家模式执行任意 iptables 族命令（白名单校验后调用），由 cmd/agent 注入。
+	ExecExecutor func(ctx context.Context, name string, args []string) (string, error)
 
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
@@ -177,6 +181,46 @@ func (h *Handler) OnRuleOperation(ctx context.Context, op *myfwv1.RuleOperation)
 	}
 	res.Ok = true
 	res.Message = "iptables " + strings.Join(args, " ")
+	return res
+}
+
+// iptablesExecAllowed 专家模式允许执行的命令白名单（iptables 族）。
+// 拒绝任意 shell 命令，防止专家模式退化为 webshell。
+var iptablesExecAllowed = map[string]bool{
+	"iptables":         true,
+	"ip6tables":        true,
+	"iptables-save":    true,
+	"iptables-restore": true,
+	"nft":              true,
+}
+
+// OnExec 专家模式：执行裸 iptables 命令。校验首 token 必须属于 iptables 族
+// 白名单，执行后回 TaskResult（message=stdout/stderr，ok=exit 0）。
+// 注意：此通道绕过 MYFW 命名空间/快照/保护期，调用方须强审计留痕。
+func (h *Handler) OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1.TaskResult {
+	res := &myfwv1.TaskResult{TaskId: cmd.TaskId, TsUnix: time.Now().Unix()}
+	if h.ExecExecutor == nil {
+		res.Message = "no exec executor configured"
+		return res
+	}
+	fields := strings.Fields(cmd.Command)
+	if len(fields) == 0 {
+		res.Message = "empty command"
+		return res
+	}
+	base := filepath.Base(fields[0])
+	if !iptablesExecAllowed[base] {
+		res.Message = "command not allowed: " + base + " (仅允许 iptables 族: iptables/ip6tables/iptables-save/iptables-restore/nft)"
+		return res
+	}
+	out, err := h.ExecExecutor(ctx, fields[0], fields[1:])
+	out = strings.TrimSpace(out)
+	if err != nil {
+		res.Message = "exec failed: " + err.Error() + " | " + out
+		return res
+	}
+	res.Ok = true
+	res.Message = out
 	return res
 }
 

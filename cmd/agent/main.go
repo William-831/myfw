@@ -197,6 +197,12 @@ func run() error {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
+	// 注入专家模式执行器：执行任意 iptables 族命令（白名单校验由 handler.OnExec 保证）
+	h.ExecExecutor = func(ctx context.Context, name string, args []string) (string, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
 
 	// 8. 共享发送通道（漂移报告等跨重连消息）
 	sendCh := make(chan *myfwv1.AgentToController, 8)

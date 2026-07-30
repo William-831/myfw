@@ -141,6 +141,8 @@ type Handler interface {
 	OnSyncRules(ctx context.Context) *myfwv1.IptablesRules
 	// OnRuleOperation executes a single rule add/delete/insert/replace.
 	OnRuleOperation(ctx context.Context, op *myfwv1.RuleOperation) *myfwv1.TaskResult
+	// OnExec 执行专家模式裸 iptables 命令（白名单校验后）。
+	OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1.TaskResult
 }
 
 // Reporter is used by Watchdog to send drift reports and sync requests through the stream.
@@ -219,6 +221,9 @@ func (h NopHandler) OnRollback(ctx context.Context, t *myfwv1.RollbackTask) {}
 func (h NopHandler) OnSyncRules(ctx context.Context) *myfwv1.IptablesRules { return nil }
 func (h NopHandler) OnRuleOperation(ctx context.Context, op *myfwv1.RuleOperation) *myfwv1.TaskResult {
 	return &myfwv1.TaskResult{TaskId: op.TaskId, Ok: false, Message: "no handler wired", TsUnix: time.Now().Unix()}
+}
+func (h NopHandler) OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1.TaskResult {
+	return &myfwv1.TaskResult{TaskId: cmd.TaskId, Ok: false, Message: "no handler wired", TsUnix: time.Now().Unix()}
 }
 
 // Loop opens an AgentStream and pushes a Heartbeat every Interval until ctx
@@ -329,6 +334,16 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 			case *myfwv1.ControllerToAgent_RuleOperation:
 				log.Info("rule operation", "node_id", nodeID, "op", p.RuleOperation.Op, "task_id", p.RuleOperation.TaskId)
 				res := h.OnRuleOperation(ctx, p.RuleOperation)
+				if res != nil {
+					select {
+					case sendCh <- &myfwv1.AgentToController{Payload: &myfwv1.AgentToController_TaskResult{TaskResult: res}}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case *myfwv1.ControllerToAgent_ExecCommand:
+				log.Info("exec command", "node_id", nodeID, "task_id", p.ExecCommand.TaskId)
+				res := h.OnExec(ctx, p.ExecCommand)
 				if res != nil {
 					select {
 					case sendCh <- &myfwv1.AgentToController{Payload: &myfwv1.AgentToController_TaskResult{TaskResult: res}}:

@@ -116,6 +116,7 @@ message ControllerToAgent {
     HeartbeatAck ack = 5;
     SyncRulesRequest sync_rules = 6;
     RuleOperation rule_operation = 7;
+    ExecCommand exec_command = 8;   // 专家模式:裸 iptables 命令
   }
 }
 
@@ -149,6 +150,15 @@ message RuleOperation {
   string source = 9;         // 源 IP/CIDR
   string destination = 10;   // 目的 IP/CIDR
   string port = 11;          // 端口或范围
+}
+
+// ExecCommand 专家模式:下发裸 iptables 命令到 Agent 执行。
+// command 为完整命令(如 "iptables -t nat -L -n"、"iptables-save -t filter"),
+// Agent 侧校验首 token 必须属于 iptables 族白名单,执行后回 TaskResult。
+// 注意:此通道绕过 MYFW 命名空间/快照/保护期,仅供高级管理员排障,强审计留痕。
+message ExecCommand {
+  string task_id = 1;
+  string command = 2;   // 完整裸命令(iptables 族)
 }
 
 // ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace

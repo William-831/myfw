@@ -46,6 +46,11 @@ const routes = [
         path: 'audit',
         name: 'Audit',
         component: () => import('@/views/Audit.vue')
+      },
+      {
+        path: 'expert',
+        name: 'Expert',
+        component: () => import('@/views/ExpertMode.vue')
       }
     ]
   }

@@ -319,7 +319,7 @@ sudo $HOME/go/bin/dlv debug ./cmd/agent --headless --listen=0.0.0.0:2346 --api-v
 | 文件 | 作用 | 入 git |
 |---|---|---|
 | `docs/remote-debug.md` | 本文档 | 是 |
-| `docker-compose.debug.yml` | 调试 compose(挂载二进制/dist/CA/DB) | 是 |
+| `docker-compose.debug.yml` | ~~调试 compose~~ 已删除,实际环境用 `docker-compose.yml`(见 §实际联调环境) | 否(已删) |
 | `deploy/docker/Dockerfile.debug` | 调试运行时镜像(alpine) | 是 |
 | `configs/controller-debug.yaml` | 容器内 Controller 配置(容器路径) | 是 |
 | `scripts/upload-frontend.sh` | 本地构建前端并上传远程(本地运行) | 是 |
