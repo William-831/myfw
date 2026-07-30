@@ -54,6 +54,9 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 	groupIDs := make(map[uint]struct{})
 	for i := range policies {
 		groupIDs[policies[i].GroupID] = struct{}{}
+		if policies[i].MarkACLGroupID != 0 {
+			groupIDs[policies[i].MarkACLGroupID] = struct{}{} // MARK 联动放行组也需加载
+		}
 	}
 	groupByID := make(map[uint]*model.CustomChain)
 	if len(groupIDs) > 0 {
