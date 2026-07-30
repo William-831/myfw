@@ -488,7 +488,7 @@ import { Search, Plus, Refresh, Connection, Warning } from '@element-plus/icons-
 import {
   getPolicies, createPolicy, updatePolicy, deletePolicy as apiDeletePolicy,
   submitPolicyChange, getPolicyVersions, approvePolicyVersion, rejectPolicyVersion,
-  applyPolicy as apiApplyPolicy, applyAllPolicies, getNodes,
+  applyPolicy as apiApplyPolicy, applyAllPolicies, getNodes, getTask,
   batchTogglePolicies, batchDeletePolicies, batchApplyToNodes,
   detectConflicts, getChainTree, getAddressGroups, getCustomChains
 } from '@/api'
@@ -920,13 +920,49 @@ const handleDelete = async (p) => {
     loadData()
   } catch {}
 }
+// 终态：任务不再变化的状态
+const TASK_DONE_STATUS = ['confirmed', 'failed', 'rolled_back']
+
+// 轮询任务真实状态，据最终态汇总应用结果
+// （HTTP 200 仅代表已派发，不代表已生效；需读 task.status 判定真实成败）
+const pollApplyResult = async (tasks, label) => {
+  const ids = (tasks || []).map(t => t.id).filter(Boolean)
+  if (!ids.length) {
+    ElMessage.warning(`${label}：无可用目标节点，请检查目标节点配置`)
+    return
+  }
+  const MAX_RETRY = 20
+  const INTERVAL = 1000
+  let latest = tasks
+  for (let i = 0; i < MAX_RETRY; i++) {
+    latest = (await Promise.all(
+      ids.map(id => getTask(id).catch(() => null))
+    )).filter(Boolean)
+    if (latest.length === ids.length && latest.every(t => TASK_DONE_STATUS.includes(t.status))) break
+    await new Promise(r => setTimeout(r, INTERVAL))
+  }
+  const ok = latest.filter(t => t.status === 'confirmed').length
+  const fail = latest.filter(t => ['failed', 'rolled_back'].includes(t.status))
+  const pending = latest.length - ok - fail.length
+  if (fail.length === 0 && pending === 0) {
+    ElMessage.success(`${label}完成（${ok} 个节点）`)
+  } else if (ok === 0 && pending === 0) {
+    ElMessage.error(`${label}失败：${fail.map(t => t.message || t.status).join('；') || '未知原因'}`)
+  } else {
+    ElMessage.warning(`${label}部分失败：${ok} 成功 / ${fail.length} 失败 / ${pending} 进行中，详情见审批中心`)
+  }
+}
+
 const handleApply = async (p) => {
   p._applying = true
   try {
-    await applyPolicy(p.id, { auto_approve: true })
-    ElMessage.success('已应用')
-  } catch {
-    ElMessage.error('应用失败')
+    const res = await apiApplyPolicy(p.id, { auto_approve: true })
+    await pollApplyResult(res.tasks, `策略「${p.name}」`)
+  } catch (e) {
+    const msg = e?.response?.data?.error
+    ElMessage.error(msg === 'policy has no matching target nodes'
+      ? '该策略无可用目标节点，请检查目标节点配置'
+      : (msg || '应用失败'))
   } finally {
     p._applying = false
   }
@@ -934,10 +970,15 @@ const handleApply = async (p) => {
 const handleApplyAll = async () => {
   applyingAll.value = true
   try {
-    await applyAllPolicies({ auto_approve: true })
-    ElMessage.success('全量应用已提交')
-  } catch {
-    ElMessage.error('应用失败')
+    const res = await applyAllPolicies({ auto_approve: true })
+    if (res.note && (!res.tasks || !res.tasks.length)) {
+      ElMessage.warning('没有启用的策略匹配到任何节点')
+    } else {
+      await pollApplyResult(res.tasks, '全量应用')
+    }
+  } catch (e) {
+    const msg = e?.response?.data?.error
+    ElMessage.error(msg || '应用失败')
   } finally {
     applyingAll.value = false
   }
