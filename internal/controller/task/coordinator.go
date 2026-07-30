@@ -167,10 +167,10 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		"auto_approve":     opts.AutoApprove,
 		"confirm_deadline": opts.ConfirmDeadline.String(),
 	}
-	// 单用户体系下 admin 视为 root:AutoApprove 即跳过审批与保护期,审计留痕以便追溯
+	// 单用户体系下 admin 视为 root:AutoApprove 即跳过审批(保留保护期),审计留痕以便追溯
 	if opts.AutoApprove {
 		detail["skip_approval"] = true
-		detail["reason"] = "root auto-approve (单用户体系,跳过审批与保护期)"
+		detail["reason"] = "root auto-approve (单用户体系,跳过审批,保留保护期)"
 	}
 	co.audit(ctx, opts.Author, "task.submit", tasks, detail)
 
