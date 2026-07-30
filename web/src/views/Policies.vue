@@ -357,15 +357,12 @@
             <el-option label="dev (15)" :value="15" />
             <el-option label="ops (255)" :value="255" />
           </el-select>
-          <span class="form-hint">打标动作:给匹配流量打上 dev/ops 权限标记</span>
+          <span class="form-hint">打标动作:给匹配流量打上 dev/ops 权限标记;源地址组即白名单</span>
         </el-form-item>
-        <el-form-item v-if="policyForm.action !== 'MARK'" label="匹配标记">
-          <el-select v-model="policyForm.match_mark" style="width: 200px">
-            <el-option label="不限制" :value="0" />
-            <el-option label="dev (15)" :value="15" />
-            <el-option label="ops (255)" :value="255" />
+        <el-form-item v-if="policyForm.action === 'MARK' && policyForm.source_group" label="放行组">
+          <el-select v-model="policyForm.mark_acl_group_id" placeholder="filter 组(自动生成 match_mark+白名单 ACCEPT 放行规则落此)" style="width: 100%">
+            <el-option v-for="cc in aclGroupOptions" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.id" />
           </el-select>
-          <span class="form-hint">仅匹配已打此 mark 的流量(用于 ACCEPT/DROP 放行策略做 mark 白名单联动)</span>
         </el-form-item>
         <el-form-item label="目标节点" prop="targets">
           <el-select v-model="selectedNodeIds" multiple placeholder="选择目标节点" style="width: 100%">
@@ -508,6 +505,8 @@ const policies = ref([])
 const allNodes = ref([])
 const addressGroups = ref([])
 const customChains = ref([])
+// MARK 联动放行组候选:仅 filter 表(INPUT/OUTPUT/FORWARD)的组
+const aclGroupOptions = computed(() => (customChains.value || []).filter(c => ['MYFW-INPUT', 'MYFW-OUTPUT', 'MYFW-FORWARD'].includes(c.parent)))
 const selectedIds = ref([])
 const conflicts = ref([])
 
@@ -552,6 +551,7 @@ const policyForm = reactive({
   source_group: '',
   destination_group: '',
   match_mark: 0,
+  mark_acl_group_id: 0,
   group: '',
   chain: '',
   priority: 50,
@@ -585,7 +585,16 @@ const buildPreviewCommand = (f) => {
     case 'DNAT': parts.push('-j', 'DNAT', '--to-destination', f.nat_to || '<NAT目标>'); break
     case 'SNAT': parts.push('-j', 'SNAT', '--to-source', f.nat_to || '<NAT目标>'); break
   }
-  return parts.join(' ')
+  let cmd = parts.join(' ')
+  // MARK 联动:填了白名单+放行组,自动生成 filter 放行规则
+  if (f.action === 'MARK' && f.source_group && f.mark_acl_group_id) {
+    const acl = (customChains.value || []).find(c => c.id === f.mark_acl_group_id)
+    if (acl) {
+      cmd += '\n# 联动放行(自动生成)\niptables -t ' + acl.table + ' -A MYFW-' + acl.name +
+        ' -m set --match-set MYFW-' + f.source_group + ' src -m mark --mark ' + (f.mark || 0) + ' -j ACCEPT'
+    }
+  }
+  return cmd
 }
 
 const getGroupName = (gid) => { const cc = (customChains.value || []).find(c => c.id === gid); return cc ? cc.name : '' }
@@ -597,6 +606,7 @@ const previewHint = computed(() => {
   if (f.port_range && f.protocol !== 'TCP' && f.protocol !== 'UDP') return '端口范围需指定 TCP/UDP 协议,否则后端将拒绝'
   if ((f.action === 'DNAT' || f.action === 'SNAT') && !f.nat_to) return 'NAT 动作需填写 NAT 目标'
   if (f.action === 'MARK' && f.mark !== 15 && f.mark !== 255) return 'MARK 动作需选择标记值 dev(15) 或 ops(255)'
+  if (f.action === 'MARK' && f.source_group && !f.mark_acl_group_id) return 'MARK 联动白名单需选择放行组(filter 组)'
   return ''
 })
 
@@ -826,7 +836,7 @@ const openAddDialog = () => {
     name: '', group_id: 0, direction: '', source: '', destination: '',
     protocol: 'ANY', port_range: '', action: 'ACCEPT',
     mark: 0, nat_to: '', source_group: '', destination_group: '',
-    match_mark: 0, group: '', chain: '', priority: 50, description: '',
+    match_mark: 0, mark_acl_group_id: 0, group: '', chain: '', priority: 50, description: '',
     targets: { node_ids: [], labels: [] }, enabled: true
   })
   selectedNodeIds.value = []
@@ -839,7 +849,7 @@ const editPolicy = (p) => {
     destination: p.destination, protocol: p.protocol, port_range: p.port_range,
     action: p.action, mark: p.mark || 0, nat_to: p.nat_to || '',
     source_group: p.source_group || '', destination_group: p.destination_group || '',
-    match_mark: p.match_mark || 0, group: p.group || '', chain: p.chain || '',
+    match_mark: p.match_mark || 0, mark_acl_group_id: p.mark_acl_group_id || 0, group: p.group || '', chain: p.chain || '',
     priority: p.priority, description: p.description || '', enabled: p.enabled
   })
   selectedNodeIds.value = getPolicyTargets(p)
@@ -857,6 +867,11 @@ const savePolicy = async () => {
   // MARK 动作标记值限定 dev(15)/ops(255)
   if (policyForm.action === 'MARK' && policyForm.mark !== 15 && policyForm.mark !== 255) {
     ElMessage.error('MARK 动作需选择标记值 dev(15) 或 ops(255)')
+    return
+  }
+  // MARK 联动:填了白名单(源地址组)则必须指定放行组
+  if (policyForm.action === 'MARK' && policyForm.source_group && !policyForm.mark_acl_group_id) {
+    ElMessage.error('MARK 联动白名单需选择放行组(filter 组)')
     return
   }
   saving.value = true

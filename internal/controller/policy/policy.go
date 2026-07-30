@@ -44,6 +44,7 @@ type PolicyInput struct {
 	SourceGroup      string      `json:"source_group"`
 	DestinationGroup string      `json:"destination_group"`
 	MatchMark        uint32      `json:"match_mark"`
+	MarkACLGroupID   uint        `json:"mark_acl_group_id"`  // MARK 联动放行组(filter 组)
 	Group            string      `json:"group"`
 	Chain            string      `json:"chain"`
 	Priority         int         `json:"priority"`
@@ -80,6 +81,7 @@ func (s *Service) Create(ctx context.Context, in PolicyInput, author string) (*m
 		SourceGroup:      in.SourceGroup,
 		DestinationGroup: in.DestinationGroup,
 		MatchMark:        in.MatchMark,
+		MarkACLGroupID:   in.MarkACLGroupID,
 		Group:            in.Group,
 		Chain:            in.Chain,
 		Priority:         in.Priority,
@@ -136,6 +138,7 @@ func (s *Service) Update(ctx context.Context, id uint, in PolicyInput, author st
 		p.SourceGroup = in.SourceGroup
 		p.DestinationGroup = in.DestinationGroup
 		p.MatchMark = in.MatchMark
+		p.MarkACLGroupID = in.MarkACLGroupID
 		p.Group = in.Group
 		p.Chain = in.Chain
 		p.Priority = in.Priority
@@ -246,6 +249,10 @@ func validate(in PolicyInput) error {
 	if in.MatchMark != 0 && in.MatchMark != 15 && in.MatchMark != 255 {
 		return fmt.Errorf("policy: match_mark must be 0/15(dev)/255(ops)")
 	}
+	// MARK 联动:填了白名单(source_group)则必须指定放行组,编译时自动生成 filter 放行规则
+	if in.Action == "MARK" && in.SourceGroup != "" && in.MarkACLGroupID == 0 {
+		return errors.New("policy: MARK 联动白名单需指定放行组(mark_acl_group_id)")
+	}
 	if in.PortRange != "" && in.Protocol == "" {
 		return errors.New("policy: port_range requires a protocol")
 	}
@@ -316,6 +323,7 @@ func (s *Service) SubmitChange(ctx context.Context, id uint, in PolicyInput, aut
 		SourceGroup:      in.SourceGroup,
 		DestinationGroup: in.DestinationGroup,
 		MatchMark:        in.MatchMark,
+		MarkACLGroupID:   in.MarkACLGroupID,
 		Group:            in.Group,
 		Chain:            in.Chain,
 		Priority:         in.Priority,

@@ -85,11 +85,15 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		if !matches(&node, nodeLabels, spec) {
 			continue
 		}
-		cr, err := compileOne(p, g.Name, g.Parent)
+		var aclGroup *model.CustomChain
+		if p.MarkACLGroupID != 0 {
+			aclGroup = groupByID[p.MarkACLGroupID]
+		}
+		crs, err := compileOne(p, g.Name, g.Parent, aclGroup)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
 		}
-		out = append(out, cr)
+		out = append(out, crs...)
 		// 收集策略引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
 		if p.SourceGroup != "" {
 			setNames[p.SourceGroup] = struct{}{}
@@ -263,9 +267,9 @@ func parseLabels(s string) []string {
 
 // compileOne turns one Policy row into a CompiledRule proto. The rule id is
 // "p<policyID>-v<priority>" so the Agent's iptables output is human-readable.
-// compileOne 将条目编译为 CompiledRule。两级模型下方向与子链从所属策略组
-// 继承(groupChain=组名作 Chain,groupParent=父链名映射为 Direction)。
-func compileOne(p *model.Policy, groupChain, groupParent string) (*myfwv1.CompiledRule, error) {
+// compileOne 将条目编译为 CompiledRule(可多条:MARK 联动时自动追加放行规则)。
+// 两级模型下方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名)。
+func compileOne(p *model.Policy, groupChain, groupParent string, aclGroup *model.CustomChain) ([]*myfwv1.CompiledRule, error) {
 	dir, err := parseDirection(parentToDirection(groupParent))
 	if err != nil {
 		return nil, err
@@ -279,7 +283,7 @@ func compileOne(p *model.Policy, groupChain, groupParent string) (*myfwv1.Compil
 		return nil, err
 	}
 
-	return &myfwv1.CompiledRule{
+	main := &myfwv1.CompiledRule{
 		Id:               "p" + strconv.FormatUint(uint64(p.ID), 10),
 		Direction:        dir,
 		Source:           p.Source,
@@ -295,7 +299,24 @@ func compileOne(p *model.Policy, groupChain, groupParent string) (*myfwv1.Compil
 		Chain:            groupChain,
 		Priority:         int32(p.Priority),
 		Description:      p.Description,
-	}, nil
+	}
+	rules := []*myfwv1.CompiledRule{main}
+
+	// MARK 联动:填了白名单+放行组,自动生成 filter 放行规则(match_mark+白名单 ACCEPT)
+	if p.Action == "MARK" && p.SourceGroup != "" && aclGroup != nil {
+		aclDir, _ := parseDirection(parentToDirection(aclGroup.Parent))
+		rules = append(rules, &myfwv1.CompiledRule{
+			Id:          "p" + strconv.FormatUint(uint64(p.ID), 10) + "-acl",
+			Direction:   aclDir,
+			SourceGroup: p.SourceGroup,
+			MatchMark:   p.Mark,
+			Action:      myfwv1.Action_ACTION_ACCEPT,
+			Chain:       aclGroup.Name,
+			Priority:    int32(p.Priority),
+			Description: "MARK 联动放行: " + p.Description,
+		})
+	}
+	return rules, nil
 }
 
 // parentToDirection 将父链名(MYFW-INPUT 等)映射为方向字符串。nat/mangle 父链
