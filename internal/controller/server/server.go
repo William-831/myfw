@@ -343,7 +343,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerNodeRoutes(r, db)
 	registerTaskRoutes(r, streamSvc)
 	registerTaskLifecycleRoutes(r, co)
-	registerPolicyRoutes(r, policySvc, co, comp)
+	registerPolicyRoutes(r, policySvc, co, comp, auditSink)
 	registerAuditRoutes(r, auditSink)
 	registerDashboardRoutes(r, db)
 	registerIptablesRoutes(r, db, streamSvc, comp, auditSink)

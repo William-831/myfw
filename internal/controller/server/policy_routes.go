@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -9,21 +10,23 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"iptables-tool/internal/controller/auth"
+	"iptables-tool/internal/controller/audit"
 	"iptables-tool/internal/controller/compiler"
 	"iptables-tool/internal/controller/policy"
 	"iptables-tool/internal/controller/task"
+	"iptables-tool/internal/model"
 )
 
 // registerPolicyRoutes mounts M7's Policy CRUD + Apply endpoints. Apply now
 // goes through the Coordinator's approval flow by default; set
 // auto_approve=true in the request body to keep the synchronous M6 semantics.
-func registerPolicyRoutes(r gin.IRouter, svc *policy.Service, co *task.Coordinator, comp *compiler.Compiler) {
+func registerPolicyRoutes(r gin.IRouter, svc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink) {
 	g := r.Group("/api/v1/policies")
-	g.POST("", func(c *gin.Context) { createPolicy(c, svc) })
+	g.POST("", func(c *gin.Context) { createPolicy(c, svc, auditSink) })
 	g.GET("", func(c *gin.Context) { listPolicies(c, svc) })
 	g.GET("/:id", func(c *gin.Context) { getPolicy(c, svc) })
-	g.PUT("/:id", func(c *gin.Context) { updatePolicy(c, svc) })
-	g.DELETE("/:id", func(c *gin.Context) { deletePolicy(c, svc) })
+	g.PUT("/:id", func(c *gin.Context) { updatePolicy(c, svc, auditSink) })
+	g.DELETE("/:id", func(c *gin.Context) { deletePolicy(c, svc, auditSink) })
 
 	g.POST("/:id/apply", func(c *gin.Context) { applyOnePolicy(c, svc, co, comp) })
 	g.POST("/apply-all", func(c *gin.Context) { applyAllPolicies(c, co, comp) })
@@ -37,7 +40,7 @@ func registerPolicyRoutes(r gin.IRouter, svc *policy.Service, co *task.Coordinat
 
 // --- CRUD ------------------------------------------------------------------
 
-func createPolicy(c *gin.Context, svc *policy.Service) {
+func createPolicy(c *gin.Context, svc *policy.Service, auditSink *audit.Sink) {
 	var in policy.PolicyInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -48,6 +51,7 @@ func createPolicy(c *gin.Context, svc *policy.Service) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	auditPolicy(auditSink, c, "create", p.ID, p.Name)
 	c.JSON(http.StatusCreated, p)
 }
 
@@ -73,7 +77,7 @@ func getPolicy(c *gin.Context, svc *policy.Service) {
 	c.JSON(http.StatusOK, p)
 }
 
-func updatePolicy(c *gin.Context, svc *policy.Service) {
+func updatePolicy(c *gin.Context, svc *policy.Service, auditSink *audit.Sink) {
 	id, ok := parseID(c)
 	if !ok {
 		return
@@ -88,18 +92,25 @@ func updatePolicy(c *gin.Context, svc *policy.Service) {
 		respondPolicyErr(c, err)
 		return
 	}
+	auditPolicy(auditSink, c, "update", p.ID, p.Name)
 	c.JSON(http.StatusOK, p)
 }
 
-func deletePolicy(c *gin.Context, svc *policy.Service) {
+func deletePolicy(c *gin.Context, svc *policy.Service, auditSink *audit.Sink) {
 	id, ok := parseID(c)
 	if !ok {
 		return
+	}
+	// 删除前查策略名,审计留痕(避免删后丢失上下文)
+	var name string
+	if p, err := svc.Get(c.Request.Context(), id); err == nil {
+		name = p.Name
 	}
 	if err := svc.Delete(c.Request.Context(), id); err != nil {
 		respondPolicyErr(c, err)
 		return
 	}
+	auditPolicy(auditSink, c, "delete", id, name)
 	c.Status(http.StatusNoContent)
 }
 
@@ -316,6 +327,20 @@ func respondPolicyErr(c *gin.Context, err error) {
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+}
+
+// auditPolicy 记录策略 CRUD 审计:detail 精简为操作类型+策略ID+名称,
+// 供审计列表"详情"列直接展示动作摘要,展开行再看完整字段。
+func auditPolicy(auditSink *audit.Sink, c *gin.Context, op string, policyID uint, name string) {
+	if auditSink == nil {
+		return
+	}
+	detail, _ := json.Marshal(map[string]any{"op": op, "policy_id": policyID, "name": name})
+	_ = auditSink.Write(c.Request.Context(), model.AuditLog{
+		Actor:  actor(c),
+		Action: "policy." + op,
+		Detail: string(detail),
+	})
 }
 
 func actor(c *gin.Context) string { return auth.ActorFromContext(c.Request.Context()) }
