@@ -233,13 +233,24 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 
 ## 6. 策略模型与规则编译
 
-### 6.1 策略模型字段
+### 6.1 两级关联模型
 
-管理员配置的是 **抽象安全策略**，不是 iptables 参数。
+策略模型采用 **两级关联结构**，从单层规则堆砌演变为「策略组 + 策略条目」上下级关系，与底层 iptables 自定义链语义对齐：
+
+**策略组（CustomChain）** = 底层自定义子链 `MYFW-<name>`，承载调度属性：
 
 | 字段 | 说明 |
 |---|---|
-| 方向 | INBOUND / OUTBOUND / FORWARD |
+| 名称 | 子链名（节点链 `MYFW-<name>`） |
+| 钩子方向（parent） | 父链 MYFW-INPUT/OUTPUT/FORWARD/PREROUTING/POSTROUTING/MANGLE |
+| 全局优先级（priority） | 父链中 jump 到本子链的顺序，值小排前 |
+| 表 | filter/nat/mangle（与父链一致） |
+
+**策略条目（Policy）** 隶属于某个策略组，自动继承组的钩子方向与子链，用户只需关注业务匹配要素：
+
+| 字段 | 说明 |
+|---|---|
+| 所属组（group_id） | 关联策略组（必填），继承方向/子链 |
 | 源地址 | IP / CIDR（单值，空表示任意） |
 | 目标地址 | IP / CIDR（单值，空表示任意） |
 | 源地址组 | 引用 `AddressGroup.name`，编译为 `ipset`/`nft set` 匹配（多 CIDR） |
@@ -249,10 +260,11 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 | 动作类型 | ACCEPT / DROP / REJECT / MARK / DNAT / SNAT |
 | 标记值（mark） | `action=MARK` 时打标的 mark 值 |
 | 匹配标记（match_mark） | 匹配已打标流量（与 MARK 打标正交） |
-| 优先级 | 数值序（小者先评估） |
-| 分组（group） | 逻辑分组（展示与编排） |
+| 优先级 | 组内排序（小者先评估） |
 | 描述信息 | 可读说明 |
 | 生效节点 | 节点 / 节点组 |
+
+> `direction`/`chain`/`group` 字段保留但废弃--方向与子链从所属组继承，条目不再单独填写。
 
 ### 6.2 编译示例
 
@@ -275,22 +287,22 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 |---|---|
 | iptables | 6 条自定义链：filter 表 `MYFW-INPUT`/`MYFW-OUTPUT`/`MYFW-FORWARD`、nat 表 `MYFW-PREROUTING`/`MYFW-POSTROUTING`、mangle 表 `MYFW-MANGLE` |
 | iptables 地址组 | `ipset` 集合 `MYFW-<name>`（hash:net，多 CIDR） |
-| iptables 自定义子链 | 用户子链 `MYFW-<name>`（从父链 jump，`Policy.chain` 指定，见 §7.4） |
+| iptables 自定义子链 | 策略组 `MYFW-<name>`（从父链 jump，`Policy.group_id` 归属，见 §7.4） |
 | nftables | 独立 `myfw` table + chain（inet/ip family） |
 | nftables 地址组 | nft `set` `MYFW-<name>`（type ipv4_addr + flags interval） |
 
 ### 7.2 规则落点映射
 
-策略规则按 action + direction 自动落到对应 MYFW 链：
+策略组的钩子方向（parent）决定流量入口的父链，条目规则落于组对应的子链：
 
-| 策略 | 落点 |
-|---|---|
-| INBOUND | filter/MYFW-INPUT |
-| OUTBOUND | filter/MYFW-OUTPUT |
-| FORWARD | filter/MYFW-FORWARD |
-| DNAT | nat/MYFW-PREROUTING |
-| SNAT | nat/MYFW-POSTROUTING |
-| MARK（打标） | mangle/MYFW-MANGLE |
+| 组钩子方向 | 父链（调度层） | 子链（业务层） |
+|---|---|---|
+| MYFW-INPUT | filter/MYFW-INPUT | MYFW-<组名> |
+| MYFW-OUTPUT | filter/MYFW-OUTPUT | MYFW-<组名> |
+| MYFW-FORWARD | filter/MYFW-FORWARD | MYFW-<组名> |
+| MYFW-PREROUTING | nat/MYFW-PREROUTING | MYFW-<组名> |
+| MYFW-POSTROUTING | nat/MYFW-POSTROUTING | MYFW-<组名> |
+| MYFW-MANGLE | mangle/MYFW-MANGLE | MYFW-<组名> |
 
 ### 7.3 权限边界
 
@@ -301,9 +313,13 @@ Agent 将节点能力信息同步至 Controller，由 Controller 保存节点能
 
 **核心原则**：Agent 只拥有自身命名空间范围内的规则管理权限，实现多来源规则共存。
 
-### 7.4 自定义子链（P4）
+### 7.4 策略组调度（两级模型）
 
-用户可在 Web 上创建自定义子链 `MYFW-<name>`，指定父链（6 条 MYFW 链之一）。`syncCustomChains` 在 Apply 时创建子链（`-N` 幂等）+ 父链追加 jump（`-A` 幂等）+ flush 子链。策略通过 `chain` 字段指定规则落到子链（`targetChainForRule` 优先子链），未指定则按 action/direction 落父链。用于规则按业务归类，父链清爽。
+策略组（CustomChain）= 自定义子链 `MYFW-<name>`，是父链的调度单元。`syncCustomChains` 在 Apply 时创建子链（`-N` 幂等）+ 父链追加 jump（`-A` 幂等）+ flush 子链；`loadCustomChains` 按 `priority ASC` 排序，父链中 jump 到各子链的顺序由组优先级决定（值小排前）。
+
+条目（Policy）通过 `group_id` 归属策略组，编译时 `Chain` 取组名、`Direction` 取组父链，规则落于 `MYFW-<组名>` 子链。`targetChainForRule` 不再回退落父链--`chain` 为空即报错，从机制上杜绝业务规则污染父链。
+
+父链由此保持整洁：仅含基础设施优化规则（ESTABLISHED,RELATED 放行）+ 业务调度规则（按序 jump 子链），所有具体访问控制/NAT/标记规则落于子链，两者各司其职。
 
 ---
 
