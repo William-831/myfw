@@ -239,6 +239,13 @@ func validate(in PolicyInput) error {
 			return fmt.Errorf("policy: %s requires nat_to", in.Action)
 		}
 	}
+	// mark 值限定为 dev(15)/ops(255) 两种权限标记
+	if in.Action == "MARK" && in.Mark != 15 && in.Mark != 255 {
+		return fmt.Errorf("policy: mark must be 15(dev) or 255(ops)")
+	}
+	if in.MatchMark != 0 && in.MatchMark != 15 && in.MatchMark != 255 {
+		return fmt.Errorf("policy: match_mark must be 0/15(dev)/255(ops)")
+	}
 	if in.PortRange != "" && in.Protocol == "" {
 		return errors.New("policy: port_range requires a protocol")
 	}

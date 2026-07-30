@@ -353,12 +353,19 @@
           <el-input v-model="policyForm.nat_to" placeholder="例如: 192.168.1.100:8080" />
         </el-form-item>
         <el-form-item v-if="policyForm.action === 'MARK'" label="标记值">
-          <el-input-number v-model="policyForm.mark" :min="1" :max="4294967295" controls-position="right" style="width: 200px" />
-          <span class="form-hint">打标记动作的 mark 值</span>
+          <el-select v-model="policyForm.mark" style="width: 200px">
+            <el-option label="dev (15)" :value="15" />
+            <el-option label="ops (255)" :value="255" />
+          </el-select>
+          <span class="form-hint">打标动作:给匹配流量打上 dev/ops 权限标记</span>
         </el-form-item>
         <el-form-item label="匹配标记">
-          <el-input-number v-model="policyForm.match_mark" :min="0" :max="4294967295" controls-position="right" style="width: 200px" />
-          <span class="form-hint">填 &gt;0 表示仅匹配已打此 mark 的流量(与打标动作正交)</span>
+          <el-select v-model="policyForm.match_mark" style="width: 200px">
+            <el-option label="不限制" :value="0" />
+            <el-option label="dev (15)" :value="15" />
+            <el-option label="ops (255)" :value="255" />
+          </el-select>
+          <span class="form-hint">仅匹配已打此 mark 的流量(与打标动作正交,用于 mark 白名单联动)</span>
         </el-form-item>
         <el-form-item label="目标节点" prop="targets">
           <el-select v-model="selectedNodeIds" multiple placeholder="选择目标节点" style="width: 100%">
@@ -589,6 +596,7 @@ const previewHint = computed(() => {
   const f = policyForm
   if (f.port_range && f.protocol !== 'TCP' && f.protocol !== 'UDP') return '端口范围需指定 TCP/UDP 协议,否则后端将拒绝'
   if ((f.action === 'DNAT' || f.action === 'SNAT') && !f.nat_to) return 'NAT 动作需填写 NAT 目标'
+  if (f.action === 'MARK' && f.mark !== 15 && f.mark !== 255) return 'MARK 动作需选择标记值 dev(15) 或 ops(255)'
   return ''
 })
 
@@ -844,6 +852,11 @@ const savePolicy = async () => {
   // 端口范围必须指定 TCP/UDP 协议(iptables --dport 要求,否则后端编译报错自回滚)
   if (policyForm.port_range && policyForm.protocol !== 'TCP' && policyForm.protocol !== 'UDP') {
     ElMessage.error('端口范围需指定 TCP 或 UDP 协议')
+    return
+  }
+  // MARK 动作标记值限定 dev(15)/ops(255)
+  if (policyForm.action === 'MARK' && policyForm.mark !== 15 && policyForm.mark !== 255) {
+    ElMessage.error('MARK 动作需选择标记值 dev(15) 或 ops(255)')
     return
   }
   saving.value = true
