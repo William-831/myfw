@@ -24,8 +24,7 @@ const routes = [
       },
       {
         path: 'policies',
-        name: 'Policies',
-        component: () => import('@/views/Policies.vue')
+        redirect: '/templates'
       },
       {
         path: 'templates',

@@ -5,8 +5,12 @@
         <h2 class="page-title">节点策略</h2>
         <el-tag size="small" type="info">以节点为中心管理策略实例</el-tag>
       </div>
+      <div class="header-right">
+        <el-switch v-model="expertMode" active-text="专家终端" inactive-text="实例配置" />
+      </div>
     </div>
-    <el-row :gutter="14" class="np-body">
+    <ExpertMode v-if="expertMode" />
+    <el-row v-else :gutter="14" class="np-body">
       <!-- 左:节点列表 -->
       <el-col :span="6">
         <el-card class="node-card" v-loading="nodesLoading">
@@ -117,6 +121,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
+import ExpertMode from './ExpertMode.vue'
 import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains } from '@/api'
 
 const nodesLoading = ref(false)
@@ -127,6 +132,7 @@ const instances = ref([])
 const templates = ref([])
 const customChains = ref([])
 const selectedNodeId = ref('')
+const expertMode = ref(false)
 
 const currentNodeLabel = computed(() => {
   const n = nodes.value.find(x => x.id === selectedNodeId.value)
@@ -263,7 +269,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.page-header { margin-bottom: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header-left { display: flex; align-items: center; gap: 12px; }
 .page-title { font-size: 18px; font-weight: 600; color: var(--c-text-1, #1e293b); margin: 0; }
 .np-body { min-height: 480px; }

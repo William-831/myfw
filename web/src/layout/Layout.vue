@@ -14,10 +14,6 @@
           <el-icon><Connection /></el-icon>
           <span>节点管理</span>
         </el-menu-item>
-        <el-menu-item index="/policies">
-          <el-icon><Lock /></el-icon>
-          <span>策略管理</span>
-        </el-menu-item>
         <el-menu-item index="/templates">
           <el-icon><Files /></el-icon>
           <span>策略模板库</span>
