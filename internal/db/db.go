@@ -112,6 +112,9 @@ func Migrate(gdb *gorm.DB) error {
 	if err := model.MigratePolicyGroupID(gdb); err != nil {
 		return fmt.Errorf("db: migrate policy group_id: %w", err)
 	}
+	if err := model.MigratePolicyToTemplate(gdb); err != nil {
+		return fmt.Errorf("db: migrate policy to template: %w", err)
+	}
 	return nil
 }
 

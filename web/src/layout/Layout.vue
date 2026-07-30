@@ -18,6 +18,14 @@
           <el-icon><Lock /></el-icon>
           <span>策略管理</span>
         </el-menu-item>
+        <el-menu-item index="/templates">
+          <el-icon><Files /></el-icon>
+          <span>策略模板库</span>
+        </el-menu-item>
+        <el-menu-item index="/node-policies">
+          <el-icon><Monitor /></el-icon>
+          <span>节点策略</span>
+        </el-menu-item>
         <el-menu-item index="/address-groups">
           <el-icon><Coin /></el-icon>
           <span>地址组</span>
@@ -101,7 +109,9 @@ import {
   User,
   ArrowDown,
   Key,
-  SwitchButton
+  SwitchButton,
+  Files,
+  Monitor
 } from '@element-plus/icons-vue'
 import { changePassword } from '@/api'
 import ConfirmGuard from '@/components/ConfirmGuard.vue'

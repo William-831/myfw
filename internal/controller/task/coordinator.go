@@ -128,13 +128,16 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		opts.ConfirmDeadline = co.DefaultConfirmDeadline
 	}
 
-	// 查策略名(快照存入 Task,审批展示用,避免 policy 改/删后丢失)
+	// 查策略名(快照存入 Task,审批展示用,避免 policy 改/删后丢失)。
+	// C 档节点级 apply 时 policyID=0,显示"节点策略"。
 	var policyName string
 	if policyID > 0 {
 		var p model.Policy
 		if err := co.DB.WithContext(ctx).Select("name").First(&p, policyID).Error; err == nil {
 			policyName = p.Name
 		}
+	} else {
+		policyName = "节点策略"
 	}
 
 	tasks := make([]*model.Task, 0, len(nodeIDs))

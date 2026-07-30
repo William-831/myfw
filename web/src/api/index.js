@@ -111,4 +111,16 @@ export const execIptables = (nodeId, command) => service.post(`/v1/iptables/exec
 // 已连接节点
 export const getConnectedNodes = () => service.get('/v1/nodes/connected')
 
+// 策略模板库 + 节点策略实例 (C 档:模板/实例分离)
+export const getTemplates = () => service.get('/v1/templates')
+export const createTemplate = (data) => service.post('/v1/templates', data)
+export const updateTemplate = (id, data) => service.put(`/v1/templates/${id}`, data)
+export const deleteTemplate = (id) => service.delete(`/v1/templates/${id}`)
+export const getNodeInstances = (nodeId) => service.get(`/v1/nodes/${nodeId}/instances`)
+export const createInstance = (nodeId, data) => service.post(`/v1/nodes/${nodeId}/instances`, data)
+export const updateInstance = (id, data) => service.put(`/v1/instances/${id}`, data)
+export const deleteInstance = (id) => service.delete(`/v1/instances/${id}`)
+export const syncInstance = (id) => service.post(`/v1/instances/${id}/sync`)
+export const dispatchNode = (nodeId, data) => service.post(`/v1/nodes/${nodeId}/dispatch`, data || {})
+
 export default service

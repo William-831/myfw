@@ -31,31 +31,23 @@ func New(db *gorm.DB) *Compiler { return &Compiler{DB: db} }
 // (rules by priority ASC then policy id ASC; sets/customChains by name), so
 // the same input state always compiles to the same hash on the Agent side.
 func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, []*myfwv1.AddressSet, []*myfwv1.CustomChainDef, error) {
-	// Load node (needed for label matching, once we support labels).
-	var node model.Node
-	if err := c.DB.WithContext(ctx).Where("id = ?", nodeID).First(&node).Error; err != nil {
-		return nil, nil, nil, fmt.Errorf("compiler: load node %s: %w", nodeID, err)
-	}
-	nodeLabels := parseLabels(node.Labels)
-
-	// Load every enabled policy in priority-then-id order, so the compiler's
-	// output is already stable.
-	var policies []model.Policy
+	// 节点策略实例:编译只读实例(独立参数快照),模板修改不影响已存在实例。
+	var instances []model.NodePolicyInstance
 	err := c.DB.WithContext(ctx).
-		Where("enabled = ?", true).
+		Where("node_id = ? AND enabled = ?", nodeID, true).
 		Order("priority ASC, id ASC").
-		Find(&policies).Error
+		Find(&instances).Error
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	// 预加载条目所属策略组(GroupID -> CustomChain)。组是调度单元:组不存在或
-	// 未启用时,其下条目不参与编译(父链不会 jump 到该子链)。
+	// 预加载实例所属策略组(GroupID -> CustomChain)。组是调度单元:组不存在或
+	// 未启用时,其实例不参与编译(父链不会 jump 到该子链)。
 	groupIDs := make(map[uint]struct{})
-	for i := range policies {
-		groupIDs[policies[i].GroupID] = struct{}{}
-		if policies[i].MarkACLGroupID != 0 {
-			groupIDs[policies[i].MarkACLGroupID] = struct{}{} // MARK 联动放行组也需加载
+	for i := range instances {
+		groupIDs[instances[i].GroupID] = struct{}{}
+		if instances[i].MarkACLGroupID != 0 {
+			groupIDs[instances[i].MarkACLGroupID] = struct{}{} // MARK 联动放行组也需加载
 		}
 	}
 	groupByID := make(map[uint]*model.CustomChain)
@@ -73,36 +65,29 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		}
 	}
 
-	out := make([]*myfwv1.CompiledRule, 0, len(policies))
+	out := make([]*myfwv1.CompiledRule, 0, len(instances))
 	setNames := make(map[string]struct{})
-	for i := range policies {
-		p := &policies[i]
-		g, ok := groupByID[p.GroupID]
+	for i := range instances {
+		inst := &instances[i]
+		g, ok := groupByID[inst.GroupID]
 		if !ok {
-			continue // 所属组不存在或未启用,条目不生效
-		}
-		spec, err := policy.ParseTargets(p)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if !matches(&node, nodeLabels, spec) {
-			continue
+			continue // 所属组不存在或未启用,实例不生效
 		}
 		var aclGroup *model.CustomChain
-		if p.MarkACLGroupID != 0 {
-			aclGroup = groupByID[p.MarkACLGroupID]
+		if inst.MarkACLGroupID != 0 {
+			aclGroup = groupByID[inst.MarkACLGroupID]
 		}
-		crs, err := compileOne(p, g.Name, g.Parent, aclGroup)
+		crs, err := compileInstance(inst, g.Name, g.Parent, aclGroup)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
+			return nil, nil, nil, fmt.Errorf("compiler: instance %d: %w", inst.ID, err)
 		}
 		out = append(out, crs...)
-		// 收集策略引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
-		if p.SourceGroup != "" {
-			setNames[p.SourceGroup] = struct{}{}
+		// 收集实例引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
+		if inst.SourceGroup != "" {
+			setNames[inst.SourceGroup] = struct{}{}
 		}
-		if p.DestinationGroup != "" {
-			setNames[p.DestinationGroup] = struct{}{}
+		if inst.DestinationGroup != "" {
+			setNames[inst.DestinationGroup] = struct{}{}
 		}
 	}
 	sets, err := c.loadAddressSets(ctx, setNames)
@@ -268,55 +253,53 @@ func parseLabels(s string) []string {
 	return nil
 }
 
-// compileOne turns one Policy row into a CompiledRule proto. The rule id is
-// "p<policyID>-v<priority>" so the Agent's iptables output is human-readable.
-// compileOne 将条目编译为 CompiledRule(可多条:MARK 联动时自动追加放行规则)。
-// 两级模型下方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名)。
-func compileOne(p *model.Policy, groupChain, groupParent string, aclGroup *model.CustomChain) ([]*myfwv1.CompiledRule, error) {
+// compileInstance 将节点策略实例编译为 CompiledRule(可多条:MARK 联动时自动追加放行规则)。
+// 方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名)。rule id 用 "i<实例ID>"。
+func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent string, aclGroup *model.CustomChain) ([]*myfwv1.CompiledRule, error) {
 	dir, err := parseDirection(parentToDirection(groupParent))
 	if err != nil {
 		return nil, err
 	}
-	proto, err := parseProtocol(p.Protocol)
+	proto, err := parseProtocol(inst.Protocol)
 	if err != nil {
 		return nil, err
 	}
-	act, err := parseAction(p.Action)
+	act, err := parseAction(inst.Action)
 	if err != nil {
 		return nil, err
 	}
 
 	main := &myfwv1.CompiledRule{
-		Id:               "p" + strconv.FormatUint(uint64(p.ID), 10),
+		Id:               "i" + strconv.FormatUint(uint64(inst.ID), 10),
 		Direction:        dir,
-		Source:           p.Source,
-		Destination:      p.Destination,
+		Source:           inst.Source,
+		Destination:      inst.Destination,
 		Protocol:         proto,
-		PortRange:        p.PortRange,
+		PortRange:        inst.PortRange,
 		Action:           act,
-		Mark:             p.Mark,
-		NatTo:            p.NatTo,
-		SourceGroup:      p.SourceGroup,
-		DestinationGroup: p.DestinationGroup,
-		MatchMark:        p.MatchMark,
+		Mark:             inst.Mark,
+		NatTo:            inst.NatTo,
+		SourceGroup:      inst.SourceGroup,
+		DestinationGroup: inst.DestinationGroup,
+		MatchMark:        inst.MatchMark,
 		Chain:            groupChain,
-		Priority:         int32(p.Priority),
-		Description:      p.Description,
+		Priority:         int32(inst.Priority),
+		Description:      inst.Description,
 	}
 	rules := []*myfwv1.CompiledRule{main}
 
 	// MARK 联动:填了白名单+放行组,自动生成 filter 放行规则(match_mark+白名单 ACCEPT)
-	if p.Action == "MARK" && p.SourceGroup != "" && aclGroup != nil {
+	if inst.Action == "MARK" && inst.SourceGroup != "" && aclGroup != nil {
 		aclDir, _ := parseDirection(parentToDirection(aclGroup.Parent))
 		rules = append(rules, &myfwv1.CompiledRule{
-			Id:          "p" + strconv.FormatUint(uint64(p.ID), 10) + "-acl",
+			Id:          "i" + strconv.FormatUint(uint64(inst.ID), 10) + "-acl",
 			Direction:   aclDir,
-			SourceGroup: p.SourceGroup,
-			MatchMark:   p.Mark,
+			SourceGroup: inst.SourceGroup,
+			MatchMark:   inst.Mark,
 			Action:      myfwv1.Action_ACTION_ACCEPT,
 			Chain:       aclGroup.Name,
-			Priority:    int32(p.Priority),
-			Description: "MARK 联动放行: " + p.Description,
+			Priority:    int32(inst.Priority),
+			Description: "MARK 联动放行: " + inst.Description,
 		})
 	}
 	return rules, nil
