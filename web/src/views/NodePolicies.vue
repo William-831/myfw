@@ -52,7 +52,10 @@
                 <span class="action" :class="inst.action ? inst.action.toLowerCase() : ''">{{ getActionLabel(inst.action) }}</span>
               </div>
               <div class="inst-foot">
-                <span class="prio">优先级 #{{ inst.priority }}</span>
+                <div class="foot-left">
+                  <span class="prio">优先级 #{{ inst.priority }}</span>
+                  <el-switch :model-value="inst.enabled" size="small" @change="(v) => toggleEnabled(inst, v)" />
+                </div>
                 <div class="actions">
                   <el-button size="small" text type="warning" @click="openEditInst(inst)">编辑参数</el-button>
                   <el-button v-if="inst.drift" size="small" text type="primary" @click="handleSync(inst)">同步模板</el-button>
@@ -109,6 +112,10 @@
         <el-form-item label="描述"><el-input v-model="instForm.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="instForm.enabled" /></el-form-item>
       </el-form>
+      <div class="cmd-preview">
+        <div class="cmd-preview-head">命令预览(规则落 MYFW 自定义链,系统链已自动跳转)</div>
+        <pre class="cmd-preview-code">{{ previewCommand }}</pre>
+      </div>
       <template #footer>
         <el-button @click="editInstVisible = false">取消</el-button>
         <el-button type="primary" @click="saveInst" :loading="savingInst">保存</el-button>
@@ -140,6 +147,46 @@ const currentNodeLabel = computed(() => {
 })
 
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
+
+// 命令预览:根据实例表单拼接底层 iptables 命令,无感教学
+const previewCommand = computed(() => {
+  const f = instForm
+  const cc = customChains.value.find(c => c.id === f.group_id)
+  const table = cc?.table || 'filter'
+  const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
+  const parts = ['iptables', '-t', table, '-A', chain]
+  if (f.source) parts.push('-s', f.source)
+  if (f.destination) parts.push('-d', f.destination)
+  if (f.source_group) parts.push('-m', 'set', '--match-set', f.source_group, 'src')
+  if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
+  if (f.match_mark) parts.push('-m', 'mark', '--mark', String(f.match_mark))
+  if (f.protocol && f.protocol !== 'ANY') {
+    parts.push('-p', f.protocol.toLowerCase())
+    if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)
+  }
+  if (f.action === 'MARK') {
+    parts.push('-j', 'MARK', '--set-mark', String(f.mark || 0))
+  } else if (f.action === 'DNAT') {
+    parts.push('-j', 'DNAT', ...(f.nat_to ? ['--to-destination', f.nat_to] : []))
+  } else if (f.action === 'SNAT') {
+    parts.push('-j', 'SNAT', ...(f.nat_to ? ['--to-source', f.nat_to] : []))
+  } else if (f.action) {
+    parts.push('-j', f.action)
+  }
+  return parts.join(' ')
+})
+
+// 一键启停:切换实例 enabled(需重新下发节点才生效)
+const toggleEnabled = async (inst, v) => {
+  try {
+    await updateInstance(inst.id, { ...inst, enabled: v })
+    ElMessage.success(v ? '已启用,请下发节点生效' : '已禁用,请下发节点生效')
+    loadInstances()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '切换失败')
+    loadInstances()
+  }
+}
 
 const loadNodes = async () => {
   nodesLoading.value = true
@@ -295,7 +342,11 @@ onMounted(() => {
 .action.reject { color: #d97706; background: #fef3c7; }
 .action.mark { color: #2563eb; background: #dbeafe; }
 .inst-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid #f1f5f9; }
+.foot-left { display: flex; align-items: center; gap: 10px; }
 .prio { font-size: 12px; color: #94a3b8; }
+.cmd-preview { margin-top: 12px; }
+.cmd-preview-head { font-size: 12px; color: #64748b; margin-bottom: 6px; }
+.cmd-preview-code { background: #0f172a; color: #e2e8f0; padding: 10px; border-radius: 6px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
 .actions { display: flex; gap: 4px; }
 .form-row { display: flex; gap: 12px; }
 .form-col { flex: 1; }
