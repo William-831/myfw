@@ -359,13 +359,13 @@
           </el-select>
           <span class="form-hint">打标动作:给匹配流量打上 dev/ops 权限标记</span>
         </el-form-item>
-        <el-form-item label="匹配标记">
+        <el-form-item v-if="policyForm.action !== 'MARK'" label="匹配标记">
           <el-select v-model="policyForm.match_mark" style="width: 200px">
             <el-option label="不限制" :value="0" />
             <el-option label="dev (15)" :value="15" />
             <el-option label="ops (255)" :value="255" />
           </el-select>
-          <span class="form-hint">仅匹配已打此 mark 的流量(与打标动作正交,用于 mark 白名单联动)</span>
+          <span class="form-hint">仅匹配已打此 mark 的流量(用于 ACCEPT/DROP 放行策略做 mark 白名单联动)</span>
         </el-form-item>
         <el-form-item label="目标节点" prop="targets">
           <el-select v-model="selectedNodeIds" multiple placeholder="选择目标节点" style="width: 100%">
