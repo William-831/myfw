@@ -39,7 +39,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" min-width="90">
+        <el-table-column label="状态" min-width="110">
           <template #default="{ row }">
             <el-tooltip
               v-if="row.status === 'ABNORMAL' && row.capability?.backend_reason"
@@ -49,6 +49,7 @@
               <el-tag :type="getStatusType(row.status)" size="small" effect="dark">{{ getStatusLabel(row.status) }}</el-tag>
             </el-tooltip>
             <el-tag v-else :type="getStatusType(row.status)" size="small">{{ getStatusLabel(row.status) }}</el-tag>
+            <el-tag v-if="hasGuard(row.id)" type="warning" size="small" effect="dark" class="guard-tag" @click="guard.open()">待确认</el-tag>
           </template>
         </el-table-column>
         <el-table-column v-if="columnVisible.system" label="系统" min-width="140">
@@ -387,10 +388,22 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule, getNodeDrift } from '@/api'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule, getNodeDrift, getTasks } from '@/api'
+import { useGuardStore } from '@/stores/guard'
 
 const loading = ref(false)
 const nodes = ref([])
+const guard = useGuardStore()
+const guardNodeIds = ref(new Set())
+const hasGuard = (nodeId) => guardNodeIds.value.has(nodeId)
+const loadGuardTasks = async () => {
+  try {
+    const data = await getTasks({ status: 'confirm_wait' })
+    guardNodeIds.value = new Set((data.tasks || []).map((t) => t.node_id))
+  } catch {
+    // 保护期任务加载失败不影响节点列表展示
+  }
+}
 const addDialogVisible = ref(false)
 const editDialogVisible = ref(false)
 const detailDialogVisible = ref(false)
@@ -560,6 +573,7 @@ const loadNodes = async () => {
   try {
     const data = await getNodes()
     nodes.value = data.nodes || []
+    loadGuardTasks()
   } catch {
     ElMessage.error('加载节点列表失败')
   } finally {
@@ -864,6 +878,7 @@ onMounted(loadNodes)
 .col-settings { display: flex; flex-direction: column; gap: 6px; }
 .col-settings-title { font-size: 12px; color: #909399; margin-bottom: 4px; }
 .mono { font-family: 'Courier New', Courier, monospace; }
+.guard-tag { margin-left: 4px; cursor: pointer; }
 .node-id { font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; word-break: break-all; }
 .backend-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .backend-reason { font-size: 12px; color: #f56c6c; }

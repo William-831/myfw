@@ -258,6 +258,36 @@ func (co *Coordinator) Confirm(ctx context.Context, taskID, reviewer string) (*m
 	return updated, nil
 }
 
+// Rollback 手动回滚一个处于保护期(confirm_wait)的任务:发 Rollback 给 Agent
+// 恢复变更前快照,置 ROLLED_BACK 并取消倒计时定时器。
+func (co *Coordinator) Rollback(ctx context.Context, taskID, reviewer string) (*model.Task, error) {
+	var updated *model.Task
+	err := co.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var t model.Task
+		if err := tx.Where("id = ?", taskID).First(&t).Error; err != nil {
+			return errNotFoundOr(err)
+		}
+		if t.Status != model.TaskConfirmWait {
+			return fmt.Errorf("task: cannot rollback %s (status=%s)", taskID, t.Status)
+		}
+		t.Status = model.TaskRolledBack
+		t.Reviewer = reviewer
+		t.Message = "manual rollback by " + reviewer
+		if err := tx.Save(&t).Error; err != nil {
+			return err
+		}
+		updated = &t
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	co.sendRollbackToAgent(ctx, updated)
+	co.cancelTimer(taskID)
+	co.audit(ctx, reviewer, "task.manual_rollback", []*model.Task{updated}, nil)
+	return updated, nil
+}
+
 // Get / List helpers.
 func (co *Coordinator) Get(ctx context.Context, taskID string) (*model.Task, error) {
 	return co.getByID(ctx, taskID)
@@ -370,17 +400,23 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		co.audit(ctx, "agent", "task.apply_failed", []*model.Task{&t}, map[string]any{"msg": res.Message})
 		return
 	}
-	// apply 成功即生效:直接 CONFIRMED,不走 confirm_wait 自动回滚(简化流程,
-	// 避免用户忘了 confirm 导致超时回滚看似"应用失败")。确认保护期作为高危场景
-	// 可选,默认关闭。
-	t.Status = model.TaskConfirmed
+	// apply 成功:进入保护期(confirm_wait),启动倒计时定时器,超时未确认则自动回滚。
+	// Agent 保留变更前快照,等待用户 Confirm(释放快照) 或 Rollback(恢复快照)。
+	t.Status = model.TaskConfirmWait
 	t.ResultHash = res.ResultHash
 	if err := co.DB.WithContext(ctx).Save(&t).Error; err != nil {
-		co.Log.Warn("save confirmed", "task_id", t.ID, "err", err)
+		co.Log.Warn("save confirm_wait", "task_id", t.ID, "err", err)
 		return
 	}
-	co.audit(ctx, "agent", "task.applying_ok", []*model.Task{&t}, map[string]any{"hash": res.ResultHash})
-	co.sendConfirmToAgent(ctx, &t) // 释放 Agent 保留的快照
+	co.armRollbackTimer(&t)
+	deadline := "-"
+	if t.ConfirmDeadline != nil {
+		deadline = t.ConfirmDeadline.Format(time.RFC3339)
+	}
+	co.audit(ctx, "agent", "task.applying_ok", []*model.Task{&t}, map[string]any{
+		"hash":             res.ResultHash,
+		"confirm_deadline": deadline,
+	})
 }
 
 // armRollbackTimer schedules an auto-rollback at t.ConfirmDeadline. If the

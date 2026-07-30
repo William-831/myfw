@@ -7,6 +7,7 @@
           <div class="header-actions">
             <el-select v-model="filterStatus" placeholder="筛选状态" style="width: 150px" @change="loadTasks">
               <el-option label="待审批" value="pending_approval" />
+              <el-option label="待确认" value="confirm_wait" />
               <el-option label="全部" value="" />
               <el-option label="已通过" value="confirmed" />
               <el-option label="已拒绝" value="failed" />
@@ -42,6 +43,10 @@
               <el-button size="small" type="success" @click="handleApprove(row)">通过</el-button>
               <el-button size="small" type="danger" @click="handleReject(row)">拒绝</el-button>
             </template>
+            <template v-else-if="row.status === 'confirm_wait'">
+              <el-button size="small" type="success" @click="handleConfirm(row)">确认</el-button>
+              <el-button size="small" type="danger" @click="handleRollback(row)">回滚</el-button>
+            </template>
             <el-button size="small" @click="handleView(row)">详情</el-button>
           </template>
         </el-table-column>
@@ -68,7 +73,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getTasks, approveTask, rejectTask, getNodes } from '@/api'
+import { getTasks, approveTask, rejectTask, confirmTask, rollbackTask, getNodes } from '@/api'
 
 const loading = ref(false)
 const filterStatus = ref('pending_approval')
@@ -81,10 +86,11 @@ const viewTask = reactive({ id: '', node_id: '', policy_name: '', status: '', me
 // 简化状态:对外只显 待审批/已通过/已拒绝/已回滚,中间态统一"处理中"
 const getStatusLabel = (status) => ({
   pending_approval: '待审批',
+  confirm_wait: '待确认',
   confirmed: '已通过',
   failed: '已拒绝',
   rolled_back: '已回滚',
-  approved: '处理中', dispatching: '处理中', applying: '处理中', confirm_wait: '处理中'
+  approved: '处理中', dispatching: '处理中', applying: '处理中'
 }[status] || status)
 
 const getStatusType = (status) => ({
@@ -157,6 +163,37 @@ const handleReject = async (row) => {
     loadTasks()
   } catch (err) {
     if (err !== 'cancel') ElMessage.error(err?.response?.data?.error || '操作失败')
+  }
+}
+
+// 保护期内(confirm_wait)的确认/回滚,与顶部角标面板功能对齐
+const handleConfirm = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认「${row.policy_name || '单条规则'}」生效?将保留当前规则。`,
+      '确认生效',
+      { type: 'success', confirmButtonText: '确认', cancelButtonText: '取消' }
+    )
+    await confirmTask(row.id)
+    ElMessage.success('已确认生效')
+    loadTasks()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.error || '确认失败')
+  }
+}
+
+const handleRollback = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `回滚「${row.policy_name || '单条规则'}」?节点将恢复到变更前状态。`,
+      '确认回滚',
+      { type: 'warning', confirmButtonText: '回滚', cancelButtonText: '取消' }
+    )
+    await rollbackTask(row.id)
+    ElMessage.success('已回滚')
+    loadTasks()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.error || '回滚失败')
   }
 }
 

@@ -39,7 +39,9 @@
     <el-container class="main-container">
       <el-header class="header">
         <span class="page-title">{{ pageTitle }}</span>
-        <el-dropdown @command="handleCommand">
+        <div class="header-right">
+          <ConfirmGuard />
+          <el-dropdown @command="handleCommand">
           <span class="user-info">
             <el-icon><User /></el-icon>
             <span>{{ username }}</span>
@@ -56,6 +58,7 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        </div>
       </el-header>
       <el-main class="main-content">
         <router-view />
@@ -101,6 +104,7 @@ import {
   SwitchButton
 } from '@element-plus/icons-vue'
 import { changePassword } from '@/api'
+import ConfirmGuard from '@/components/ConfirmGuard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -260,6 +264,12 @@ const handleCommand = (command) => {
   font-size: 16px;
   font-weight: 600;
   color: var(--c-text-1);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .user-info {

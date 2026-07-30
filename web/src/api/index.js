@@ -84,6 +84,7 @@ export const getTask = (id) => service.get(`/v1/tasks/${id}`)
 export const approveTask = (id, data) => service.post(`/v1/tasks/${id}/approve`, data || {})
 export const rejectTask = (id, data) => service.post(`/v1/tasks/${id}/reject`, data || {})
 export const confirmTask = (id) => service.post(`/v1/tasks/${id}/confirm`)
+export const rollbackTask = (id) => service.post(`/v1/tasks/${id}/rollback`)
 
 // 审计日志
 export const getAuditLogs = (params) => service.get('/v1/audit/logs', { params })

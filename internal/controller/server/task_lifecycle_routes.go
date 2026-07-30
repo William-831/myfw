@@ -20,6 +20,7 @@ func registerTaskLifecycleRoutes(r gin.IRouter, co *task.Coordinator) {
 	g.POST("/:id/approve", func(c *gin.Context) { approveTask(c, co) })
 	g.POST("/:id/reject", func(c *gin.Context) { rejectTask(c, co) })
 	g.POST("/:id/confirm", func(c *gin.Context) { confirmTask(c, co) })
+	g.POST("/:id/rollback", func(c *gin.Context) { rollbackTask(c, co) })
 }
 
 func listTasks(c *gin.Context, co *task.Coordinator) {
@@ -74,6 +75,15 @@ func rejectTask(c *gin.Context, co *task.Coordinator) {
 
 func confirmTask(c *gin.Context, co *task.Coordinator) {
 	t, err := co.Confirm(c.Request.Context(), c.Param("id"), actor(c))
+	if err != nil {
+		respondTaskErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
+func rollbackTask(c *gin.Context, co *task.Coordinator) {
+	t, err := co.Rollback(c.Request.Context(), c.Param("id"), actor(c))
 	if err != nil {
 		respondTaskErr(c, err)
 		return
