@@ -467,17 +467,18 @@ func targetChainFor(r *myfwv1.CompiledRule) (string, string, error) {
 		r.Id, r.Direction, r.Action)
 }
 
-// targetChainForRule 优先用规则指定的子链(r.Chain),table 从 chainToTable 查;
-// 未指定则回退到 targetChainFor(按 action/direction 落父链)。
+// targetChainForRule 用规则指定的子链(r.Chain),table 从 chainToTable 查。
+// 两级模型下条目必须归属策略组(Chain=组名),不再回退落父链--从机制上杜绝
+// 业务规则污染父链(父链仅保留 ESTABLISHED 放行 + jump 调度)。
 func targetChainForRule(r *myfwv1.CompiledRule, chainToTable map[string]string) (string, string, error) {
-	if r.Chain != "" {
-		table, ok := chainToTable[r.Chain]
-		if !ok {
-			return "", "", fmt.Errorf("rule %q: unknown custom chain %q", r.Id, r.Chain)
-		}
-		return table, "MYFW-" + r.Chain, nil
+	if r.Chain == "" {
+		return "", "", fmt.Errorf("rule %q: chain is required (条目必须归属策略组)", r.Id)
 	}
-	return targetChainFor(r)
+	table, ok := chainToTable[r.Chain]
+	if !ok {
+		return "", "", fmt.Errorf("rule %q: unknown custom chain %q", r.Id, r.Chain)
+	}
+	return table, "MYFW-" + r.Chain, nil
 }
 
 // compileRule turns a CompiledRule into a list of iptables args (starting

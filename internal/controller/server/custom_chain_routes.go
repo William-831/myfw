@@ -11,8 +11,9 @@ import (
 	"iptables-tool/internal/model"
 )
 
-// registerCustomChainRoutes 挂载自定义子链的 CRUD 接口。子链 MYFW-<name> 从父链
-// jump 进来,Policy 通过 chain 字段引用其名称,用于规则按业务归类。
+// registerCustomChainRoutes 挂载策略组(自定义子链)的 CRUD 接口。两级模型下策略组
+// =自定义子链 MYFW-<name>,从父链 jump 进来;条目(Policy)通过 group_id 归属组,
+// 继承组的钩子方向,规则落于子链。
 func registerCustomChainRoutes(r gin.IRouter, db *gorm.DB) {
 	g := r.Group("/api/v1/custom-chains")
 	g.GET("", listCustomChains(db))
@@ -22,11 +23,13 @@ func registerCustomChainRoutes(r gin.IRouter, db *gorm.DB) {
 	g.DELETE("/:id", deleteCustomChain(db))
 }
 
-// customChainInput 自定义子链写入入参。
+// customChainInput 策略组(自定义子链)写入入参。两级模型下策略组=自定义子链,
+// 承载钩子方向(Parent)与全局调度优先级(Priority)。
 type customChainInput struct {
 	Name        string `json:"name"`        // 子链名(不带 MYFW- 前缀,节点链 MYFW-<name>)
-	Parent      string `json:"parent"`      // 父链 MYFW-INPUT/OUTPUT/FORWARD/PREROUTING/POSTROUTING/MANGLE
+	Parent      string `json:"parent"`      // 钩子方向:MYFW-INPUT/OUTPUT/FORWARD/PREROUTING/POSTROUTING/MANGLE
 	Table       string `json:"table"`       // 表 filter/nat/mangle,须与父链一致
+	Priority    int    `json:"priority"`    // 全局调度顺序:父链中 jump 到本子链的顺序,值小排前
 	Description string `json:"description"`
 	Enabled     bool   `json:"enabled"`
 }
@@ -44,7 +47,7 @@ var validChainParents = map[string]string{
 func listCustomChains(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var chains []model.CustomChain
-		if err := db.Order("name ASC").Find(&chains).Error; err != nil {
+		if err := db.Order("priority ASC, id ASC").Find(&chains).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -65,6 +68,7 @@ func createCustomChain(db *gorm.DB) gin.HandlerFunc {
 		}
 		ch := model.CustomChain{
 			Name: in.Name, Parent: in.Parent, Table: in.Table,
+			Priority:    in.Priority,
 			Description: in.Description, Enabled: in.Enabled,
 		}
 		if err := db.Create(&ch).Error; err != nil {
@@ -103,6 +107,7 @@ func updateCustomChain(db *gorm.DB) gin.HandlerFunc {
 		ch.Name = in.Name
 		ch.Parent = in.Parent
 		ch.Table = in.Table
+		ch.Priority = in.Priority
 		ch.Description = in.Description
 		ch.Enabled = in.Enabled
 		if err := db.Save(ch).Error; err != nil {

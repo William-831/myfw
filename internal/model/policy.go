@@ -7,7 +7,8 @@ import "time"
 type Policy struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	Name             string    `gorm:"size:255" json:"name"`
-	Direction        string    `gorm:"size:16" json:"direction"`        // INBOUND/OUTBOUND/FORWARD
+	Direction        string    `gorm:"size:16" json:"direction"`        // 废弃:两级模型下从组继承,保留字段不用
+	GroupID          uint      `gorm:"index" json:"group_id"`           // 所属策略组(CustomChain.ID),条目继承组的方向/子链
 	Source           string    `gorm:"size:128" json:"source"`          // IP/CIDR, empty = any
 	Destination      string    `gorm:"size:128" json:"destination"`     // IP/CIDR, empty = any
 	Protocol         string    `gorm:"size:16" json:"protocol"`         // TCP/UDP/ICMP/ANY

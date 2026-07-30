@@ -109,6 +109,9 @@ func Migrate(gdb *gorm.DB) error {
 	if err := gdb.AutoMigrate(model.AllModels()...); err != nil {
 		return fmt.Errorf("db: migrate: %w", err)
 	}
+	if err := model.MigratePolicyGroupID(gdb); err != nil {
+		return fmt.Errorf("db: migrate policy group_id: %w", err)
+	}
 	return nil
 }
 

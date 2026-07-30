@@ -49,10 +49,35 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		return nil, nil, nil, err
 	}
 
+	// 预加载条目所属策略组(GroupID -> CustomChain)。组是调度单元:组不存在或
+	// 未启用时,其下条目不参与编译(父链不会 jump 到该子链)。
+	groupIDs := make(map[uint]struct{})
+	for i := range policies {
+		groupIDs[policies[i].GroupID] = struct{}{}
+	}
+	groupByID := make(map[uint]*model.CustomChain)
+	if len(groupIDs) > 0 {
+		ids := make([]uint, 0, len(groupIDs))
+		for id := range groupIDs {
+			ids = append(ids, id)
+		}
+		var groups []model.CustomChain
+		if err := c.DB.WithContext(ctx).Where("id IN ? AND enabled = ?", ids, true).Find(&groups).Error; err != nil {
+			return nil, nil, nil, err
+		}
+		for i := range groups {
+			groupByID[groups[i].ID] = &groups[i]
+		}
+	}
+
 	out := make([]*myfwv1.CompiledRule, 0, len(policies))
 	setNames := make(map[string]struct{})
 	for i := range policies {
 		p := &policies[i]
+		g, ok := groupByID[p.GroupID]
+		if !ok {
+			continue // 所属组不存在或未启用,条目不生效
+		}
 		spec, err := policy.ParseTargets(p)
 		if err != nil {
 			return nil, nil, nil, err
@@ -60,7 +85,7 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		if !matches(&node, nodeLabels, spec) {
 			continue
 		}
-		cr, err := compileOne(p)
+		cr, err := compileOne(p, g.Name, g.Parent)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("compiler: policy %d: %w", p.ID, err)
 		}
@@ -85,10 +110,10 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 }
 
 // loadCustomChains 加载所有启用的自定义子链,转为下发的 CustomChainDef 期望态。
-// 按 name 排序保证输出稳定。
+// 按 priority 排序:父链中 jump 到各子链的顺序由组优先级决定(值小排前)。
 func (c *Compiler) loadCustomChains(ctx context.Context) ([]*myfwv1.CustomChainDef, error) {
 	var chains []model.CustomChain
-	if err := c.DB.WithContext(ctx).Where("enabled = ?", true).Order("name ASC").Find(&chains).Error; err != nil {
+	if err := c.DB.WithContext(ctx).Where("enabled = ?", true).Order("priority ASC, id ASC").Find(&chains).Error; err != nil {
 		return nil, err
 	}
 	out := make([]*myfwv1.CustomChainDef, 0, len(chains))
@@ -238,8 +263,10 @@ func parseLabels(s string) []string {
 
 // compileOne turns one Policy row into a CompiledRule proto. The rule id is
 // "p<policyID>-v<priority>" so the Agent's iptables output is human-readable.
-func compileOne(p *model.Policy) (*myfwv1.CompiledRule, error) {
-	dir, err := parseDirection(p.Direction)
+// compileOne 将条目编译为 CompiledRule。两级模型下方向与子链从所属策略组
+// 继承(groupChain=组名作 Chain,groupParent=父链名映射为 Direction)。
+func compileOne(p *model.Policy, groupChain, groupParent string) (*myfwv1.CompiledRule, error) {
+	dir, err := parseDirection(parentToDirection(groupParent))
 	if err != nil {
 		return nil, err
 	}
@@ -265,10 +292,24 @@ func compileOne(p *model.Policy) (*myfwv1.CompiledRule, error) {
 		SourceGroup:      p.SourceGroup,
 		DestinationGroup: p.DestinationGroup,
 		MatchMark:        p.MatchMark,
-		Chain:            p.Chain,
+		Chain:            groupChain,
 		Priority:         int32(p.Priority),
 		Description:      p.Description,
 	}, nil
+}
+
+// parentToDirection 将父链名(MYFW-INPUT 等)映射为方向字符串。nat/mangle 父链
+// 无对应方向,返回空(UNSPECIFIED)--新模型下落点由 Chain(组名)决定,方向仅用于审计。
+func parentToDirection(parent string) string {
+	switch parent {
+	case "MYFW-INPUT":
+		return "INBOUND"
+	case "MYFW-OUTPUT":
+		return "OUTBOUND"
+	case "MYFW-FORWARD":
+		return "FORWARD"
+	}
+	return ""
 }
 
 func parseDirection(s string) (myfwv1.Direction, error) {

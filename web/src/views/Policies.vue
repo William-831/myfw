@@ -148,6 +148,10 @@
             />
             <span class="priority-badge">#{{ policy.priority }}</span>
             <span class="policy-name">{{ policy.name }}</span>
+            <el-tag v-if="policy.group_id" size="small" type="warning" class="group-tag">
+              {{ getGroupName(policy.group_id) }} · {{ getGroupParent(policy.group_id) }}
+            </el-tag>
+            <el-tag v-else size="small" type="danger">未归组</el-tag>
             <el-tag :type="policy.enabled ? 'success' : 'info'" size="small">
               {{ policy.enabled ? '已启用' : '已禁用' }}
             </el-tag>
@@ -162,8 +166,8 @@
 
           <!-- 规则摘要 -->
           <div class="rule-summary">
-            <span class="direction-tag" :class="policy.direction ? policy.direction.toLowerCase() : ''">
-              {{ getDirectionIcon(policy.direction) }} {{ getDirectionLabel(policy.direction) }}
+            <span class="direction-tag">
+              {{ getGroupParent(policy.group_id) || '-' }}
             </span>
             <span class="field">
               <span class="field-label">源</span>
@@ -292,12 +296,11 @@
         <el-form-item label="策略名称" prop="name">
           <el-input v-model="policyForm.name" placeholder="例如: 允许SSH远程管理" />
         </el-form-item>
-        <el-form-item label="方向" prop="direction">
-          <el-select v-model="policyForm.direction" style="width: 100%">
-            <el-option label="入站 (INBOUND)" value="INBOUND" />
-            <el-option label="出站 (OUTBOUND)" value="OUTBOUND" />
-            <el-option label="转发 (FORWARD)" value="FORWARD" />
+        <el-form-item label="所属组" prop="group_id">
+          <el-select v-model="policyForm.group_id" placeholder="选择策略组(继承钩子方向与子链)" style="width: 100%">
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent}, 优先级 ${cc.priority ?? 50})`" :value="cc.id" />
           </el-select>
+          <span v-if="policyForm.group_id" class="form-hint">继承方向:{{ getGroupParent(policyForm.group_id) }} · 规则落于 MYFW-{{ getGroupName(policyForm.group_id) }}</span>
         </el-form-item>
         <div class="form-row">
           <el-form-item label="源地址" class="form-col">
@@ -352,17 +355,6 @@
         <el-form-item label="匹配标记">
           <el-input-number v-model="policyForm.match_mark" :min="0" :max="4294967295" controls-position="right" style="width: 200px" />
           <span class="form-hint">填 &gt;0 表示仅匹配已打此 mark 的流量(与打标动作正交)</span>
-        </el-form-item>
-        <el-form-item label="分组">
-          <el-input v-model="policyForm.group" placeholder="逻辑分组名,如 whitelist / business(可选)" />
-        </el-form-item>
-        <el-form-item label="目标链">
-          <el-select v-model="policyForm.chain" clearable placeholder="自定义子链(可选,默认落父链)">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="优先级" prop="priority">
-          <el-slider v-model="policyForm.priority" :min="1" :max="100" :step="1" show-input />
         </el-form-item>
         <el-form-item label="目标节点" prop="targets">
           <el-select v-model="selectedNodeIds" multiple placeholder="选择目标节点" style="width: 100%">
@@ -535,7 +527,8 @@ const batchApplyLoading = ref(false)
 // 表单数据
 const policyForm = reactive({
   name: '',
-  direction: 'INBOUND',
+  group_id: 0,
+  direction: '',
   source: '',
   destination: '',
   protocol: 'ANY',
@@ -557,22 +550,11 @@ const policyForm = reactive({
 // 命令预览:复刻后端 internal/agent/driver/iptables 的 compileRule/targetChainFor 逻辑,
 // 让用户填写表单时即时看到将生成的底层 iptables 命令。表/链映射与动作目标须与后端一致。
 const buildPreviewCommand = (f) => {
-  // 表/链映射:DNAT/SNAT/MARK 走 nat/mangle,其余按方向走 filter
-  let table = 'filter'
-  let chain = 'MYFW-INPUT'
-  if (f.chain) {
-    chain = `MYFW-${f.chain}`
-    const cc = (customChains.value || []).find(c => c.name === f.chain)
-    table = cc ? cc.table : 'filter'
-  } else {
-    switch (f.action) {
-      case 'DNAT': table = 'nat'; chain = 'MYFW-PREROUTING'; break
-      case 'SNAT': table = 'nat'; chain = 'MYFW-POSTROUTING'; break
-      case 'MARK': table = 'mangle'; chain = 'MYFW-MANGLE'; break
-      default:
-        chain = { INBOUND: 'MYFW-INPUT', OUTBOUND: 'MYFW-OUTPUT', FORWARD: 'MYFW-FORWARD' }[f.direction] || 'MYFW-INPUT'
-    }
-  }
+  // 两级模型:从所属策略组继承子链与表(组=自定义子链,条目不再单独选方向/链)
+  const cc = (customChains.value || []).find(c => c.id === f.group_id)
+  if (!cc) return '# 请先选择所属策略组(规则落于组对应的子链)'
+  const table = cc.table
+  const chain = `MYFW-${cc.name}`
   const parts = ['iptables', '-t', table, '-A', chain]
   if (f.source) parts.push('-s', f.source)
   if (f.destination) parts.push('-d', f.destination)
@@ -593,6 +575,9 @@ const buildPreviewCommand = (f) => {
   return parts.join(' ')
 }
 
+const getGroupName = (gid) => { const cc = (customChains.value || []).find(c => c.id === gid); return cc ? cc.name : '' }
+const getGroupParent = (gid) => { const cc = (customChains.value || []).find(c => c.id === gid); return cc ? cc.parent : '' }
+
 const previewCommand = computed(() => buildPreviewCommand(policyForm))
 const previewHint = computed(() => {
   const f = policyForm
@@ -603,7 +588,7 @@ const previewHint = computed(() => {
 
 const formRules = {
   name: [{ required: true, message: '请输入策略名称', trigger: 'blur' }],
-  direction: [{ required: true, message: '请选择方向', trigger: 'change' }],
+  group_id: [{ required: true, validator: (r, v, cb) => v ? cb() : cb(new Error('请选择所属策略组')), trigger: 'change' }],
   action: [{ required: true, message: '请选择动作', trigger: 'change' }]
 }
 
@@ -635,7 +620,10 @@ const filteredPolicies = computed(() => {
                     (p.destination || '').toLowerCase().includes(kw)
       if (!match) return false
     }
-    if (filterDirection.value && p.direction !== filterDirection.value) return false
+    if (filterDirection.value) {
+      const dirParent = { INBOUND: 'MYFW-INPUT', OUTBOUND: 'MYFW-OUTPUT', FORWARD: 'MYFW-FORWARD' }[filterDirection.value]
+      if (getGroupParent(p.group_id) !== dirParent) return false
+    }
     if (filterAction.value && p.action !== filterAction.value) return false
     if (filterEnabled.value !== '' && p.enabled !== filterEnabled.value) return false
     if (filterPort.value && !(p.port_range || '').includes(filterPort.value)) return false
@@ -817,7 +805,7 @@ const detectPolicyConflicts = async () => {
 const openAddDialog = () => {
   dialogTitle.value = '新增策略'
   Object.assign(policyForm, {
-    name: '', direction: 'INBOUND', source: '', destination: '',
+    name: '', group_id: 0, direction: '', source: '', destination: '',
     protocol: 'ANY', port_range: '', action: 'ACCEPT',
     mark: 0, nat_to: '', source_group: '', destination_group: '',
     match_mark: 0, group: '', chain: '', priority: 50, description: '',
@@ -829,7 +817,7 @@ const openAddDialog = () => {
 const editPolicy = (p) => {
   dialogTitle.value = '编辑策略'
   Object.assign(policyForm, {
-    name: p.name, direction: p.direction, source: p.source,
+    name: p.name, group_id: p.group_id || 0, direction: p.direction || '', source: p.source,
     destination: p.destination, protocol: p.protocol, port_range: p.port_range,
     action: p.action, mark: p.mark || 0, nat_to: p.nat_to || '',
     source_group: p.source_group || '', destination_group: p.destination_group || '',

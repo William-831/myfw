@@ -9,6 +9,7 @@ type CustomChain struct {
 	Name        string    `gorm:"uniqueIndex;size:64;not null" json:"name"` // 子链名(MYFW-<name>)
 	Parent      string    `gorm:"size:32;not null" json:"parent"`           // 父链 MYFW-INPUT/FORWARD/OUTPUT/PREROUTING/POSTROUTING/MANGLE
 	Table       string    `gorm:"size:16;not null" json:"table"`            // 表 filter/nat/mangle,与父链一致
+	Priority    int       `gorm:"index;default:50" json:"priority"`         // 全局调度顺序:父链中 jump 到本子链的顺序,值小排前
 	Description string    `gorm:"size:512" json:"description"`
 	Enabled     bool      `gorm:"index" json:"enabled"`
 	CreatedAt   time.Time `json:"created_at"`

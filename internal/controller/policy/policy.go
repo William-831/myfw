@@ -32,7 +32,8 @@ type TargetsSpec struct {
 // PolicyInput is the fields a client may set on Create/Update.
 type PolicyInput struct {
 	Name             string      `json:"name"`
-	Direction        string      `json:"direction"`
+	GroupID          uint        `json:"group_id"`           // 所属策略组(CustomChain.ID,必填)
+	Direction        string      `json:"direction"`          // 废弃:两级模型下从组继承
 	Source           string      `json:"source"`
 	Destination      string      `json:"destination"`
 	Protocol         string      `json:"protocol"`
@@ -57,6 +58,9 @@ func (s *Service) Create(ctx context.Context, in PolicyInput, author string) (*m
 	if err := validate(in); err != nil {
 		return nil, err
 	}
+	if err := s.checkGroupExists(ctx, in.GroupID); err != nil {
+		return nil, err
+	}
 	targetsJSON, err := json.Marshal(in.Targets)
 	if err != nil {
 		return nil, fmt.Errorf("policy: marshal targets: %w", err)
@@ -64,6 +68,7 @@ func (s *Service) Create(ctx context.Context, in PolicyInput, author string) (*m
 
 	p := &model.Policy{
 		Name:             in.Name,
+		GroupID:          in.GroupID,
 		Direction:        in.Direction,
 		Source:           in.Source,
 		Destination:      in.Destination,
@@ -101,6 +106,9 @@ func (s *Service) Update(ctx context.Context, id uint, in PolicyInput, author st
 	if err := validate(in); err != nil {
 		return nil, err
 	}
+	if err := s.checkGroupExists(ctx, in.GroupID); err != nil {
+		return nil, err
+	}
 	targetsJSON, err := json.Marshal(in.Targets)
 	if err != nil {
 		return nil, fmt.Errorf("policy: marshal targets: %w", err)
@@ -116,6 +124,7 @@ func (s *Service) Update(ctx context.Context, id uint, in PolicyInput, author st
 			return err
 		}
 		p.Name = in.Name
+		p.GroupID = in.GroupID
 		p.Direction = in.Direction
 		p.Source = in.Source
 		p.Destination = in.Destination
@@ -216,8 +225,8 @@ func validate(in PolicyInput) error {
 	if in.Name == "" {
 		return errors.New("policy: name is required")
 	}
-	if !validDirections[in.Direction] {
-		return fmt.Errorf("policy: bad direction %q", in.Direction)
+	if in.GroupID == 0 {
+		return errors.New("policy: group_id is required (条目必须归属策略组)")
 	}
 	if !validProtocols[in.Protocol] {
 		return fmt.Errorf("policy: bad protocol %q", in.Protocol)
@@ -235,6 +244,18 @@ func validate(in PolicyInput) error {
 	}
 	if len(in.Targets.NodeIDs) == 0 && len(in.Targets.Labels) == 0 {
 		return errors.New("policy: at least one target (node_ids or labels) is required")
+	}
+	return nil
+}
+
+// checkGroupExists 校验策略组(CustomChain)存在,条目必须归属有效组。
+func (s *Service) checkGroupExists(ctx context.Context, groupID uint) error {
+	var group model.CustomChain
+	if err := s.DB.WithContext(ctx).First(&group, groupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("policy: group %d not found", groupID)
+		}
+		return err
 	}
 	return nil
 }
@@ -276,6 +297,7 @@ func (s *Service) SubmitChange(ctx context.Context, id uint, in PolicyInput, aut
 	}
 	p := &model.Policy{
 		Name:             in.Name,
+		GroupID:          in.GroupID,
 		Direction:        in.Direction,
 		Source:           in.Source,
 		Destination:      in.Destination,
