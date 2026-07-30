@@ -23,19 +23,7 @@
         <el-button size="small" v-for="q in quickCommands" :key="q" @click="runQuick(q)">{{ q }}</el-button>
       </div>
 
-      <!-- 命令历史输出区 -->
-      <div class="terminal" ref="terminalRef">
-        <div v-if="!history.length" class="empty-hint">
-          选择节点后输入 iptables 命令（回车执行），仅允许 iptables 族命令：iptables / ip6tables / iptables-save / iptables-restore / nft。
-        </div>
-        <div v-for="(h, i) in history" :key="i" class="entry" :class="{ ok: h.ok, err: !h.ok }">
-          <div class="cmd-line"><span class="prompt">$</span><span class="cmd">{{ h.command }}</span></div>
-          <pre class="output">{{ h.output }}</pre>
-        </div>
-        <div v-if="running" class="entry running"><span class="prompt">$</span> 执行中...</div>
-      </div>
-
-      <!-- 输入框 -->
+      <!-- 命令输入 -->
       <div class="input-row">
         <span class="prompt">$</span>
         <input
@@ -49,6 +37,23 @@
           @keydown.down.prevent="recallNext"
         />
         <el-button type="primary" @click="execute" :loading="running" :disabled="!nodeId">执行</el-button>
+      </div>
+
+      <!-- 命令历史记录 -->
+      <div class="history-title">命令历史记录</div>
+      <div class="terminal" ref="terminalRef">
+        <div v-if="!history.length" class="empty-hint">
+          选择节点后输入 iptables 命令（回车执行），仅允许 iptables 族命令：iptables / ip6tables / iptables-save / iptables-restore / nft。
+        </div>
+        <div v-for="(h, i) in history" :key="i" class="entry" :class="{ ok: h.ok, err: !h.ok }">
+          <div class="cmd-line">
+            <span class="entry-time">{{ h.time }}</span>
+            <span class="prompt">$</span>
+            <span class="cmd">{{ h.command }}</span>
+          </div>
+          <pre class="output">{{ h.output }}</pre>
+        </div>
+        <div v-if="running" class="entry running"><span class="prompt">$</span> 执行中...</div>
       </div>
     </el-card>
   </div>
@@ -116,7 +121,7 @@ const execute = async () => {
 
   command.value = ''
   running.value = true
-  const entry = { command: cmd, ok: false, output: '' }
+  const entry = { command: cmd, ok: false, output: '', time: new Date().toLocaleTimeString() }
   history.value.push(entry)
   await scrollToBottom()
 
@@ -181,6 +186,8 @@ onMounted(loadNodes)
 .warn-banner { margin-bottom: 12px; }
 .quick-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 
+.history-title { font-size: 13px; font-weight: 600; color: #94a3b8; margin: 12px 0 6px; }
+
 .terminal {
   background: #0f172a;
   border: 1px solid var(--c-border);
@@ -194,7 +201,8 @@ onMounted(loadNodes)
 }
 .empty-hint { color: #64748b; padding: 16px 0; line-height: 1.6; }
 .entry { margin-bottom: 10px; }
-.cmd-line { color: #94a3b8; }
+.cmd-line { color: #94a3b8; display: flex; align-items: center; }
+.entry-time { color: #64748b; font-size: 11px; margin-right: 8px; font-family: 'JetBrains Mono', 'Consolas', monospace; }
 .prompt { color: #38bdf8; margin-right: 6px; }
 .cmd { color: #e2e8f0; }
 .output {

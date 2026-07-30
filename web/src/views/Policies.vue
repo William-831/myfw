@@ -216,82 +216,6 @@
       </div>
     </div>
 
-    <!-- 专家模式: 链结构树 -->
-    <div v-else class="expert-mode">
-      <div class="expert-header">
-        <span>选择主机查看链结构:</span>
-        <el-select v-model="selectedExpertNode" placeholder="选择主机" style="width: 300px" @change="loadChainTree">
-          <el-option
-            v-for="node in allNodes"
-            :key="node.id"
-            :label="`${node.hostname || node.id} (${node.ip || '无IP'})`"
-            :value="node.id"
-          />
-        </el-select>
-        <el-button @click="loadChainTree" :loading="chainTreeLoading" :disabled="!selectedExpertNode">
-          <el-icon><Refresh /></el-icon>
-          刷新
-        </el-button>
-      </div>
-
-      <div v-if="chainTreeLoading" class="loading-state">
-        <el-skeleton :rows="5" animated />
-      </div>
-
-      <div v-else-if="!selectedExpertNode" class="empty-state">
-        <el-empty description="请选择一台主机查看 iptables 链结构" />
-      </div>
-
-      <div v-else-if="chainTree.tables && chainTree.tables.length > 0" class="chain-tree">
-        <div v-for="table in chainTree.tables" :key="table.name" class="table-section">
-          <div class="table-header">
-            <h3 class="table-title">{{ table.name }} 表</h3>
-          </div>
-
-          <div v-for="chain in table.chains" :key="chain.name" class="chain-block" :class="{ 'is-myfw': chain.is_myfw }">
-            <div class="chain-node" :class="{ 'system-chain': !chain.is_myfw, 'myfw-chain': chain.is_myfw }">
-              <span class="chain-icon">{{ chain.is_myfw ? '🟣' : '🔗' }}</span>
-              <span class="chain-name">{{ chain.name }}</span>
-              <el-tag v-if="chain.is_myfw" size="small" type="success">平台管理</el-tag>
-              <el-tag size="small" type="info">{{ chain.rules.length }} 条规则</el-tag>
-            </div>
-
-            <!-- 跳转规则 -->
-            <div v-if="chain.jump_rule" class="chain-jump">
-              <span class="jump-line">│</span>
-              <span class="jump-arrow">▼</span>
-              <code class="jump-rule">{{ chain.jump_rule }}</code>
-            </div>
-
-            <!-- 规则列表 -->
-            <div v-if="chain.rules && chain.rules.length > 0" class="rule-list">
-              <div
-                v-for="(rule, idx) in chain.rules"
-                :key="idx"
-                class="rule-item"
-                :class="{
-                  'is-myfw': rule.is_myfw,
-                  'is-external': !rule.is_myfw
-                }"
-                @click="showRuleDetail(rule, chain.name)"
-              >
-                <span class="rule-index">{{ idx + 1 }}</span>
-                <span class="rule-source-dot" :class="rule.is_myfw ? 'myfw' : 'external'" />
-                <code class="rule-spec">{{ rule.raw }}</code>
-              </div>
-            </div>
-
-            <div v-else class="empty-chain">
-              <span>(空链)</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="empty-state">
-        <el-empty description="暂无规则数据" />
-      </div>
-    </div>
 
     <!-- 新增/编辑策略对话框 -->
     <el-dialog v-model="dialogVisible" :title="dialogTitle" width="650px" :close-on-click-modal="false">
@@ -495,7 +419,7 @@ import {
   submitPolicyChange, getPolicyVersions, approvePolicyVersion, rejectPolicyVersion,
   applyPolicy as apiApplyPolicy, applyAllPolicies, getNodes, getTask,
   batchTogglePolicies, batchDeletePolicies, batchApplyToNodes,
-  detectConflicts, getChainTree, getAddressGroups, getCustomChains
+  detectConflicts, getAddressGroups, getCustomChains
 } from '@/api'
 
 // 状态
@@ -529,11 +453,6 @@ const viewDialogVisible = ref(false)
 const dialogTitle = ref('新增策略')
 const policyFormRef = ref(null)
 const selectedNodeIds = ref([])
-
-// 专家模式
-const selectedExpertNode = ref('')
-const chainTreeLoading = ref(false)
-const chainTree = ref({})
 
 // 批量应用
 const batchApplyVisible = ref(false)
@@ -1019,24 +938,6 @@ const handleApplyAll = async () => {
   }
 }
 
-// 专家模式
-const loadChainTree = async () => {
-  if (!selectedExpertNode.value) return
-  chainTreeLoading.value = true
-  try {
-    const data = await getChainTree(selectedExpertNode.value)
-    chainTree.value = data
-  } catch {
-    ElMessage.error('加载链结构失败')
-    chainTree.value = {}
-  } finally {
-    chainTreeLoading.value = false
-  }
-}
-const showRuleDetail = (rule, chainName) => {
-  ElMessage.info(`${chainName}: ${rule.raw}`)
-}
-
 onMounted(loadData)
 </script>
 
@@ -1210,109 +1111,8 @@ onMounted(loadData)
 .cmd-preview-code { margin: 0; padding: 12px; background: #1E293B; color: #E2E8F0; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .cmd-preview-note { padding: 8px 12px; font-size: 12px; color: #64748B; background: #F8FAFC; }
 
-/* 专家模式 */
-.expert-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  padding: 16px;
-  background: #fff;
-  border-radius: 6px;
-  border: 1px solid #E2E8F0;
-}
-.chain-tree { display: flex; flex-direction: column; gap: 20px; }
-
-.table-section {
-  background: #fff;
-  border: 1px solid #E2E8F0;
-  border-radius: 6px;
-  overflow: hidden;
-}
-.table-header {
-  padding: 12px 16px;
-  background: #F1F5F9;
-  border-bottom: 1px solid #E2E8F0;
-}
-.table-title { margin: 0; font-size: 14px; font-weight: 600; color: #1E293B; }
-
-.chain-block {
-  padding: 16px;
-  border-bottom: 1px solid #F1F5F9;
-}
-.chain-block:last-child { border-bottom: none; }
-.chain-block.is-myfw { background: #FAF5FF; }
-
-.chain-node {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.chain-icon { font-size: 16px; }
-.chain-name { font-weight: 600; color: #1E293B; }
-
-.chain-jump {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 0 8px 24px;
-  color: #64748B;
-  font-size: 12px;
-}
-.jump-line { color: #CBD5E1; }
-.jump-arrow { color: #3B82F6; }
-.jump-rule { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #64748B; }
-
-.rule-list {
-  margin-left: 24px;
-  border-left: 2px solid #E2E8F0;
-}
-.rule-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.rule-item:hover { background: #F1F5F9; }
-.rule-item.is-myfw { border-left: 3px solid #8B5CF6; }
-.rule-item.is-external { border-left: 3px solid #94A3B8; }
-
-.rule-index {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: #94A3B8;
-  min-width: 20px;
-}
-.rule-source-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-.rule-source-dot.myfw { background: #8B5CF6; }
-.rule-source-dot.external { background: #94A3B8; }
-.rule-spec {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  color: #1E293B;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.empty-chain {
-  margin-left: 24px;
-  padding: 8px 12px;
-  color: #94A3B8;
-  font-size: 12px;
-  font-style: italic;
-}
 
 .empty-state { padding: 40px; text-align: center; }
-.loading-state { padding: 20px; }
 
 /* 表单布局 */
 .form-row { display: flex; gap: 16px; }
