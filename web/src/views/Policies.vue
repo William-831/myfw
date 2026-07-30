@@ -297,10 +297,14 @@
           <el-input v-model="policyForm.name" placeholder="例如: 允许SSH远程管理" />
         </el-form-item>
         <el-form-item label="所属组" prop="group_id">
-          <el-select v-model="policyForm.group_id" placeholder="选择策略组(继承钩子方向与子链)" style="width: 100%">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent}, 优先级 ${cc.priority ?? 50})`" :value="cc.id" />
-          </el-select>
-          <span v-if="policyForm.group_id" class="form-hint">继承方向:{{ getGroupParent(policyForm.group_id) }} · 规则落于 MYFW-{{ getGroupName(policyForm.group_id) }}</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <el-select v-model="policyForm.group_id" placeholder="选择策略组(继承钩子方向与子链)" style="flex:1">
+              <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent}, 优先级 ${cc.priority ?? 50})`" :value="cc.id" />
+            </el-select>
+            <el-button @click="goCreateGroup"><el-icon><Plus /></el-icon>新建组</el-button>
+          </div>
+          <span v-if="!customChains.length" class="form-hint">尚无策略组,点击"新建组"前往创建</span>
+          <span v-else-if="policyForm.group_id" class="form-hint">继承方向:{{ getGroupParent(policyForm.group_id) }} · 规则落于 MYFW-{{ getGroupName(policyForm.group_id) }}</span>
         </el-form-item>
         <div class="form-row">
           <el-form-item label="源地址" class="form-col">
@@ -475,6 +479,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Refresh, Connection, Warning } from '@element-plus/icons-vue'
 import {
@@ -486,6 +491,7 @@ import {
 } from '@/api'
 
 // 状态
+const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const applyingAll = ref(false)
@@ -802,6 +808,10 @@ const detectPolicyConflicts = async () => {
 }
 
 // CRUD 操作
+const goCreateGroup = () => {
+  dialogVisible.value = false
+  router.push('/custom-chains')
+}
 const openAddDialog = () => {
   dialogTitle.value = '新增策略'
   Object.assign(policyForm, {
@@ -831,6 +841,11 @@ const editPolicy = (p) => {
 const savePolicy = async () => {
   if (!policyFormRef.value) return
   await policyFormRef.value.validate()
+  // 端口范围必须指定 TCP/UDP 协议(iptables --dport 要求,否则后端编译报错自回滚)
+  if (policyForm.port_range && policyForm.protocol !== 'TCP' && policyForm.protocol !== 'UDP') {
+    ElMessage.error('端口范围需指定 TCP 或 UDP 协议')
+    return
+  }
   saving.value = true
   try {
     const data = {
