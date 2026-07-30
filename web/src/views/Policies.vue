@@ -16,8 +16,11 @@
       </div>
     </div>
 
+    <!-- 专家模式:裸 iptables 命令终端(替代新增/全量应用/检测冲突/检索) -->
+    <ExpertMode v-if="expertMode" />
+
     <!-- 筛选栏 -->
-    <div class="filter-bar">
+    <div v-if="!expertMode" class="filter-bar">
       <el-input
         v-model="searchKeyword"
         placeholder="搜索策略名称、源地址、目标地址..."
@@ -82,7 +85,7 @@
     </div>
 
     <!-- 批量操作栏 -->
-    <div v-if="selectedIds.length > 0" class="batch-bar">
+    <div v-if="selectedIds.length > 0 && !expertMode" class="batch-bar">
       <span class="batch-count">已选 {{ selectedIds.length }} 条</span>
       <el-button size="small" type="success" @click="handleBatchToggle(true)">批量启用</el-button>
       <el-button size="small" type="warning" @click="handleBatchToggle(false)">批量禁用</el-button>
@@ -91,7 +94,7 @@
     </div>
 
     <!-- 操作按钮栏 -->
-    <div class="action-bar">
+    <div v-if="!expertMode" class="action-bar">
       <el-button type="primary" @click="openAddDialog">
         <el-icon><Plus /></el-icon>
         新增策略
@@ -107,7 +110,7 @@
     </div>
 
     <!-- 冲突提示 -->
-    <div v-if="conflicts.length > 0" class="conflicts-section">
+    <div v-if="conflicts.length > 0 && !expertMode" class="conflicts-section">
       <el-alert
         title="检测到策略冲突"
         type="warning"
@@ -486,6 +489,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Refresh, Connection, Warning } from '@element-plus/icons-vue'
+import ExpertMode from './ExpertMode.vue'
 import {
   getPolicies, createPolicy, updatePolicy, deletePolicy as apiDeletePolicy,
   submitPolicyChange, getPolicyVersions, approvePolicyVersion, rejectPolicyVersion,

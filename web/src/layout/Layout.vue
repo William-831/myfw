@@ -34,10 +34,6 @@
           <el-icon><Document /></el-icon>
           <span>审计日志</span>
         </el-menu-item>
-        <el-menu-item index="/expert">
-          <el-icon><Monitor /></el-icon>
-          <span>专家终端</span>
-        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container class="main-container">
@@ -102,8 +98,7 @@ import {
   User,
   ArrowDown,
   Key,
-  SwitchButton,
-  Monitor
+  SwitchButton
 } from '@element-plus/icons-vue'
 import { changePassword } from '@/api'
 
@@ -119,8 +114,7 @@ const pageTitles = {
   '/address-groups': '地址组管理',
   '/custom-chains': '自定义链',
   '/approve': '审批中心',
-  '/audit': '审计日志',
-  '/expert': '专家终端'
+  '/audit': '审计日志'
 }
 
 const pageTitle = computed(() => pageTitles[route.path] || 'MyFW')
