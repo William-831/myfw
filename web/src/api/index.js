@@ -43,14 +43,7 @@ export const updateNode = (id, data) => service.put(`/v1/nodes/${id}`, data)
 export const deleteNode = (id) => service.delete(`/v1/nodes/${id}`)
 export const createBootstrapToken = (data) => service.post('/v1/nodes/bootstrap', data)
 
-// 策略管理
-export const getPolicies = () => service.get('/v1/policies')
-export const createPolicy = (data) => service.post('/v1/policies', data)
-export const getPolicy = (id) => service.get(`/v1/policies/${id}`)
-export const updatePolicy = (id, data) => service.put(`/v1/policies/${id}`, data)
-export const deletePolicy = (id) => service.delete(`/v1/policies/${id}`)
-export const applyPolicy = (id, data) => service.post(`/v1/policies/${id}/apply`, data)
-export const applyAllPolicies = (data) => service.post('/v1/policies/apply-all', data)
+// 策略管理(C 档):见下方 templates/instances API。旧 Policy CRUD 已废弃。
 
 // 地址组(白/黑名单 IP 段集合)
 export const getAddressGroups = () => service.get('/v1/address-groups')
@@ -65,18 +58,6 @@ export const getCustomChain = (id) => service.get(`/v1/custom-chains/${id}`)
 export const createCustomChain = (data) => service.post('/v1/custom-chains', data)
 export const updateCustomChain = (id, data) => service.put(`/v1/custom-chains/${id}`, data)
 export const deleteCustomChain = (id) => service.delete(`/v1/custom-chains/${id}`)
-
-// 策略批量操作
-export const batchTogglePolicies = (ids, enabled) =>
-  service.post('/v1/iptables/batch-toggle', { ids, enabled })
-export const batchDeletePolicies = (ids) =>
-  service.post('/v1/iptables/batch-delete', { ids })
-export const batchApplyToNodes = (policyIds, nodeIds) =>
-  service.post('/v1/iptables/batch-apply', { policy_ids: policyIds, node_ids: nodeIds })
-
-// 策略冲突检测
-export const detectConflicts = (policyIds) =>
-  service.post('/v1/iptables/conflicts', { policy_ids: policyIds })
 
 // 任务 / 审批管理
 export const getTasks = (params) => service.get('/v1/tasks', { params })
@@ -98,13 +79,6 @@ export const getNodeIptablesRules = (nodeId) => service.get(`/v1/iptables/rules/
 export const operateNodeRule = (nodeId, op) => service.post(`/v1/iptables/rules/${nodeId}`, op)
 export const getNodeDrift = (nodeId) => service.get(`/v1/iptables/drift/${nodeId}`)
 
-// 策略变更审批（阶段5）
-export const submitPolicyChange = (id, data) => service.post(`/v1/policies/${id}/submit`, data)
-export const getPolicyVersions = (id) => service.get(`/v1/policies/${id}/versions`)
-export const approvePolicyVersion = (id, vid) => service.post(`/v1/policies/${id}/versions/${vid}/approve`)
-export const rejectPolicyVersion = (id, vid) => service.post(`/v1/policies/${id}/versions/${vid}/reject`)
-export const getIptablesOverview = () => service.get('/v1/iptables/overview')
-export const getChainTree = (nodeId) => service.get(`/v1/iptables/chain-tree/${nodeId}`)
 // 专家模式:执行裸 iptables 命令(iptables 族),同步等待 Agent 回复
 export const execIptables = (nodeId, command) => service.post(`/v1/iptables/exec/${nodeId}`, { command })
 

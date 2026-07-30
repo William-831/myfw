@@ -17,9 +17,10 @@ import (
 	"iptables-tool/internal/model"
 )
 
-// registerPolicyRoutes mounts M7's Policy CRUD + Apply endpoints. Apply now
-// goes through the Coordinator's approval flow by default; set
-// auto_approve=true in the request body to keep the synchronous M6 semantics.
+// registerPolicyRoutes mounts M7's Policy CRUD + Apply endpoints.
+//
+// ⚠️ C 档后前端已改用 templates/instances(见 template_routes.go),本路由保留供
+// e2e 测试与旧 Policy 数据兼容,不再被前端调用。Policy 表仍作迁移源/审计保留。
 func registerPolicyRoutes(r gin.IRouter, svc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink) {
 	g := r.Group("/api/v1/policies")
 	g.POST("", func(c *gin.Context) { createPolicy(c, svc, auditSink) })
