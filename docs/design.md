@@ -406,14 +406,14 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 - **实例配置模式**：双栏（左节点列表 / 右实例列表）。从模板实例化（全量复制参数）+ drift 角标（模板已更新）+ 一键同步 + 编辑参数（含 iptables 命令预览）+ 一键启停 + 节点下发（dispatch，走保护期）。
 - **专家终端模式**：对节点敲裸 iptables 命令（REPL），见 §10.3。
 
-### 10.3 专家模式：裸 iptables 命令通道（命令行 + 链规则浏览器）
+### 10.3 专家模式：裸 iptables 命令通道（命令行 + 规则拓扑）
 
 专家终端嵌入节点策略页，供高级管理员在节点上直接敲入 iptables 命令排障，并以“横向拓扑 + 纵向详情”的空间布局对应策略组“父链调度 / 子链执行”的层级关系：
 
 - **协议**：`stream.proto` 新增 `ControllerToAgent.exec_command`（`ExecCommand{task_id, command}`），复用 `TaskResult` 回传（`ok`=exit 0，`message`=stdout/stderr）。
 - **白名单**：Agent 侧 `handler.OnExec` 校验命令首 token 必须属于 iptables 族（`iptables`/`ip6tables`/`iptables-save`/`iptables-restore`/`nft`），拒绝任意 shell 命令，防止退化为 webshell。
 - **命令行交互**：中部命令输入框回车提交 + ↑↓ 回溯历史 + 常用命令快捷按钮。输入时前端实时解析（`composables/useIptablesParse`）操作类型（`-A`/`-I`/`-D`/`-F`/`-P`/`-N`/`-X`）与目标链，于输入框下方提示归属。
-- **链规则浏览器（下方）**：专家终端置顶优先，下方为单一链规则浏览器，呈父链 -> 子链 -> 规则两级折叠树。父链（六条 MYFW 父链，仅展示有子链的）来自 `GET /custom-chains`，规则来自 `GET /iptables/rules/:node_id` 节点实际规则（按优先级排列）。命令输入时浏览器高亮目标父链 + 子链定位归属；“一键折叠”切换全展开/全收起（层级可记忆恢复）；执行命令后自动刷新规则并展开受影响子链。
+- **规则拓扑（下方）**：专家终端置顶优先，下方为单一规则拓扑，呈父链 -> 子链 -> 规则两级折叠树。父链（六条 MYFW 父链，仅展示有子链的）来自 `GET /custom-chains`，规则来自 `GET /iptables/rules/:node_id` 节点实际规则（按优先级排列）。命令输入时浏览器高亮目标父链 + 子链定位归属；“一键折叠”切换全展开/全收起（层级可记忆恢复）；执行命令后自动刷新规则并展开受影响子链。
 - **危险命令二次确认**：`-F`/`-P ... DROP`/`-X` 等清空/改默认策略/删链操作前端弹窗二次确认。
 - **强审计**：每条命令经 `POST /api/v1/iptables/exec/:node_id` 下发，Controller 写审计日志（操作人/节点/命令/输出）。
 

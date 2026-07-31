@@ -9,8 +9,6 @@
             <el-select v-model="nodeId" placeholder="选择节点" style="width: 240px" @change="onNodeChange">
               <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
             </el-select>
-            <el-button @click="toggleCollapseAll">{{ allCollapsed ? '展开全部' : '一键折叠' }}</el-button>
-            <el-button @click="loadRules" :loading="loadingRules">刷新规则</el-button>
             <el-button @click="clearHistory" :disabled="!history.length">清屏</el-button>
           </div>
         </div>
@@ -68,8 +66,12 @@
     <el-card class="browser-card">
       <template #header>
         <div class="card-header">
-          <span>链规则浏览器</span>
+          <span>规则拓扑</span>
           <span class="card-sub">父链调度 -> 子链执行 -> 规则明细，点击展开</span>
+          <div class="card-actions">
+            <el-button size="small" @click="toggleCollapseAll">{{ allCollapsed ? '展开全部' : '一键折叠' }}</el-button>
+            <el-button size="small" @click="loadRules" :loading="loadingRules">刷新规则</el-button>
+          </div>
         </div>
       </template>
       <el-empty v-if="!parentsWithChains.length" description="暂无已部署子链" :image-size="60" />
@@ -517,8 +519,13 @@ onMounted(() => {
 /* 链规则浏览器 */
 .card-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
+}
+.card-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
 }
 .card-sub {
   font-size: 12px;
