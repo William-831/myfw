@@ -52,7 +52,7 @@ type NodePolicyInstance struct {
 	Applied          bool      `gorm:"index;default:false" json:"applied"`
 	// SyncedTemplateUpdatedAt 上次同步/实例化时模板的 UpdatedAt。drift 据此判断
 	// 模板是否在实例之后更新过--实例自身编辑不视为 drift(用户主动偏离模板)。
-	SyncedTemplateUpdatedAt time.Time `gorm:"index" json:"synced_template_at"`
+	SyncedTemplateUpdatedAt time.Time `gorm:"column:synced_template_at;index" json:"synced_template_at"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
 }
