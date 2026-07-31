@@ -124,6 +124,12 @@
           <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许" value="ACCEPT" /><el-option label="丢弃" value="DROP" /><el-option label="拒绝" value="REJECT" /><el-option label="标记" value="MARK" /><el-option label="DNAT" value="DNAT" /><el-option label="SNAT" value="SNAT" /></el-select>
         </el-form-item>
         <el-form-item v-if="instForm.action === 'MARK'" label="标记值"><el-input-number v-model="instForm.mark" :min="0" style="width: 100%" /></el-form-item>
+        <el-form-item v-if="instForm.action === 'MARK'" label="放行组">
+          <el-select v-model="instForm.mark_acl_group_id" clearable placeholder="选 FORWARD 策略组,自动生成白名单放行+兜底拒绝" style="width: 100%">
+            <el-option v-for="cc in forwardGroups" :key="cc.id" :label="`MYFW-${cc.name}`" :value="cc.id" />
+          </el-select>
+          <span class="form-hint">填源地址组(白名单)+放行组后,自动生成:所有源打标 → 白名单+标放行 → 其余带标包拒绝</span>
+        </el-form-item>
         <el-form-item v-if="instForm.action === 'DNAT' || instForm.action === 'SNAT'" label="NAT 目标"><el-input v-model="instForm.nat_to" placeholder="如 1.2.3.4 或 1.2.3.4:8080" /></el-form-item>
         <div class="form-row">
           <el-form-item label="匹配标记" class="form-col"><el-input-number v-model="instForm.match_mark" :min="0" style="width: 100%" placeholder="0=不匹配" /></el-form-item>
@@ -169,6 +175,9 @@ const currentNodeLabel = computed(() => {
 })
 
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
+
+// MARK 联动放行组:仅列 FORWARD 父链的策略组(Docker 端口映射流量走 FORWARD)
+const forwardGroups = computed(() => customChains.value.filter((c) => c.parent === 'MYFW-FORWARD'))
 
 // 命令预览:根据实例表单拼接底层 iptables 命令,无感教学
 const previewCommand = computed(() => {
@@ -284,7 +293,7 @@ const defaultForm = () => ({
   name: '', group_id: null, source: '', destination: '',
   source_group: '', destination_group: '', protocol: 'ANY',
   port_range: '', action: 'ACCEPT', mark: 0, nat_to: '',
-  match_mark: 0, priority: 50, description: '', enabled: true, apply: false
+  match_mark: 0, mark_acl_group_id: null, priority: 50, description: '', enabled: true, apply: false
 })
 const instForm = reactive(defaultForm())
 const openCreate = () => {

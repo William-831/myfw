@@ -288,19 +288,39 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent str
 	}
 	rules := []*myfwv1.CompiledRule{main}
 
-	// MARK 联动:填了白名单+放行组,自动生成 filter 放行规则(match_mark+白名单 ACCEPT)
+	// MARK 联动:填了白名单(source_group)+放行组(acl_group),自动生成完整的白名单
+	// 访问控制(仅白名单 IP 可访问打了 mark 的业务流量):
+	//   1. 主规则给所有源打标--清空 source/source_group,仅按目的/端口识别业务流量,
+	//      否则非白名单不打标,DROP 兜底匹配不到,拦截失效。
+	//   2. 白名单 + 标 -> ACCEPT(放行组,优先级 P)。
+	//   3. 标 -> DROP 兜底(放行组,优先级 P+1,白名单先匹配,其余带标包拒绝)。
 	if inst.Action == "MARK" && inst.SourceGroup != "" && aclGroup != nil {
+		main.Source = ""
+		main.SourceGroup = ""
+		main.Description = inst.Description + " (联动打标:所有源)"
 		aclDir, _ := parseDirection(parentToDirection(aclGroup.Parent))
-		rules = append(rules, &myfwv1.CompiledRule{
-			Id:          "i" + strconv.FormatUint(uint64(inst.ID), 10) + "-acl",
-			Direction:   aclDir,
-			SourceGroup: inst.SourceGroup,
-			MatchMark:   inst.Mark,
-			Action:      myfwv1.Action_ACTION_ACCEPT,
-			Chain:       aclGroup.Name,
-			Priority:    int32(inst.Priority),
-			Description: "MARK 联动放行: " + inst.Description,
-		})
+		base := "i" + strconv.FormatUint(uint64(inst.ID), 10)
+		rules = append(rules,
+			&myfwv1.CompiledRule{
+				Id:          base + "-acl",
+				Direction:   aclDir,
+				SourceGroup: inst.SourceGroup,
+				MatchMark:   inst.Mark,
+				Action:      myfwv1.Action_ACTION_ACCEPT,
+				Chain:       aclGroup.Name,
+				Priority:    int32(inst.Priority),
+				Description: "MARK 联动放行(白名单): " + inst.Description,
+			},
+			&myfwv1.CompiledRule{
+				Id:          base + "-drop",
+				Direction:   aclDir,
+				MatchMark:   inst.Mark,
+				Action:      myfwv1.Action_ACTION_DROP,
+				Chain:       aclGroup.Name,
+				Priority:    int32(inst.Priority) + 1,
+				Description: "MARK 联动兜底拒绝: " + inst.Description,
+			},
+		)
 	}
 	return rules, nil
 }

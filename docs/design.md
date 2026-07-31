@@ -378,13 +378,15 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 
 ### 9.4 mark + 白名单联动
 
-典型场景「仅白名单 IP 可访问打了 mark 的业务流量」：
+典型场景「仅白名单 IP 可访问打了 mark 的业务流量」。配 1 条 MARK 策略，平台自动编译为完整的 3 条规则：
 
-1. 策略 A（mangle/MYFW-MANGLE）：给业务端口流量 `MARK --set-mark 100`
-2. 策略 B（filter/MYFW-FORWARD）：`match_mark=100` + `source_group=whitelist` -> ACCEPT
-3. 策略 C（filter/MYFW-FORWARD）：`match_mark=100` -> DROP（兜底）
+- 策略填：`action=MARK` + `mark=N` + `source_group=whitelist`（白名单地址组）+ `mark_acl_group_id=<FORWARD 策略组>`（放行组）+ 目的/端口（识别业务流量）
+- 自动编译：
+  1. 主规则（打标组）：给**所有源**的业务端口流量 `MARK --set-mark N`（清空 source，否则非白名单不打标，兜底 DROP 匹配不到）
+  2. 放行规则（放行组）：`match_mark=N` + `source_group=whitelist` -> ACCEPT（优先级 P）
+  3. 兜底规则（放行组）：`match_mark=N` -> DROP（优先级 P+1，白名单先匹配，其余带标包拒绝）
 
-按优先级顺序匹配：白名单 IP 的 mark=100 流量先 ACCEPT，其余落到 DROP。对 Docker 暴露端口流量（经 DNAT 走 FORWARD）同样适用——用宿主端口在 mangle 打标，FORWARD 匹配标 + 白名单，不依赖容器 IP。
+按优先级顺序匹配：白名单 IP 的 mark=N 流量先 ACCEPT，其余带标包落到 DROP。对 Docker 暴露端口流量（经 DNAT 走 FORWARD）同样适用——用宿主端口在 PREROUTING/mangle 打标（DNAT 前，dport 仍是宿主端口），FORWARD 匹配标 + 白名单，不依赖容器 IP/端口。
 
 ---
 
