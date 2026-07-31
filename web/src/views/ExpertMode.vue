@@ -1,60 +1,26 @@
 <template>
   <div class="expert-page">
-    <!-- 顶部工具栏 -->
-    <el-card class="toolbar-card">
-      <div class="header-row">
-        <span class="title">专家终端</span>
-        <div class="header-actions">
-          <el-select v-model="nodeId" placeholder="选择节点" style="width: 240px" @change="onNodeChange">
-            <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
-          </el-select>
-          <el-button @click="toggleCollapseAll">{{ allCollapsed ? '展开全部' : '一键折叠' }}</el-button>
-          <el-button @click="loadRules" :loading="loadingRules">刷新规则</el-button>
-          <el-button @click="clearHistory" :disabled="!history.length">清屏</el-button>
+    <!-- 专家终端(置顶优先):工具栏 + 命令输入 + 执行反馈 -->
+    <el-card class="terminal-card">
+      <template #header>
+        <div class="header-row">
+          <span class="title">专家终端</span>
+          <div class="header-actions">
+            <el-select v-model="nodeId" placeholder="选择节点" style="width: 240px" @change="onNodeChange">
+              <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+            </el-select>
+            <el-button @click="toggleCollapseAll">{{ allCollapsed ? '展开全部' : '一键折叠' }}</el-button>
+            <el-button @click="loadRules" :loading="loadingRules">刷新规则</el-button>
+            <el-button @click="clearHistory" :disabled="!history.length">清屏</el-button>
+          </div>
         </div>
-      </div>
+      </template>
+
       <el-alert type="warning" :closable="false" show-icon class="warn-banner">
         专家模式直接执行裸 iptables 命令，绕过 MYFW 命名空间、快照与保护期。误操作（如 -F / -P DROP）可能导致节点失联且平台无法回滚。每条命令均记入审计日志。
       </el-alert>
-    </el-card>
 
-    <!-- 顶部横向拓扑:六父链 -> 子链跳转路径 -->
-    <el-card class="topo-card">
-      <template #header>
-        <div class="card-header">
-          <span>父链调度拓扑（横向）</span>
-          <span class="card-sub">六条 MYFW 父链 → 按全局优先级排列的自定义子链跳转</span>
-        </div>
-      </template>
-      <div class="topo-row">
-        <div
-          v-for="p in MYFW_PARENTS"
-          :key="p.name"
-          class="parent-col"
-          :class="{ highlight: highlightParent === p.name }"
-        >
-          <div class="parent-node">
-            <span class="parent-label">{{ p.label }}</span>
-            <span class="parent-table">{{ p.table }}</span>
-          </div>
-          <div class="subchain-list">
-            <div
-              v-for="sc in subchainsOf(p.name)"
-              :key="sc.name"
-              class="subchain-node"
-              :class="{ highlight: highlightChain === sc.name }"
-            >
-              <span class="sub-name">{{ sc.name.replace('MYFW-', '') }}</span>
-              <span class="sub-prio">#{{ sc.priority }}</span>
-            </div>
-            <span v-if="!subchainsOf(p.name).length" class="empty-sub">无子链</span>
-          </div>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- 命令输入 + 实时归属提示 -->
-    <el-card class="cmd-card">
+      <!-- 命令输入 + 实时归属提示 -->
       <div class="input-row">
         <span class="prompt">$</span>
         <input
@@ -69,7 +35,6 @@
         />
         <el-button type="primary" @click="execute" :loading="running" :disabled="!nodeId">执行</el-button>
       </div>
-      <!-- 实时解析反馈:操作类型 + 目标链 + 归属父链 -->
       <div v-if="command.trim()" class="parse-hint">
         <el-tag size="small" :type="opTagType">{{ opLabel }}</el-tag>
         <span v-if="parsed.chain" class="hint-seg">目标链: <code>{{ parsed.chain }}</code></span>
@@ -78,52 +43,11 @@
         <span v-else-if="parsed.chain && !isMYFWChain(parsed.chain)" class="hint-seg warn">非 MYFW 命名空间（平台不纳管）</span>
         <span v-else-if="parsed.chain && isMYFWChain(parsed.chain) && !highlightParent" class="hint-seg warn">MYFW 子链未在平台注册</span>
       </div>
-      <!-- 快捷命令 -->
       <div class="quick-bar">
         <el-button size="small" v-for="q in quickCommands" :key="q" @click="runQuick(q)">{{ q }}</el-button>
       </div>
-    </el-card>
 
-    <!-- 底部纵向详情:按父链分组 -> 子链规则 -->
-    <el-card class="detail-card">
-      <template #header>
-        <div class="card-header">
-          <span>子链规则详情（纵向 · 按父链分组）</span>
-          <span class="card-sub">展开任意子链查看其内按优先级排列的规则</span>
-        </div>
-      </template>
-      <el-empty v-if="!parentsWithChains.length" description="暂无已部署子链" :image-size="60" />
-      <div v-for="p in parentsWithChains" :key="p.name" class="parent-group">
-        <div class="parent-group-title">
-          <span class="pg-label">{{ p.label }}</span>
-          <span class="pg-name">{{ p.name }}</span>
-        </div>
-        <el-collapse v-model="openedChains" class="chain-collapse">
-          <el-collapse-item
-            v-for="sc in subchainsOf(p.name)"
-            :key="sc.name"
-            :name="sc.name"
-            :class="{ 'chain-flash': flashChain === sc.name }"
-          >
-            <template #title>
-              <span class="chain-title">{{ sc.name }}</span>
-              <el-tag size="small" type="info" class="chain-count">{{ rulesOfChain(sc.name).length }} 条</el-tag>
-            </template>
-            <div class="rule-list">
-              <div v-for="r in rulesOfChain(sc.name)" :key="r.id" class="rule-line">
-                <span class="rule-priority">{{ r.priority }}</span>
-                <code class="rule-text">{{ r.rule_line }}</code>
-              </div>
-              <div v-if="!rulesOfChain(sc.name).length" class="rule-empty">该子链暂无规则</div>
-            </div>
-          </el-collapse-item>
-        </el-collapse>
-      </div>
-    </el-card>
-
-    <!-- 执行反馈 -->
-    <el-card class="history-card">
-      <template #header>执行反馈</template>
+      <!-- 执行反馈终端 -->
       <div class="terminal" ref="terminalRef">
         <div v-if="!history.length" class="empty-hint">
           选择节点后输入 iptables 命令（回车执行），仅允许 iptables 族命令：iptables / ip6tables / iptables-save / iptables-restore / nft。
@@ -137,6 +61,53 @@
           <pre class="output">{{ h.output }}</pre>
         </div>
         <div v-if="running" class="entry running"><span class="prompt">$</span> 执行中...</div>
+      </div>
+    </el-card>
+
+    <!-- 链规则浏览器:父链 -> 子链 -> 规则(两级折叠) -->
+    <el-card class="browser-card">
+      <template #header>
+        <div class="card-header">
+          <span>链规则浏览器</span>
+          <span class="card-sub">父链调度 -> 子链执行 -> 规则明细，点击展开</span>
+        </div>
+      </template>
+      <el-empty v-if="!parentsWithChains.length" description="暂无已部署子链" :image-size="60" />
+      <div v-else class="browser">
+        <div
+          v-for="p in parentsWithChains"
+          :key="p.name"
+          class="parent-node"
+          :class="{ highlight: highlightParent === p.name }"
+        >
+          <div class="parent-header" @click="toggleParent(p.name)">
+            <span class="arrow">{{ openedParents.includes(p.name) ? '▼' : '▶' }}</span>
+            <span class="parent-label">{{ p.label }}</span>
+            <span class="parent-name">{{ p.name }}</span>
+            <span class="parent-meta">{{ subchainsOf(p.name).length }} 子链 · {{ ruleCountOfParent(p.name) }} 规则</span>
+          </div>
+          <div v-show="openedParents.includes(p.name)" class="subchain-list">
+            <div
+              v-for="sc in subchainsOf(p.name)"
+              :key="sc.name"
+              class="subchain-node"
+              :class="{ highlight: highlightChain === sc.name, flash: flashChain === sc.name }"
+            >
+              <div class="subchain-header" @click="toggleChain(sc.name)">
+                <span class="arrow">{{ openedChains.includes(sc.name) ? '▼' : '▶' }}</span>
+                <span class="chain-name">{{ sc.name }}</span>
+                <span class="chain-meta">{{ rulesOfChain(sc.name).length }} 条</span>
+              </div>
+              <div v-show="openedChains.includes(sc.name)" class="rule-list">
+                <div v-for="r in rulesOfChain(sc.name)" :key="r.id" class="rule-line">
+                  <span class="rule-priority">{{ r.priority }}</span>
+                  <code class="rule-text">{{ r.rule_line }}</code>
+                </div>
+                <div v-if="!rulesOfChain(sc.name).length" class="rule-empty">该子链暂无规则</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </el-card>
   </div>
@@ -167,9 +138,11 @@ const inputRef = ref(null)
 const customChains = ref([])
 const rules = ref([])
 
-// 折叠状态:openedChains 为当前展开的子链名列表,lastOpened 供一键折叠恢复
+// 两级折叠状态:父链 / 子链;lastOpened 供一键折叠恢复
+const openedParents = ref([])
 const openedChains = ref([])
-const lastOpened = ref([])
+const lastOpenedParents = ref([])
+const lastOpenedChains = ref([])
 const flashChain = ref('')
 
 // 命令历史回溯栈(↑↓ 方向键)
@@ -195,7 +168,7 @@ const opTagType = computed(() => {
   return danger[parsed.value.op] || 'info'
 })
 
-// 高亮:目标链 + 其所属父链
+// 高亮:目标链 + 其所属父链(浏览器中定位归属)
 const highlightChain = computed(() => (isMYFWChain(parsed.value.chain) ? parsed.value.chain : ''))
 const highlightParent = computed(() => locateParent(parsed.value.chain, customChains.value))
 
@@ -208,8 +181,8 @@ const locateInfo = computed(() => {
     : `${parentLabel} / ${highlightChain.value.replace('MYFW-', '')}`
 })
 
-// 一键折叠:全空即为全折叠
-const allCollapsed = computed(() => openedChains.value.length === 0)
+// 一键折叠:父链与子链全收起即为全折叠
+const allCollapsed = computed(() => !openedParents.value.length && !openedChains.value.length)
 
 // 某父链下的子链(按全局优先级排序)
 const subchainsOf = (parent) =>
@@ -223,7 +196,11 @@ const rulesOfChain = (chain) =>
     .filter((r) => r.chain === chain)
     .sort((a, b) => (a.priority || 0) - (b.priority || 0))
 
-// 纵向详情只展示有子链的父链(保持界面清爽)
+// 某父链下所有子链的规则总数
+const ruleCountOfParent = (parent) =>
+  subchainsOf(parent).reduce((sum, sc) => sum + rulesOfChain(sc.name).length, 0)
+
+// 浏览器只展示有子链的父链(保持界面清爽)
 const parentsWithChains = computed(() => MYFW_PARENTS.filter((p) => subchainsOf(p.name).length > 0))
 
 const onNodeChange = () => {
@@ -231,15 +208,32 @@ const onNodeChange = () => {
   inputRef.value?.focus()
 }
 
+const toggleParent = (name) => {
+  const i = openedParents.value.indexOf(name)
+  if (i >= 0) openedParents.value.splice(i, 1)
+  else openedParents.value.push(name)
+}
+
+const toggleChain = (name) => {
+  const i = openedChains.value.indexOf(name)
+  if (i >= 0) openedChains.value.splice(i, 1)
+  else openedChains.value.push(name)
+}
+
 const toggleCollapseAll = () => {
-  if (openedChains.value.length) {
-    // 记住当前展开层级后全部收起,仅留横向拓扑(宏观视角)
-    lastOpened.value = [...openedChains.value]
+  if (openedParents.value.length || openedChains.value.length) {
+    // 记住当前展开层级后全部收起,仅留终端(宏观视角)
+    lastOpenedParents.value = [...openedParents.value]
+    lastOpenedChains.value = [...openedChains.value]
+    openedParents.value = []
     openedChains.value = []
   } else {
     // 恢复上次展开层级;无记忆则展开全部
-    openedChains.value = lastOpened.value.length
-      ? [...lastOpened.value]
+    openedParents.value = lastOpenedParents.value.length
+      ? [...lastOpenedParents.value]
+      : parentsWithChains.value.map((p) => p.name)
+    openedChains.value = lastOpenedChains.value.length
+      ? [...lastOpenedChains.value]
       : customChains.value.map((c) => c.name)
   }
 }
@@ -291,12 +285,14 @@ const execute = async () => {
     const res = await execIptables(nodeId.value, cmd)
     entry.ok = !!res.ok
     entry.output = res.output || (res.ok ? '(无输出)' : '(执行失败)')
-    // 执行成功后刷新规则,展开并高亮受影响子链
+    // 执行成功后刷新规则,展开并高亮受影响子链(连同其父链)
     await loadRules()
-    if (targetIsMYFW && !openedChains.value.includes(targetChain)) {
-      openedChains.value.push(targetChain)
+    if (targetIsMYFW) {
+      const parent = locateParent(targetChain, customChains.value)
+      if (parent && !openedParents.value.includes(parent)) openedParents.value.push(parent)
+      if (!openedChains.value.includes(targetChain)) openedChains.value.push(targetChain)
+      flashTarget(targetChain)
     }
-    if (targetIsMYFW) flashTarget(targetChain)
   } catch (e) {
     entry.ok = false
     entry.output = e?.response?.data?.error || e?.message || '请求失败'
@@ -406,89 +402,7 @@ onMounted(() => {
   color: var(--c-text-1);
 }
 .warn-banner {
-  margin-top: 12px;
-}
-
-.card-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-.card-sub {
-  font-size: 12px;
-  color: var(--c-text-3);
-  font-weight: 400;
-}
-
-/* 横向拓扑 */
-.topo-row {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-.parent-col {
-  flex: 1;
-  min-width: 150px;
-  border: 1px solid var(--c-border);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-  background: var(--c-surface-2);
-  transition: border-color var(--transition), box-shadow var(--transition);
-}
-.parent-col.highlight {
-  border-color: var(--c-primary);
-  box-shadow: 0 0 0 2px var(--c-primary-soft);
-}
-.parent-node {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 10px;
-  background: var(--c-primary);
-  color: #fff;
-  border-radius: var(--radius-xs);
-  font-weight: 600;
-  font-size: 13px;
-}
-.parent-table {
-  font-size: 10px;
-  opacity: 0.8;
-  font-weight: 400;
-}
-.subchain-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-.subchain-node {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 5px 8px;
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: var(--radius-xs);
-  font-size: 12px;
-  color: var(--c-text-2);
-  transition: all var(--transition);
-}
-.subchain-node.highlight {
-  border-color: var(--c-primary);
-  background: var(--c-primary-soft);
-  color: var(--c-primary);
-  font-weight: 600;
-}
-.sub-prio {
-  color: var(--c-text-3);
-  font-size: 11px;
-}
-.empty-sub {
-  font-size: 12px;
-  color: var(--c-text-3);
-  text-align: center;
-  padding: 4px;
+  margin-bottom: 12px;
 }
 
 /* 命令输入 */
@@ -549,88 +463,13 @@ onMounted(() => {
   margin-top: 10px;
 }
 
-/* 纵向详情 */
-.parent-group {
-  margin-bottom: 16px;
-}
-.parent-group:last-child {
-  margin-bottom: 0;
-}
-.parent-group-title {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--c-border-soft);
-}
-.pg-label {
-  font-weight: 600;
-  color: var(--c-text-1);
-  font-size: 14px;
-}
-.pg-name {
-  font-size: 12px;
-  color: var(--c-text-3);
-  font-family: var(--font-mono);
-}
-.chain-collapse {
-  border: none;
-}
-.chain-collapse :deep(.el-collapse-item__header) {
-  background: var(--c-surface-2);
-  padding: 0 12px;
-  border-radius: var(--radius-xs);
-  margin-bottom: 6px;
-  border-left: 3px solid transparent;
-  transition: border-color var(--transition);
-}
-.chain-flash :deep(.el-collapse-item__header),
-.chain-collapse :deep(.el-collapse-item__header.is-active) {
-  border-left-color: var(--c-primary);
-}
-.chain-title {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--c-text-1);
-  margin-right: 8px;
-}
-.chain-count {
-  margin-left: auto;
-}
-.rule-list {
-  padding: 4px 0 8px 12px;
-}
-.rule-line {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 3px 0;
-  font-size: 12px;
-}
-.rule-priority {
-  color: var(--c-text-3);
-  font-family: var(--font-mono);
-  min-width: 24px;
-  text-align: right;
-}
-.rule-text {
-  font-family: var(--font-mono);
-  color: var(--c-text-2);
-  word-break: break-all;
-}
-.rule-empty {
-  color: var(--c-text-3);
-  font-size: 12px;
-  padding: 4px 0;
-}
-
 /* 执行反馈终端 */
 .terminal {
   background: #0f172a;
   border: 1px solid var(--c-border);
   border-radius: var(--radius-sm);
   padding: 12px 16px;
+  margin-top: 12px;
   height: 280px;
   overflow-y: auto;
   font-family: var(--font-mono);
@@ -673,5 +512,139 @@ onMounted(() => {
 }
 .entry.running {
   color: #fbbf24;
+}
+
+/* 链规则浏览器 */
+.card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.card-sub {
+  font-size: 12px;
+  color: var(--c-text-3);
+  font-weight: 400;
+}
+.browser {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.parent-node {
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-surface-2);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.parent-node.highlight {
+  border-color: var(--c-primary);
+  box-shadow: 0 0 0 2px var(--c-primary-soft);
+}
+.parent-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm);
+}
+.parent-header:hover {
+  background: var(--c-surface);
+}
+.arrow {
+  color: var(--c-text-3);
+  font-size: 11px;
+  width: 12px;
+}
+.parent-label {
+  font-weight: 600;
+  color: var(--c-text-1);
+  font-size: 14px;
+}
+.parent-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--c-text-3);
+}
+.parent-meta {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--c-text-3);
+}
+.subchain-list {
+  padding: 0 14px 8px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.subchain-node {
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-xs);
+  background: var(--c-surface);
+  transition: all var(--transition);
+}
+.subchain-node.highlight {
+  border-color: var(--c-primary);
+  background: var(--c-primary-soft);
+}
+.subchain-node.flash {
+  animation: flash 1.5s ease;
+}
+@keyframes flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  30% {
+    box-shadow: 0 0 0 3px var(--c-primary-soft);
+  }
+}
+.subchain-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.subchain-header:hover {
+  background: var(--c-surface-2);
+}
+.chain-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--c-text-1);
+}
+.chain-meta {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--c-text-3);
+}
+.rule-list {
+  padding: 2px 10px 8px 26px;
+}
+.rule-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.rule-priority {
+  color: var(--c-text-3);
+  font-family: var(--font-mono);
+  min-width: 24px;
+  text-align: right;
+}
+.rule-text {
+  font-family: var(--font-mono);
+  color: var(--c-text-2);
+  word-break: break-all;
+}
+.rule-empty {
+  color: var(--c-text-3);
+  font-size: 12px;
+  padding: 4px 0;
 }
 </style>
