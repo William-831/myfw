@@ -209,19 +209,38 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
 			return
 		}
+		// 数值/调度字段始终同步(通用参数,由模板定义)
 		inst.GroupID = tpl.GroupID
-		inst.Source = tpl.Source
-		inst.Destination = tpl.Destination
-		inst.Protocol = tpl.Protocol
-		inst.PortRange = tpl.PortRange
-		inst.Action = tpl.Action
 		inst.Mark = tpl.Mark
-		inst.NatTo = tpl.NatTo
-		inst.SourceGroup = tpl.SourceGroup
-		inst.DestinationGroup = tpl.DestinationGroup
 		inst.MatchMark = tpl.MatchMark
 		inst.MarkACLGroupID = tpl.MarkACLGroupID
 		inst.Priority = tpl.Priority
+		// 字符串字段:仅当模板有值时才覆盖。模板为空 = 该字段是节点特有参数
+		// (由实例自定义,如节点 IP),同步时保留实例原值,避免清空实例配置。
+		if tpl.Source != "" {
+			inst.Source = tpl.Source
+		}
+		if tpl.Destination != "" {
+			inst.Destination = tpl.Destination
+		}
+		if tpl.Protocol != "" {
+			inst.Protocol = tpl.Protocol
+		}
+		if tpl.PortRange != "" {
+			inst.PortRange = tpl.PortRange
+		}
+		if tpl.Action != "" {
+			inst.Action = tpl.Action
+		}
+		if tpl.NatTo != "" {
+			inst.NatTo = tpl.NatTo
+		}
+		if tpl.SourceGroup != "" {
+			inst.SourceGroup = tpl.SourceGroup
+		}
+		if tpl.DestinationGroup != "" {
+			inst.DestinationGroup = tpl.DestinationGroup
+		}
 		if err := db.Save(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -252,15 +271,40 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 	})
 }
 
-// instanceDrift 比较实例与模板当前参数,任一规则字段不同即 drift。
+// instanceDrift 比较实例与模板当前参数。
+// 数值/调度字段始终参与比较;字符串字段仅当模板有值时才比较
+// (模板为空 = 节点特有参数,实例自定义不视为 drift),与 sync 覆盖语义一致。
 func instanceDrift(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) bool {
-	return inst.GroupID != tpl.GroupID || inst.Source != tpl.Source ||
-		inst.Destination != tpl.Destination || inst.Protocol != tpl.Protocol ||
-		inst.PortRange != tpl.PortRange || inst.Action != tpl.Action ||
-		inst.Mark != tpl.Mark || inst.NatTo != tpl.NatTo ||
-		inst.SourceGroup != tpl.SourceGroup || inst.DestinationGroup != tpl.DestinationGroup ||
+	if inst.GroupID != tpl.GroupID || inst.Mark != tpl.Mark ||
 		inst.MatchMark != tpl.MatchMark || inst.MarkACLGroupID != tpl.MarkACLGroupID ||
-		inst.Priority != tpl.Priority
+		inst.Priority != tpl.Priority {
+		return true
+	}
+	if tpl.Source != "" && inst.Source != tpl.Source {
+		return true
+	}
+	if tpl.Destination != "" && inst.Destination != tpl.Destination {
+		return true
+	}
+	if tpl.Protocol != "" && inst.Protocol != tpl.Protocol {
+		return true
+	}
+	if tpl.PortRange != "" && inst.PortRange != tpl.PortRange {
+		return true
+	}
+	if tpl.Action != "" && inst.Action != tpl.Action {
+		return true
+	}
+	if tpl.NatTo != "" && inst.NatTo != tpl.NatTo {
+		return true
+	}
+	if tpl.SourceGroup != "" && inst.SourceGroup != tpl.SourceGroup {
+		return true
+	}
+	if tpl.DestinationGroup != "" && inst.DestinationGroup != tpl.DestinationGroup {
+		return true
+	}
+	return false
 }
 
 func parseTplID(c *gin.Context) (uint, bool) {
