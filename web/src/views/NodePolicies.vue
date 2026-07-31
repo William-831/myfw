@@ -29,7 +29,8 @@
             <div class="inst-head">
               <span>{{ currentNodeLabel }} 的策略实例 ({{ instances.length }})</span>
               <div class="inst-actions">
-                <el-button size="small" type="primary" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
+                <el-button size="small" type="primary" @click="openCreate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>新建策略</el-button>
+                <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
                 <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点</el-button>
               </div>
             </div>
@@ -49,6 +50,8 @@
                 <span class="field"><span class="lbl">端口</span>{{ inst.port_range || '任意' }}</span>
                 <span class="field"><span class="lbl">源</span>{{ inst.source || '任意' }}</span>
                 <span class="field"><span class="lbl">目的</span>{{ inst.destination || '任意' }}</span>
+                <span v-if="inst.source_group" class="field"><span class="lbl">源组</span>{{ inst.source_group }}</span>
+                <span v-if="inst.destination_group" class="field"><span class="lbl">目的组</span>{{ inst.destination_group }}</span>
                 <span class="action" :class="inst.action ? inst.action.toLowerCase() : ''">{{ getActionLabel(inst.action) }}</span>
               </div>
               <div class="inst-foot">
@@ -86,8 +89,8 @@
       </template>
     </el-dialog>
 
-    <!-- 编辑实例参数 -->
-    <el-dialog v-model="editInstVisible" title="编辑实例参数" width="640px">
+    <!-- 新建/编辑策略(共用表单) -->
+    <el-dialog v-model="formVisible" :title="isCreate ? '新建策略' : '编辑实例参数'" width="640px">
       <el-form :model="instForm" label-width="90px">
         <el-form-item label="实例名称"><el-input v-model="instForm.name" /></el-form-item>
         <el-form-item label="所属组">
@@ -100,24 +103,42 @@
           <el-form-item label="目标地址" class="form-col"><el-input v-model="instForm.destination" placeholder="空=任意" /></el-form-item>
         </div>
         <div class="form-row">
+          <el-form-item label="源地址组" class="form-col">
+            <el-select v-model="instForm.source_group" clearable placeholder="空=不匹配组" style="width: 100%">
+              <el-option v-for="ag in addressGroups" :key="ag.id" :label="ag.name" :value="ag.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="目的地址组" class="form-col">
+            <el-select v-model="instForm.destination_group" clearable placeholder="空=不匹配组" style="width: 100%">
+              <el-option v-for="ag in addressGroups" :key="ag.id" :label="ag.name" :value="ag.name" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="form-row">
           <el-form-item label="协议" class="form-col">
             <el-select v-model="instForm.protocol" style="width: 100%"><el-option label="任意" value="ANY" /><el-option label="TCP" value="TCP" /><el-option label="UDP" value="UDP" /><el-option label="ICMP" value="ICMP" /></el-select>
           </el-form-item>
-          <el-form-item label="端口范围" class="form-col"><el-input v-model="instForm.port_range" /></el-form-item>
+          <el-form-item label="端口范围" class="form-col"><el-input v-model="instForm.port_range" placeholder="如 80 或 1000:2000" /></el-form-item>
         </div>
         <el-form-item label="动作">
           <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许" value="ACCEPT" /><el-option label="丢弃" value="DROP" /><el-option label="拒绝" value="REJECT" /><el-option label="标记" value="MARK" /><el-option label="DNAT" value="DNAT" /><el-option label="SNAT" value="SNAT" /></el-select>
         </el-form-item>
-        <el-form-item label="优先级"><el-input-number v-model="instForm.priority" /></el-form-item>
+        <el-form-item v-if="instForm.action === 'MARK'" label="标记值"><el-input-number v-model="instForm.mark" :min="0" style="width: 100%" /></el-form-item>
+        <el-form-item v-if="instForm.action === 'DNAT' || instForm.action === 'SNAT'" label="NAT 目标"><el-input v-model="instForm.nat_to" placeholder="如 1.2.3.4 或 1.2.3.4:8080" /></el-form-item>
+        <div class="form-row">
+          <el-form-item label="匹配标记" class="form-col"><el-input-number v-model="instForm.match_mark" :min="0" style="width: 100%" placeholder="0=不匹配" /></el-form-item>
+          <el-form-item label="优先级" class="form-col"><el-input-number v-model="instForm.priority" style="width: 100%" /></el-form-item>
+        </div>
         <el-form-item label="描述"><el-input v-model="instForm.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="instForm.enabled" /></el-form-item>
+        <el-form-item v-if="isCreate" label="立即应用"><el-switch v-model="instForm.apply" /></el-form-item>
       </el-form>
       <div class="cmd-preview">
         <div class="cmd-preview-head">命令预览(规则落 MYFW 自定义链,系统链已自动跳转)</div>
         <pre class="cmd-preview-code">{{ previewCommand }}</pre>
       </div>
       <template #footer>
-        <el-button @click="editInstVisible = false">取消</el-button>
+        <el-button @click="formVisible = false">取消</el-button>
         <el-button type="primary" @click="saveInst" :loading="savingInst">保存</el-button>
       </template>
     </el-dialog>
@@ -129,7 +150,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
-import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains } from '@/api'
+import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups } from '@/api'
 
 const nodesLoading = ref(false)
 const instLoading = ref(false)
@@ -138,6 +159,7 @@ const nodes = ref([])
 const instances = ref([])
 const templates = ref([])
 const customChains = ref([])
+const addressGroups = ref([])
 const selectedNodeId = ref('')
 const expertMode = ref(false)
 
@@ -215,9 +237,10 @@ const loadInstances = async () => {
 
 const loadDeps = async () => {
   try {
-    const [t, c] = await Promise.all([getTemplates(), getCustomChains()])
+    const [t, c, ag] = await Promise.all([getTemplates(), getCustomChains(), getAddressGroups()])
     templates.value = t.templates || []
     customChains.value = c.custom_chains || c.chains || []
+    addressGroups.value = ag.address_groups || []
   } catch {
     // 依赖加载失败不阻塞
   }
@@ -253,20 +276,40 @@ const handleInstantiate = async () => {
   }
 }
 
-// 编辑实例参数
-const editInstVisible = ref(false)
+// 新建/编辑策略(共用表单):isCreate 区分新建(POST 完整参数,template_id=0)与编辑(PUT 更新)
+const formVisible = ref(false)
 const savingInst = ref(false)
-const instForm = reactive({})
+const isCreate = ref(false)
+const defaultForm = () => ({
+  name: '', group_id: null, source: '', destination: '',
+  source_group: '', destination_group: '', protocol: 'ANY',
+  port_range: '', action: 'ACCEPT', mark: 0, nat_to: '',
+  match_mark: 0, priority: 50, description: '', enabled: true, apply: false
+})
+const instForm = reactive(defaultForm())
+const openCreate = () => {
+  isCreate.value = true
+  Object.assign(instForm, defaultForm())
+  formVisible.value = true
+}
 const openEditInst = (inst) => {
-  Object.assign(instForm, inst)
-  editInstVisible.value = true
+  isCreate.value = false
+  Object.assign(instForm, defaultForm(), inst)
+  formVisible.value = true
 }
 const saveInst = async () => {
+  if (!instForm.name) { ElMessage.warning('请填实例名称'); return }
+  if (!instForm.group_id) { ElMessage.warning('请选策略组'); return }
   savingInst.value = true
   try {
-    await updateInstance(instForm.id, instForm)
-    ElMessage.success('已保存')
-    editInstVisible.value = false
+    if (isCreate.value) {
+      await createInstance(selectedNodeId.value, instForm)
+      ElMessage.success('已新建' + (instForm.apply ? '并下发' : ''))
+    } else {
+      await updateInstance(instForm.id, instForm)
+      ElMessage.success('已保存')
+    }
+    formVisible.value = false
     loadInstances()
   } catch (e) {
     ElMessage.error(e?.response?.data?.error || '保存失败')

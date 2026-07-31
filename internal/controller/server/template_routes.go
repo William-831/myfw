@@ -116,35 +116,73 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		c.JSON(http.StatusOK, gin.H{"instances": out})
 	})
 
-	// 从模板实例化:全量复制模板参数到该节点,可选立即应用
+	// 为节点添加实例:template_id>0 从模板实例化(全量复制参数);
+	// template_id=0 直接新建(不依赖模板,无 drift/同步),用 body 完整参数创建。
 	g.POST("/nodes/:id/instances", func(c *gin.Context) {
 		nodeID := c.Param("id")
 		var body struct {
-			TemplateID uint   `json:"template_id"`
-			Name       string `json:"name"`
-			Apply      bool   `json:"apply"`
+			TemplateID       uint   `json:"template_id"`
+			Name             string `json:"name"`
+			Apply            bool   `json:"apply"`
+			GroupID          uint   `json:"group_id"`
+			Source           string `json:"source"`
+			Destination      string `json:"destination"`
+			Protocol         string `json:"protocol"`
+			PortRange        string `json:"port_range"`
+			Action           string `json:"action"`
+			Mark             uint32 `json:"mark"`
+			NatTo            string `json:"nat_to"`
+			SourceGroup      string `json:"source_group"`
+			DestinationGroup string `json:"destination_group"`
+			MatchMark        uint32 `json:"match_mark"`
+			MarkACLGroupID   uint   `json:"mark_acl_group_id"`
+			Priority         int    `json:"priority"`
+			Description      string `json:"description"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		var tpl model.PolicyTemplate
-		if err := db.First(&tpl, body.TemplateID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
-			return
-		}
-		name := body.Name
-		if name == "" {
-			name = tpl.Name
-		}
-		inst := model.NodePolicyInstance{
-			TemplateID: tpl.ID, NodeID: nodeID, Name: name,
-			GroupID: tpl.GroupID, Source: tpl.Source, Destination: tpl.Destination,
-			Protocol: tpl.Protocol, PortRange: tpl.PortRange, Action: tpl.Action,
-			Mark: tpl.Mark, NatTo: tpl.NatTo, SourceGroup: tpl.SourceGroup,
-			DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
-			MarkACLGroupID: tpl.MarkACLGroupID, Priority: tpl.Priority,
-			Description: tpl.Description, Enabled: true,
+		var inst model.NodePolicyInstance
+		if body.TemplateID > 0 {
+			// 从模板实例化:全量复制模板参数
+			var tpl model.PolicyTemplate
+			if err := db.First(&tpl, body.TemplateID).Error; err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
+				return
+			}
+			name := body.Name
+			if name == "" {
+				name = tpl.Name
+			}
+			inst = model.NodePolicyInstance{
+				TemplateID: tpl.ID, NodeID: nodeID, Name: name,
+				GroupID: tpl.GroupID, Source: tpl.Source, Destination: tpl.Destination,
+				Protocol: tpl.Protocol, PortRange: tpl.PortRange, Action: tpl.Action,
+				Mark: tpl.Mark, NatTo: tpl.NatTo, SourceGroup: tpl.SourceGroup,
+				DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
+				MarkACLGroupID: tpl.MarkACLGroupID, Priority: tpl.Priority,
+				Description: tpl.Description, Enabled: true,
+			}
+		} else {
+			// 直接新建:不依赖模板,template_id=0(无 drift/同步)
+			if body.GroupID == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
+				return
+			}
+			if body.Name == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "需填写实例名称"})
+				return
+			}
+			inst = model.NodePolicyInstance{
+				TemplateID: 0, NodeID: nodeID, Name: body.Name,
+				GroupID: body.GroupID, Source: body.Source, Destination: body.Destination,
+				Protocol: body.Protocol, PortRange: body.PortRange, Action: body.Action,
+				Mark: body.Mark, NatTo: body.NatTo, SourceGroup: body.SourceGroup,
+				DestinationGroup: body.DestinationGroup, MatchMark: body.MatchMark,
+				MarkACLGroupID: body.MarkACLGroupID, Priority: body.Priority,
+				Description: body.Description, Enabled: true,
+			}
 		}
 		if err := db.Create(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
