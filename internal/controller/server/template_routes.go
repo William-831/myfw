@@ -163,6 +163,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
 				MarkACLGroupID: tpl.MarkACLGroupID, Priority: tpl.Priority,
 				Description: tpl.Description, Enabled: true,
+				SyncedTemplateUpdatedAt: tpl.UpdatedAt,
 			}
 		} else {
 			// 直接新建:不依赖模板,template_id=0(无 drift/同步)
@@ -281,6 +282,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			inst.DestinationGroup = tpl.DestinationGroup
 		}
 		inst.Applied = false // 同步后参数变更,需重新下发
+		inst.SyncedTemplateUpdatedAt = tpl.UpdatedAt // 同步完成,记录模板当前版本
 		if err := db.Save(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -313,40 +315,11 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 	})
 }
 
-// instanceDrift 比较实例与模板当前参数。
-// 数值/调度字段始终参与比较;字符串字段仅当模板有值时才比较
-// (模板为空 = 节点特有参数,实例自定义不视为 drift),与 sync 覆盖语义一致。
+// instanceDrift 判断模板是否在实例上次同步后更新过。
+// 仅当模板 UpdatedAt 晚于实例 SyncedTemplateUpdatedAt 才视为 drift(可同步);
+// 实例自身编辑不视为 drift(用户主动偏离模板,不提示同步)。
 func instanceDrift(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) bool {
-	if inst.GroupID != tpl.GroupID || inst.Mark != tpl.Mark ||
-		inst.MatchMark != tpl.MatchMark || inst.MarkACLGroupID != tpl.MarkACLGroupID ||
-		inst.Priority != tpl.Priority {
-		return true
-	}
-	if tpl.Source != "" && inst.Source != tpl.Source {
-		return true
-	}
-	if tpl.Destination != "" && inst.Destination != tpl.Destination {
-		return true
-	}
-	if tpl.Protocol != "" && inst.Protocol != tpl.Protocol {
-		return true
-	}
-	if tpl.PortRange != "" && inst.PortRange != tpl.PortRange {
-		return true
-	}
-	if tpl.Action != "" && inst.Action != tpl.Action {
-		return true
-	}
-	if tpl.NatTo != "" && inst.NatTo != tpl.NatTo {
-		return true
-	}
-	if tpl.SourceGroup != "" && inst.SourceGroup != tpl.SourceGroup {
-		return true
-	}
-	if tpl.DestinationGroup != "" && inst.DestinationGroup != tpl.DestinationGroup {
-		return true
-	}
-	return false
+	return tpl.UpdatedAt.After(inst.SyncedTemplateUpdatedAt)
 }
 
 func parseTplID(c *gin.Context) (uint, bool) {

@@ -163,3 +163,27 @@ func hasAllLabelsMigrate(have, want []string) bool {
 	}
 	return true
 }
+
+// MigrateInstanceSyncedAt 回填存量实例的 SyncedTemplateUpdatedAt = 模板 UpdatedAt
+// (假设已同步),使 drift(模板是否更新过)判断对存量实例生效且不误报。
+// 仅回填零值实例;实例化/同步时已显式设置。
+func MigrateInstanceSyncedAt(db *gorm.DB) error {
+	var instances []NodePolicyInstance
+	if err := db.Find(&instances).Error; err != nil {
+		return err
+	}
+	for i := range instances {
+		if instances[i].TemplateID == 0 || !instances[i].SyncedTemplateUpdatedAt.IsZero() {
+			continue
+		}
+		var tpl PolicyTemplate
+		if err := db.Select("updated_at").First(&tpl, instances[i].TemplateID).Error; err != nil {
+			continue
+		}
+		if err := db.Model(&NodePolicyInstance{}).Where("id = ?", instances[i].ID).
+			Update("synced_template_at", tpl.UpdatedAt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}

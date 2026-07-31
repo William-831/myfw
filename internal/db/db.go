@@ -115,6 +115,9 @@ func Migrate(gdb *gorm.DB) error {
 	if err := model.MigratePolicyToTemplate(gdb); err != nil {
 		return fmt.Errorf("db: migrate policy to template: %w", err)
 	}
+	if err := model.MigrateInstanceSyncedAt(gdb); err != nil {
+		return fmt.Errorf("db: migrate instance synced_at: %w", err)
+	}
 	return nil
 }
 
