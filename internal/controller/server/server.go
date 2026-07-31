@@ -350,6 +350,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerTemplateRoutes(r, db, co, auditSink)
 	registerAddressGroupRoutes(r, db)
 	registerCustomChainRoutes(r, db)
+	registerMarkRoutes(r, db, auditSink)
 
 	r.Static("/assets", "/var/www/myfw/assets")
 	r.NoRoute(func(c *gin.Context) {

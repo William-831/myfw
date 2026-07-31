@@ -52,6 +52,12 @@ export const createAddressGroup = (data) => service.post('/v1/address-groups', d
 export const updateAddressGroup = (id, data) => service.put(`/v1/address-groups/${id}`, data)
 export const deleteAddressGroup = (id) => service.delete(`/v1/address-groups/${id}`)
 
+export const getMarks = () => service.get('/v1/marks')
+export const getMark = (id) => service.get(`/v1/marks/${id}`)
+export const createMark = (data) => service.post('/v1/marks', data)
+export const updateMark = (id, data) => service.put(`/v1/marks/${id}`, data)
+export const deleteMark = (id) => service.delete(`/v1/marks/${id}`)
+
 // 自定义链(业务子链 MYFW-<name>)
 export const getCustomChains = () => service.get('/v1/custom-chains')
 export const getCustomChain = (id) => service.get(`/v1/custom-chains/${id}`)

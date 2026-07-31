@@ -26,6 +26,7 @@ func AllModels() []any {
 		&CustomChain{},
 		&PolicyTemplate{},
 		&NodePolicyInstance{},
+		&Mark{},
 		&User{},
 	}
 }

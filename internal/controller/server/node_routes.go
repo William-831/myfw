@@ -19,6 +19,41 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// 聚合每节点 drift 实例数(实例参数 vs 模板当前参数),供节点列表角标提示
+		var instances []model.NodePolicyInstance
+		db.Find(&instances)
+		tplIDs := map[uint]struct{}{}
+		for i := range instances {
+			if instances[i].TemplateID != 0 {
+				tplIDs[instances[i].TemplateID] = struct{}{}
+			}
+		}
+		templates := map[uint]*model.PolicyTemplate{}
+		if len(tplIDs) > 0 {
+			ids := make([]uint, 0, len(tplIDs))
+			for id := range tplIDs {
+				ids = append(ids, id)
+			}
+			var tpls []model.PolicyTemplate
+			db.Where("id IN ?", ids).Find(&tpls)
+			for i := range tpls {
+				templates[tpls[i].ID] = &tpls[i]
+			}
+		}
+		driftCount := map[string]int{}
+		for i := range instances {
+			if instances[i].TemplateID == 0 {
+				continue
+			}
+			if tpl, ok := templates[instances[i].TemplateID]; ok {
+				if instanceDrift(&instances[i], tpl) {
+					driftCount[instances[i].NodeID]++
+				}
+			}
+		}
+		for i := range nodes {
+			nodes[i].DriftCount = driftCount[nodes[i].ID]
+		}
 		c.JSON(http.StatusOK, gin.H{"nodes": nodes})
 	})
 

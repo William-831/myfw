@@ -6,37 +6,60 @@
         <el-tag size="small" type="info">{{ templates.length }} 个模板</el-tag>
       </div>
       <div class="header-right">
+        <el-button @click="openMarkManager">标记管理</el-button>
+        <el-switch v-model="multiSelect" active-text="多选" inline-prompt />
+        <el-button v-if="multiSelect && selected.length" type="warning" @click="openMultiInst">实例化到节点 ({{ selected.length }})</el-button>
         <el-button type="primary" @click="openAdd"><el-icon><Plus /></el-icon>新增模板</el-button>
       </div>
     </div>
 
-    <div v-loading="loading" class="tpl-grid">
+    <!-- 分类展示:按策略组折叠 -->
+    <el-collapse v-model="openedGroups" v-loading="loading" class="tpl-collapse">
       <div v-if="!templates.length && !loading" class="empty"><el-empty description="暂无模板" /></div>
-      <div v-for="t in templates" :key="t.id" class="tpl-card" :class="{ disabled: !t.enabled }">
-        <div class="card-head">
-          <span class="tpl-name">{{ t.name }}</span>
-          <el-tag v-if="t.group_id" size="small" type="warning">{{ getGroupName(t.group_id) }}</el-tag>
-          <el-tag v-else size="small" type="danger">未归组</el-tag>
-          <el-tag :type="t.enabled ? 'success' : 'info'" size="small">{{ t.enabled ? '启用' : '禁用' }}</el-tag>
-        </div>
-        <div class="card-rule">
-          <span class="field"><span class="lbl">协议</span>{{ t.protocol || 'ANY' }}</span>
-          <span class="field"><span class="lbl">端口</span>{{ t.port_range || '任意' }}</span>
-          <span class="action" :class="t.action ? t.action.toLowerCase() : ''">{{ getActionLabel(t.action) }}</span>
-        </div>
-        <div class="card-rule">
-          <span class="field"><span class="lbl">源</span>{{ t.source || '任意' }}</span>
-          <span class="field"><span class="lbl">目的</span>{{ t.destination || '任意' }}</span>
-        </div>
-        <div class="card-foot">
-          <span class="prio">优先级 #{{ t.priority }}</span>
-          <div class="actions">
-            <el-button size="small" text type="warning" @click="openEdit(t)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="handleDelete(t)">删除</el-button>
+      <el-collapse-item v-for="g in groupedTemplates" :key="g.key" :name="g.key">
+        <template #title>
+          <span class="group-title">{{ g.label }}</span>
+          <el-tag size="small" type="info" class="group-count">{{ g.templates.length }} 个</el-tag>
+        </template>
+        <div class="tpl-grid">
+          <div
+            v-for="t in g.templates"
+            :key="t.id"
+            class="tpl-card"
+            :class="{ disabled: !t.enabled, selected: selected.includes(t.id) }"
+            @click="onCardClick(t)"
+          >
+            <el-checkbox
+              v-if="multiSelect"
+              :model-value="selected.includes(t.id)"
+              class="card-checkbox"
+              @change="(v) => toggleSelect(t.id, v)"
+              @click.stop
+            />
+            <div class="card-head">
+              <span class="tpl-name">{{ t.name }}</span>
+              <el-tag :type="t.enabled ? 'success' : 'info'" size="small">{{ t.enabled ? '启用' : '禁用' }}</el-tag>
+            </div>
+            <div class="card-rule">
+              <span class="field"><span class="lbl">协议</span>{{ t.protocol || 'ANY' }}</span>
+              <span class="field"><span class="lbl">端口</span>{{ t.port_range || '任意' }}</span>
+              <span class="action" :class="t.action ? t.action.toLowerCase() : ''">{{ getActionLabel(t.action) }}</span>
+            </div>
+            <div class="card-rule">
+              <span class="field"><span class="lbl">源</span>{{ t.source || '任意' }}</span>
+              <span class="field"><span class="lbl">目的</span>{{ t.destination || '任意' }}</span>
+            </div>
+            <div class="card-foot">
+              <span class="prio">优先级 #{{ t.priority }}</span>
+              <div class="actions" v-if="!multiSelect">
+                <el-button size="small" text type="warning" @click.stop="openEdit(t)">编辑</el-button>
+                <el-button size="small" text type="danger" @click.stop="handleDelete(t)">删除</el-button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
+      </el-collapse-item>
+    </el-collapse>
 
     <!-- 新增/编辑对话框 -->
     <el-dialog v-model="dialogVisible" :title="dialogTitle" width="640px" :close-on-click-modal="false">
@@ -55,12 +78,12 @@
         </div>
         <div class="form-row">
           <el-form-item label="源地址组" class="form-col">
-            <el-select v-model="form.source_group" clearable placeholder="引用地址组">
+            <el-select v-model="form.source_group" clearable placeholder="引用地址组" style="width: 100%">
               <el-option v-for="g in addressGroups" :key="g.id" :label="`${g.name} (${g.kind})`" :value="g.name" />
             </el-select>
           </el-form-item>
           <el-form-item label="目的地址组" class="form-col">
-            <el-select v-model="form.destination_group" clearable placeholder="引用地址组">
+            <el-select v-model="form.destination_group" clearable placeholder="引用地址组" style="width: 100%">
               <el-option v-for="g in addressGroups" :key="g.id" :label="`${g.name} (${g.kind})`" :value="g.name" />
             </el-select>
           </el-form-item>
@@ -80,10 +103,12 @@
         </el-form-item>
         <el-form-item v-if="form.action === 'DNAT' || form.action === 'SNAT'" label="NAT目标"><el-input v-model="form.nat_to" placeholder="192.168.1.100:8080" /></el-form-item>
         <el-form-item v-if="form.action === 'MARK'" label="标记值">
-          <el-select v-model="form.mark" style="width: 200px"><el-option label="dev (15)" :value="15" /><el-option label="ops (255)" :value="255" /></el-select>
+          <el-select v-model="form.mark" style="width: 100%" placeholder="选标记(标记管理中维护)">
+            <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
+          </el-select>
         </el-form-item>
         <el-form-item v-if="form.action === 'MARK' && form.source_group" label="放行组">
-          <el-select v-model="form.mark_acl_group_id" placeholder="filter 组" style="width: 100%">
+          <el-select v-model="form.mark_acl_group_id" clearable placeholder="filter 组(联动放行+兜底)" style="width: 100%">
             <el-option v-for="cc in aclGroupOptions" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.id" />
           </el-select>
         </el-form-item>
@@ -91,9 +116,57 @@
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
+      <div class="cmd-preview">
+        <div class="cmd-preview-head">命令预览(规则落 MYFW 自定义链)</div>
+        <pre class="cmd-preview-code">{{ previewCommand }}</pre>
+      </div>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="save" :loading="saving">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 标记管理抽屉 -->
+    <el-drawer v-model="markDrawerVisible" title="标记管理" size="440px">
+      <div class="mark-form">
+        <el-input v-model="markForm.name" placeholder="标记名(如 dev)" style="width: 130px" />
+        <el-input-number v-model="markForm.value" :min="0" :controls="false" placeholder="标记值" style="width: 120px" />
+        <el-input v-model="markForm.description" placeholder="描述(可选)" style="flex: 1" />
+        <el-button type="primary" size="small" @click="saveMark">{{ markEditingId ? '更新' : '添加' }}</el-button>
+        <el-button v-if="markEditingId" size="small" @click="cancelMarkEdit">取消</el-button>
+      </div>
+      <div class="mark-list">
+        <div v-for="m in marks" :key="m.id" class="mark-item">
+          <span class="mark-name">{{ m.name }}</span>
+          <el-tag size="small" type="warning">{{ m.value }}</el-tag>
+          <span class="mark-desc">{{ m.description || '-' }}</span>
+          <div class="mark-actions">
+            <el-button size="small" text type="warning" @click="editMark(m)">编辑</el-button>
+            <el-button size="small" text type="danger" @click="removeMark(m)">删除</el-button>
+          </div>
+        </div>
+        <el-empty v-if="!marks.length" description="暂无标记,新增一个" :image-size="50" />
+      </div>
+    </el-drawer>
+
+    <!-- 多选实例化到节点 -->
+    <el-dialog v-model="multiInstVisible" title="批量实例化到节点" width="440px">
+      <el-form label-width="90px">
+        <el-form-item label="选中模板">
+          <div class="multi-tags">
+            <el-tag v-for="id in selected" :key="id" size="small" closable @close="toggleSelect(id, false)">{{ tplName(id) }}</el-tag>
+          </div>
+        </el-form-item>
+        <el-form-item label="目标节点">
+          <el-select v-model="multiInstNode" placeholder="选节点" style="width: 100%">
+            <el-option v-for="n in nodes" :key="n.id" :label="n.ip || n.hostname || n.id.slice(0, 12)" :value="n.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="立即应用"><el-switch v-model="multiInstApply" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="multiInstVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleMultiInst" :loading="multiInstLoading">实例化</el-button>
       </template>
     </el-dialog>
   </div>
@@ -103,19 +176,32 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getTemplates, createTemplate, updateTemplate, deleteTemplate, getCustomChains, getAddressGroups } from '@/api'
+import {
+  getTemplates, createTemplate, updateTemplate, deleteTemplate,
+  getCustomChains, getAddressGroups, getNodes, createInstance,
+  getMarks, createMark, updateMark, deleteMark
+} from '@/api'
 
 const loading = ref(false)
 const saving = ref(false)
 const templates = ref([])
 const customChains = ref([])
 const addressGroups = ref([])
+const marks = ref([])
+const nodes = ref([])
+
 // MARK 联动放行组候选:仅 filter 表的组
-const aclGroupOptions = computed(() => (customChains.value || []).filter(c => ['MYFW-INPUT', 'MYFW-OUTPUT', 'MYFW-FORWARD'].includes(c.parent)))
+const aclGroupOptions = computed(() => (customChains.value || []).filter((c) => ['MYFW-INPUT', 'MYFW-OUTPUT', 'MYFW-FORWARD'].includes(c.parent)))
+
+// 多选
+const multiSelect = ref(false)
+const selected = ref([])
+
+// 分类折叠:默认全展开
+const openedGroups = ref([])
 
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增模板')
-const formRef = ref(null)
 const editingId = ref(null)
 const form = reactive(emptyForm())
 
@@ -123,14 +209,64 @@ function emptyForm() {
   return { name: '', group_id: null, source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, mark_acl_group_id: null, priority: 10, description: '', enabled: true }
 }
 
-const getGroupName = (id) => { const c = customChains.value.find(x => x.id === id); return c ? c.name : '-' }
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
+const tplName = (id) => templates.value.find((t) => t.id === id)?.name || `#${id}`
+
+// 按策略组分类(未归组单独一区)
+const groupedTemplates = computed(() => {
+  const byGroup = {}
+  const ungrouped = []
+  for (const t of templates.value) {
+    if (t.group_id) {
+      ;(byGroup[t.group_id] ||= []).push(t)
+    } else {
+      ungrouped.push(t)
+    }
+  }
+  const groups = []
+  for (const gid of Object.keys(byGroup)) {
+    const cc = customChains.value.find((c) => c.id === Number(gid))
+    groups.push({ key: 'g' + gid, label: cc ? `MYFW-${cc.name} (${cc.parent})` : `组#${gid}`, templates: byGroup[gid] })
+  }
+  if (ungrouped.length) groups.push({ key: 'ungrouped', label: '未归组', templates: ungrouped })
+  return groups
+})
+
+// 命令预览:基于表单拼接底层 iptables 命令
+const previewCommand = computed(() => {
+  const f = form
+  const cc = customChains.value.find((c) => c.id === f.group_id)
+  const table = cc?.table || 'filter'
+  const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
+  const parts = ['iptables', '-t', table, '-A', chain]
+  if (f.source) parts.push('-s', f.source)
+  if (f.destination) parts.push('-d', f.destination)
+  if (f.source_group) parts.push('-m', 'set', '--match-set', f.source_group, 'src')
+  if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
+  if (f.match_mark) parts.push('-m', 'mark', '--mark', String(f.match_mark))
+  if (f.protocol && f.protocol !== 'ANY') {
+    parts.push('-p', f.protocol.toLowerCase())
+    if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)
+  }
+  if (f.action === 'MARK') {
+    parts.push('-j', 'MARK', '--set-mark', String(f.mark || 0))
+  } else if (f.action === 'DNAT') {
+    parts.push('-j', 'DNAT', ...(f.nat_to ? ['--to-destination', f.nat_to] : []))
+  } else if (f.action === 'SNAT') {
+    parts.push('-j', 'SNAT', ...(f.nat_to ? ['--to-source', f.nat_to] : []))
+  } else if (f.action) {
+    parts.push('-j', f.action)
+  }
+  return parts.join(' ')
+})
 
 const loadTemplates = async () => {
   loading.value = true
   try {
     const d = await getTemplates()
     templates.value = d.templates || []
+    // 默认全展开分组
+    openedGroups.value = groupedTemplates.value.map((g) => g.key)
   } catch {
     ElMessage.error('加载模板失败')
   } finally {
@@ -140,12 +276,23 @@ const loadTemplates = async () => {
 
 const loadDeps = async () => {
   try {
-    const [c, g] = await Promise.all([getCustomChains(), getAddressGroups()])
+    const [c, g, m, n] = await Promise.all([getCustomChains(), getAddressGroups(), getMarks(), getNodes()])
     customChains.value = c.custom_chains || c.chains || []
     addressGroups.value = g.address_groups || g.groups || []
+    marks.value = m.marks || []
+    nodes.value = (n.nodes || []).filter((x) => x.status === 'ACTIVE')
   } catch {
     // 依赖加载失败不阻塞模板展示
   }
+}
+
+const onCardClick = (t) => {
+  if (multiSelect.value) toggleSelect(t.id, !selected.value.includes(t.id))
+}
+const toggleSelect = (id, v) => {
+  const i = selected.value.indexOf(id)
+  if (v && i < 0) selected.value.push(id)
+  if (!v && i >= 0) selected.value.splice(i, 1)
 }
 
 const openAdd = () => {
@@ -154,7 +301,6 @@ const openAdd = () => {
   dialogTitle.value = '新增模板'
   dialogVisible.value = true
 }
-
 const openEdit = (t) => {
   Object.assign(form, t)
   editingId.value = t.id
@@ -193,6 +339,83 @@ const handleDelete = async (t) => {
   }
 }
 
+// --- 标记管理 ---
+const markDrawerVisible = ref(false)
+const markEditingId = ref(null)
+const markForm = reactive({ name: '', value: 0, description: '' })
+const openMarkManager = () => { markDrawerVisible.value = true }
+const editMark = (m) => {
+  markEditingId.value = m.id
+  Object.assign(markForm, { name: m.name, value: m.value, description: m.description || '' })
+}
+const cancelMarkEdit = () => {
+  markEditingId.value = null
+  Object.assign(markForm, { name: '', value: 0, description: '' })
+}
+const saveMark = async () => {
+  if (!markForm.name) { ElMessage.warning('请填标记名'); return }
+  try {
+    if (markEditingId.value) {
+      await updateMark(markEditingId.value, markForm)
+      ElMessage.success('已更新')
+    } else {
+      await createMark(markForm)
+      ElMessage.success('已添加')
+    }
+    cancelMarkEdit()
+    const d = await getMarks()
+    marks.value = d.marks || []
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '保存失败')
+  }
+}
+const removeMark = async (m) => {
+  try {
+    await ElMessageBox.confirm(`删除标记「${m.name}」?`, '确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+    await deleteMark(m.id)
+    ElMessage.success('已删除')
+    const d = await getMarks()
+    marks.value = d.marks || []
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  }
+}
+
+// --- 多选实例化 ---
+const multiInstVisible = ref(false)
+const multiInstNode = ref('')
+const multiInstApply = ref(false)
+const multiInstLoading = ref(false)
+const openMultiInst = () => {
+  multiInstNode.value = ''
+  multiInstApply.value = false
+  multiInstVisible.value = true
+}
+const handleMultiInst = async () => {
+  if (!multiInstNode.value) { ElMessage.warning('请选节点'); return }
+  multiInstLoading.value = true
+  let ok = 0
+  let fail = 0
+  try {
+    for (const id of selected.value) {
+      try {
+        await createInstance(multiInstNode.value, { template_id: id, apply: multiInstApply.value })
+        ok++
+      } catch {
+        fail++
+      }
+    }
+    ElMessage.success(`已实例化 ${ok} 个模板${fail ? `,失败 ${fail}` : ''}${multiInstApply.value ? '并下发' : ''}`)
+    multiInstVisible.value = false
+    selected.value = []
+    multiSelect.value = false
+  } catch (e) {
+    ElMessage.error('实例化失败')
+  } finally {
+    multiInstLoading.value = false
+  }
+}
+
 onMounted(() => {
   loadDeps()
   loadTemplates()
@@ -202,12 +425,21 @@ onMounted(() => {
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header-left { display: flex; align-items: center; gap: 12px; }
+.header-right { display: flex; align-items: center; gap: 12px; }
 .page-title { font-size: 18px; font-weight: 600; color: var(--c-text-1, #1e293b); margin: 0; }
-.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
-.empty { grid-column: 1 / -1; }
-.tpl-card { border: 1px solid var(--c-border, #e2e8f0); border-radius: 10px; padding: 14px; background: var(--c-surface, #fff); transition: box-shadow .2s; }
+
+.tpl-collapse { border: none; }
+.tpl-collapse :deep(.el-collapse-item__header) { font-weight: 600; color: var(--c-text-1, #1e293b); }
+.group-title { margin-right: 10px; }
+.group-count { margin-left: 4px; }
+.empty { padding: 40px 0; }
+
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 4px 0; }
+.tpl-card { position: relative; border: 1px solid var(--c-border, #e2e8f0); border-radius: 10px; padding: 14px; background: var(--c-surface, #fff); transition: box-shadow .2s, border-color .2s; cursor: pointer; }
 .tpl-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.08); }
 .tpl-card.disabled { opacity: .6; }
+.tpl-card.selected { border-color: var(--c-primary, #4f46e5); box-shadow: 0 0 0 2px var(--c-primary-soft, rgba(79,70,229,.08)); }
+.card-checkbox { position: absolute; top: 10px; right: 10px; }
 .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .tpl-name { font-weight: 600; color: #1e293b; }
 .card-rule { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; font-size: 13px; color: #475569; }
@@ -220,6 +452,19 @@ onMounted(() => {
 .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid #f1f5f9; }
 .prio { font-size: 12px; color: #94a3b8; }
 .actions { display: flex; gap: 4px; }
+
 .form-row { display: flex; gap: 12px; }
 .form-col { flex: 1; }
+.cmd-preview { margin-top: 8px; }
+.cmd-preview-head { font-size: 12px; color: #64748b; margin-bottom: 6px; }
+.cmd-preview-code { background: #0f172a; color: #e2e8f0; padding: 10px; border-radius: 6px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+
+.mark-form { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.mark-list { display: flex; flex-direction: column; gap: 8px; }
+.mark-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--c-border, #e2e8f0); border-radius: 6px; font-size: 13px; }
+.mark-name { font-weight: 600; color: var(--c-text-1, #1e293b); min-width: 60px; }
+.mark-desc { color: #94a3b8; flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mark-actions { display: flex; gap: 4px; }
+
+.multi-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 </style>

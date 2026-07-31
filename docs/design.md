@@ -373,6 +373,7 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 - 入 / 出 / 转发方向访问控制
 - DNAT 端口映射 / SNAT 地址转换
 - **地址组（白/黑名单）**：`AddressGroup` 维护多 CIDR 集合，编译为 `ipset`/`nft set`（`-m set --match-set` / `ip saddr @set`），一条规则匹配海量 CIDR，O(1) 查找
+- **标记定义（Mark）**：`Mark` 模型维护标记名 -> 值（如 dev=15），模板/实例编辑 `mark`/`match_mark` 下拉复用，避免裸填数值；模板库提供标记管理 CRUD
 - 协议 / 端口限制
 - **MARK 打标**（mangle）+ **match_mark 匹配**（filter）：打标与匹配正交，可组合联动
 
@@ -407,7 +408,7 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 
 节点策略页提供两种模式（右上开关切换）：
 
-- **实例配置模式**：双栏（左节点列表 / 右实例列表）。直接新建（不依赖模板，无 drift/同步）或从模板实例化（全量复制参数）+ drift 角标（模板已更新）+ 一键同步 + 编辑参数（含地址组 / mark / NAT + iptables 命令预览）+ 一键启停 + 节点下发（dispatch，走保护期）。
+- **实例配置模式**：双栏（左节点列表 / 右实例列表）。直接新建（不依赖模板，无 drift/同步）或从模板实例化（全量复制参数）+ drift 角标（模板已更新）+ 一键同步 + 编辑参数（含地址组 / mark / NAT + iptables 命令预览，mark/match_mark 下拉复用 Mark 定义）+ 一键启停 + 节点下发（dispatch，走保护期）。左侧节点列表对有 drift 实例的节点显示橙色数字角标；实例卡对未下发实例（`applied=false`）显示橙色"未下发"标签 + 左竖条。模板库支持按策略组折叠分类 + 多选批量实例化到节点。
 - **专家终端模式**：对节点敲裸 iptables 命令（REPL），见 §10.3。
 
 ### 10.3 专家模式：裸 iptables 命令通道（命令行 + 规则拓扑）

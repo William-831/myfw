@@ -28,6 +28,7 @@ type PolicyTemplate struct {
 
 // NodePolicyInstance 是节点上的策略实例:创建时从模板全量复制参数,编译只读实例,
 // 模板修改不影响已存在实例(独立参数快照)。TemplateID 用于 drift 检测与手动同步。
+// Applied 标记是否已下发到节点:编辑/新增/启停/同步后置 false,dispatch 后置 true。
 type NodePolicyInstance struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	TemplateID       uint      `gorm:"index" json:"template_id"`
@@ -48,6 +49,7 @@ type NodePolicyInstance struct {
 	Priority         int       `gorm:"index" json:"priority"`
 	Description      string    `gorm:"size:512" json:"description"`
 	Enabled          bool      `gorm:"index" json:"enabled"`
+	Applied          bool      `gorm:"index;default:false" json:"applied"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

@@ -208,6 +208,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			return
 		}
 		body.ID = id
+		body.Applied = false // 参数变更,需重新下发
 		if err := db.Save(&body).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -279,6 +280,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		if tpl.DestinationGroup != "" {
 			inst.DestinationGroup = tpl.DestinationGroup
 		}
+		inst.Applied = false // 同步后参数变更,需重新下发
 		if err := db.Save(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -305,6 +307,8 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// 下发后标记该节点 enabled 实例为已下发
+		db.Model(&model.NodePolicyInstance{}).Where("node_id = ? AND enabled = ?", nodeID, true).Update("applied", true)
 		c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 	})
 }

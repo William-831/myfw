@@ -17,7 +17,9 @@
           <template #header><span>节点</span></template>
           <div v-if="!nodes.length && !nodesLoading" class="empty-mini">暂无节点</div>
           <div v-for="n in nodes" :key="n.id" class="node-item" :class="{ active: n.id === selectedNodeId }" @click="selectNode(n)">
-            <span class="node-ip">{{ n.ip || n.hostname || n.id.slice(0, 12) }}</span>
+            <el-badge :value="n.drift_count" :hidden="!n.drift_count" class="node-badge" type="warning">
+              <span class="node-ip">{{ n.ip || n.hostname || n.id.slice(0, 12) }}</span>
+            </el-badge>
             <el-tag :type="n.status === 'ACTIVE' ? 'success' : 'info'" size="small">{{ n.status === 'ACTIVE' ? '在线' : '离线' }}</el-tag>
           </div>
         </el-card>
@@ -38,11 +40,13 @@
           <div v-if="!selectedNodeId" class="empty-mini">请选择左侧节点</div>
           <div v-else-if="!instances.length" class="empty-mini">该节点暂无策略实例,点"从模板实例化"添加</div>
           <div v-else class="inst-list">
-            <div v-for="inst in instances" :key="inst.id" class="inst-item" :class="{ disabled: !inst.enabled, drift: inst.drift }">
+            <div v-for="inst in instances" :key="inst.id" class="inst-item" :class="{ disabled: !inst.enabled, drift: inst.drift, 'not-applied': inst.enabled && !inst.applied }">
               <div class="inst-top">
                 <span class="inst-name">{{ inst.name }}</span>
                 <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
                 <el-tag v-if="inst.drift" size="small" type="warning" effect="dark">⚠ 模板已更新</el-tag>
+                <el-tag v-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
+                <el-tag v-else-if="inst.enabled && inst.applied" size="small" type="success" effect="plain">已下发</el-tag>
                 <el-tag :type="inst.enabled ? 'success' : 'info'" size="small">{{ inst.enabled ? '启用' : '禁用' }}</el-tag>
               </div>
               <div class="inst-rule">
@@ -123,7 +127,11 @@
         <el-form-item label="动作">
           <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许" value="ACCEPT" /><el-option label="丢弃" value="DROP" /><el-option label="拒绝" value="REJECT" /><el-option label="标记" value="MARK" /><el-option label="DNAT" value="DNAT" /><el-option label="SNAT" value="SNAT" /></el-select>
         </el-form-item>
-        <el-form-item v-if="instForm.action === 'MARK'" label="标记值"><el-input-number v-model="instForm.mark" :min="0" style="width: 100%" /></el-form-item>
+        <el-form-item v-if="instForm.action === 'MARK'" label="标记值">
+          <el-select v-model="instForm.mark" style="width: 100%" placeholder="选标记(标记管理中维护)">
+            <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
+          </el-select>
+        </el-form-item>
         <el-form-item v-if="instForm.action === 'MARK'" label="放行组">
           <el-select v-model="instForm.mark_acl_group_id" clearable placeholder="选 FORWARD 策略组,自动生成白名单放行+兜底拒绝" style="width: 100%">
             <el-option v-for="cc in forwardGroups" :key="cc.id" :label="`MYFW-${cc.name}`" :value="cc.id" />
@@ -132,7 +140,12 @@
         </el-form-item>
         <el-form-item v-if="instForm.action === 'DNAT' || instForm.action === 'SNAT'" label="NAT 目标"><el-input v-model="instForm.nat_to" placeholder="如 1.2.3.4 或 1.2.3.4:8080" /></el-form-item>
         <div class="form-row">
-          <el-form-item label="匹配标记" class="form-col"><el-input-number v-model="instForm.match_mark" :min="0" style="width: 100%" placeholder="0=不匹配" /></el-form-item>
+          <el-form-item label="匹配标记" class="form-col">
+            <el-select v-model="instForm.match_mark" clearable placeholder="0=不匹配" style="width: 100%">
+              <el-option label="无" :value="0" />
+              <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
+            </el-select>
+          </el-form-item>
           <el-form-item label="优先级" class="form-col"><el-input-number v-model="instForm.priority" style="width: 100%" /></el-form-item>
         </div>
         <el-form-item label="描述"><el-input v-model="instForm.description" type="textarea" :rows="2" /></el-form-item>
@@ -156,7 +169,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
-import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups } from '@/api'
+import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks } from '@/api'
 
 const nodesLoading = ref(false)
 const instLoading = ref(false)
@@ -166,6 +179,7 @@ const instances = ref([])
 const templates = ref([])
 const customChains = ref([])
 const addressGroups = ref([])
+const marks = ref([])
 const selectedNodeId = ref('')
 const expertMode = ref(false)
 
@@ -246,10 +260,11 @@ const loadInstances = async () => {
 
 const loadDeps = async () => {
   try {
-    const [t, c, ag] = await Promise.all([getTemplates(), getCustomChains(), getAddressGroups()])
+    const [t, c, ag, mk] = await Promise.all([getTemplates(), getCustomChains(), getAddressGroups(), getMarks()])
     templates.value = t.templates || []
     customChains.value = c.custom_chains || c.chains || []
     addressGroups.value = ag.address_groups || []
+    marks.value = mk.marks || []
   } catch {
     // 依赖加载失败不阻塞
   }
@@ -383,6 +398,7 @@ onMounted(() => {
 .inst-list { display: flex; flex-direction: column; gap: 10px; }
 .inst-item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; }
 .inst-item.drift { border-color: #f59e0b; background: #fffbeb; }
+.inst-item.not-applied { border-left: 3px solid #f59e0b; }
 .inst-item.disabled { opacity: .6; }
 .inst-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .inst-name { font-weight: 600; color: #1e293b; }

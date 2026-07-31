@@ -32,6 +32,10 @@ type Node struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 
 	Capability *NodeCapability `gorm:"foreignKey:NodeID" json:"capability,omitempty"`
+
+	// DriftCount 该节点 drift 实例数(实例参数 vs 模板当前参数),非持久化,
+	// 由节点列表接口聚合返回,供节点列表角标提示模板更新未同步。
+	DriftCount int `gorm:"-" json:"drift_count"`
 }
 
 // NodeCapability is the latest probe result reported by a node's Agent.
