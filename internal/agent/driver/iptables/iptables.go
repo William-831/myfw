@@ -168,6 +168,11 @@ func (d *Driver) Apply(ctx context.Context, ruleSet *myfwv1.RuleSet) (string, er
 	if err := d.syncCustomChains(ctx, ruleSet.GetCustomChains()); err != nil {
 		return "", err
 	}
+	// 清理孤儿子链:上轮存在、本轮不再引用的 MYFW-* 子链(删除实例后残留),
+	// 父链已 flush 断开 jump,此处 -F + -X 删除链本身。
+	if err := d.pruneCustomChains(ctx, ruleSet.GetCustomChains()); err != nil {
+		return "", err
+	}
 	// 子链名 -> table 映射,供 targetChainForRule 查询
 	chainToTable := make(map[string]string)
 	for _, cc := range ruleSet.GetCustomChains() {
@@ -256,6 +261,45 @@ func (d *Driver) syncCustomChains(ctx context.Context, chains []*myfwv1.CustomCh
 		}
 		if _, err := d.Exec.Run(ctx, "-t", cc.Table, "-F", name); err != nil {
 			return fmt.Errorf("flush custom chain %s/%s: %w", cc.Table, name, err)
+		}
+	}
+	return nil
+}
+
+// pruneCustomChains 清理孤儿子链:上轮下发存在、本轮不再引用的 MYFW-* 子链。删除
+// 实例后其专属子链(如 MYFW-MARKMANGLE)不再被本轮 customChains 引用,父链已在 Apply
+// 开头 flush 断开 jump,此处 -F 清空内部规则后 -X 删除链本身,避免残留。系统链
+// (managedChains)与本轮 customChains 保留。
+func (d *Driver) pruneCustomChains(ctx context.Context, current []*myfwv1.CustomChainDef) error {
+	keep := map[string]struct{}{}
+	for _, mc := range managedChains {
+		keep[mc.chain] = struct{}{}
+	}
+	for _, cc := range current {
+		keep["MYFW-"+cc.Name] = struct{}{}
+	}
+	for _, tbl := range []string{tableFilter, tableNat, tableMangle} {
+		out, err := d.Exec.Run(ctx, "-t", tbl, "-L", "-n")
+		if err != nil {
+			continue // 表不存在或无权限,跳过
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "Chain ") {
+				continue
+			}
+			fields := strings.Fields(strings.TrimPrefix(line, "Chain "))
+			if len(fields) == 0 {
+				continue
+			}
+			name := fields[0]
+			if !strings.HasPrefix(name, "MYFW-") {
+				continue
+			}
+			if _, ok := keep[name]; ok {
+				continue
+			}
+			_, _ = d.Exec.Run(ctx, "-t", tbl, "-F", name) // 清空内部规则(-X 要求链空)
+			_, _ = d.Exec.Run(ctx, "-t", tbl, "-X", name) // 删除链(幂等,失败忽略)
 		}
 	}
 	return nil

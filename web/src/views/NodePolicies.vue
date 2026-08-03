@@ -97,12 +97,12 @@
     <el-dialog v-model="formVisible" :title="isCreate ? '新建策略' : '编辑实例参数'" width="640px">
       <el-form :model="instForm" label-width="90px">
         <el-form-item label="实例名称"><el-input v-model="instForm.name" /></el-form-item>
-        <el-form-item label="所属组">
+        <el-form-item v-if="instForm.action !== 'MARK'" label="所属组">
           <el-select v-model="instForm.group_id" style="width: 100%">
             <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.id" />
           </el-select>
         </el-form-item>
-        <div class="form-row">
+        <div v-if="instForm.action !== 'MARK'" class="form-row">
           <el-form-item label="源地址" class="form-col"><el-input v-model="instForm.source" placeholder="空=任意" /></el-form-item>
           <el-form-item label="目标地址" class="form-col"><el-input v-model="instForm.destination" placeholder="空=任意" /></el-form-item>
         </div>
@@ -112,7 +112,7 @@
               <el-option v-for="ag in addressGroups" :key="ag.id" :label="ag.name" :value="ag.name" />
             </el-select>
           </el-form-item>
-          <el-form-item label="目的地址组" class="form-col">
+          <el-form-item v-if="instForm.action !== 'MARK'" label="目的地址组" class="form-col">
             <el-select v-model="instForm.destination_group" clearable placeholder="空=不匹配组" style="width: 100%">
               <el-option v-for="ag in addressGroups" :key="ag.id" :label="ag.name" :value="ag.name" />
             </el-select>
@@ -127,20 +127,21 @@
         <el-form-item label="动作">
           <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许" value="ACCEPT" /><el-option label="丢弃" value="DROP" /><el-option label="拒绝" value="REJECT" /><el-option label="标记" value="MARK" /><el-option label="DNAT" value="DNAT" /><el-option label="SNAT" value="SNAT" /></el-select>
         </el-form-item>
+        <el-form-item v-if="instForm.action === 'MARK'" label="流量方向">
+          <el-select v-model="instForm.direction" style="width: 100%">
+            <el-option label="容器转发(Docker 端口映射)" value="FORWARD" />
+            <el-option label="主机入站(本地服务)" value="INPUT" />
+          </el-select>
+        </el-form-item>
         <el-form-item v-if="instForm.action === 'MARK'" label="标记值">
           <el-select v-model="instForm.mark" style="width: 100%" placeholder="选标记(标记管理中维护)">
             <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
           </el-select>
-        </el-form-item>
-        <el-form-item v-if="instForm.action === 'MARK'" label="放行组">
-          <el-select v-model="instForm.mark_acl_group_id" clearable placeholder="选 FORWARD 策略组,自动生成白名单放行+兜底拒绝" style="width: 100%">
-            <el-option v-for="cc in forwardGroups" :key="cc.id" :label="`MYFW-${cc.name}`" :value="cc.id" />
-          </el-select>
-          <span class="form-hint">填源地址组(白名单)+放行组后,自动生成:所有源打标 → 白名单+标放行 → 其余带标包拒绝</span>
+          <span class="form-hint">选方向+源地址组(白名单)+端口+标记值,自动生成:打标 -> 白名单放行 -> 其余丢弃</span>
         </el-form-item>
         <el-form-item v-if="instForm.action === 'DNAT' || instForm.action === 'SNAT'" label="NAT 目标"><el-input v-model="instForm.nat_to" placeholder="如 1.2.3.4 或 1.2.3.4:8080" /></el-form-item>
         <div class="form-row">
-          <el-form-item label="匹配标记" class="form-col">
+          <el-form-item v-if="instForm.action !== 'MARK'" label="匹配标记" class="form-col">
             <el-select v-model="instForm.match_mark" clearable placeholder="0=不匹配" style="width: 100%">
               <el-option label="无" :value="0" />
               <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
@@ -196,6 +197,17 @@ const forwardGroups = computed(() => customChains.value.filter((c) => c.parent =
 // 命令预览:根据实例表单拼接底层 iptables 命令,无感教学
 const previewCommand = computed(() => {
   const f = instForm
+  // MARK 白名单拦截:预览 3 条规则链(打标 + 白名单放行 + 兜底丢弃),落平台内置链
+  if (f.action === 'MARK' && f.source_group && f.port_range) {
+    const acl = f.direction === 'INPUT' ? 'MYFW-MARKACL-IN' : 'MYFW-MARKACL-FWD'
+    const pp = f.protocol && f.protocol !== 'ANY' ? `-p ${f.protocol.toLowerCase()} --dport ${f.port_range}` : `--dport ${f.port_range}`
+    const m = String(f.mark || 0)
+    return [
+      `iptables -t mangle -A MYFW-MARKMANGLE ${pp} -j MARK --set-mark ${m}`,
+      `iptables -t filter -A ${acl} -m set --match-set ${f.source_group} src -m mark --mark ${m} -j ACCEPT`,
+      `iptables -t filter -A ${acl} -m mark --mark ${m} -j DROP`,
+    ].join('\n')
+  }
   const cc = customChains.value.find(c => c.id === f.group_id)
   const table = cc?.table || 'filter'
   const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
@@ -305,7 +317,7 @@ const formVisible = ref(false)
 const savingInst = ref(false)
 const isCreate = ref(false)
 const defaultForm = () => ({
-  name: '', group_id: null, source: '', destination: '',
+  name: '', group_id: null, direction: 'FORWARD', source: '', destination: '',
   source_group: '', destination_group: '', protocol: 'ANY',
   port_range: '', action: 'ACCEPT', mark: 0, nat_to: '',
   match_mark: 0, mark_acl_group_id: null, priority: 50, description: '', enabled: true, apply: false
@@ -323,7 +335,14 @@ const openEditInst = (inst) => {
 }
 const saveInst = async () => {
   if (!instForm.name) { ElMessage.warning('请填实例名称'); return }
-  if (!instForm.group_id) { ElMessage.warning('请选策略组'); return }
+  // MARK 白名单拦截:方向+源地址组+端口+标记值;其他动作需选策略组
+  if (instForm.action === 'MARK') {
+    if (!instForm.source_group) { ElMessage.warning('请选源地址组(白名单)'); return }
+    if (!instForm.port_range) { ElMessage.warning('请填端口'); return }
+    if (!instForm.mark) { ElMessage.warning('请选标记值'); return }
+  } else {
+    if (!instForm.group_id) { ElMessage.warning('请选策略组'); return }
+  }
   savingInst.value = true
   try {
     if (isCreate.value) {

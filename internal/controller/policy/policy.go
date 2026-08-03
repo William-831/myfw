@@ -231,33 +231,73 @@ func validate(in PolicyInput) error {
 	if in.GroupID == 0 {
 		return errors.New("policy: group_id is required (条目必须归属策略组)")
 	}
-	if !validProtocols[in.Protocol] {
-		return fmt.Errorf("policy: bad protocol %q", in.Protocol)
-	}
-	if !validActions[in.Action] {
-		return fmt.Errorf("policy: bad action %q", in.Action)
-	}
-	if in.Action == "DNAT" || in.Action == "SNAT" {
-		if in.NatTo == "" {
-			return fmt.Errorf("policy: %s requires nat_to", in.Action)
-		}
-	}
-	// mark 值限定为 dev(15)/ops(255) 两种权限标记
-	if in.Action == "MARK" && in.Mark != 15 && in.Mark != 255 {
-		return fmt.Errorf("policy: mark must be 15(dev) or 255(ops)")
-	}
-	if in.MatchMark != 0 && in.MatchMark != 15 && in.MatchMark != 255 {
-		return fmt.Errorf("policy: match_mark must be 0/15(dev)/255(ops)")
-	}
-	// MARK 联动:填了白名单(source_group)则必须指定放行组,编译时自动生成 filter 放行规则
-	if in.Action == "MARK" && in.SourceGroup != "" && in.MarkACLGroupID == 0 {
-		return errors.New("policy: MARK 联动白名单需指定放行组(mark_acl_group_id)")
-	}
-	if in.PortRange != "" && in.Protocol == "" {
-		return errors.New("policy: port_range requires a protocol")
+	if err := ValidateFields(Fields{
+		Action:      in.Action,
+		Direction:   in.Direction,
+		Mark:        in.Mark,
+		MatchMark:   in.MatchMark,
+		NatTo:       in.NatTo,
+		Protocol:    in.Protocol,
+		PortRange:   in.PortRange,
+		Source:      in.Source,
+		SourceGroup: in.SourceGroup,
+	}); err != nil {
+		return err
 	}
 	if len(in.Targets.NodeIDs) == 0 && len(in.Targets.Labels) == 0 {
 		return errors.New("policy: at least one target (node_ids or labels) is required")
+	}
+	return nil
+}
+
+// Fields 是 Policy/Template/Instance 共有的规则字段子集,供统一校验。三处 CRUD 入口
+// 复用 ValidateFields,避免新模型下实例/模板绕过校验导致静默失效。
+type Fields struct {
+	Action      string
+	Direction   string // MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站)
+	Mark        uint32
+	MatchMark   uint32
+	NatTo       string
+	Protocol    string
+	PortRange   string
+	Source      string
+	SourceGroup string
+}
+
+// ValidateFields 校验规则字段约束(action/protocol 合法、mark 取值、端口需协议、
+// NAT 需 nat_to、MARK 联动白名单完整性),供 Policy/Template/Instance 三处复用。
+func ValidateFields(f Fields) error {
+	if !validProtocols[f.Protocol] {
+		return fmt.Errorf("policy: bad protocol %q", f.Protocol)
+	}
+	if !validActions[f.Action] {
+		return fmt.Errorf("policy: bad action %q", f.Action)
+	}
+	if f.Action == "DNAT" || f.Action == "SNAT" {
+		if f.NatTo == "" {
+			return fmt.Errorf("policy: %s requires nat_to", f.Action)
+		}
+	}
+	// mark 值限定为 dev(15)/ops(255) 两种权限标记
+	if f.Action == "MARK" && f.Mark != 15 && f.Mark != 255 {
+		return fmt.Errorf("policy: mark must be 15(dev) or 255(ops)")
+	}
+	if f.MatchMark != 0 && f.MatchMark != 15 && f.MatchMark != 255 {
+		return fmt.Errorf("policy: match_mark must be 0/15(dev)/255(ops)")
+	}
+	if f.PortRange != "" && f.Protocol == "" {
+		return errors.New("policy: port_range requires a protocol")
+	}
+	// MARK 白名单拦截:填了源地址组则必须指定端口--打标按端口识别业务流量,编译器自动
+	// 生成 mangle 打标 + filter 白名单放行 + 兜底 DROP(落内置链,无需放行组)。
+	if f.Action == "MARK" && f.SourceGroup != "" && f.PortRange == "" {
+		return errors.New("policy: MARK 白名单拦截需指定端口(port_range)")
+	}
+	// MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站),空默认 FORWARD
+	if f.Action == "MARK" && f.SourceGroup != "" && f.PortRange != "" && f.Direction != "" {
+		if f.Direction != "FORWARD" && f.Direction != "INPUT" {
+			return fmt.Errorf("policy: MARK 白名单方向须为 FORWARD 或 INPUT")
+		}
 	}
 	return nil
 }

@@ -32,6 +32,11 @@ func newTestCompiler(t *testing.T) (*Compiler, *policy.Service) {
 	if err := db.Migrate(gdb); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { // 关闭 db 句柄,避免 Windows 下 TempDir 清理时文件占用
+		if sqlDB, err := gdb.DB(); err == nil {
+			sqlDB.Close()
+		}
+	})
 	return New(gdb), policy.New(gdb)
 }
 

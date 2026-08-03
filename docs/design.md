@@ -377,18 +377,18 @@ MYFW jump **始终保持在系统链 position 1**（先于 Docker 的 `DOCKER-US
 - 协议 / 端口限制
 - **MARK 打标**（mangle）+ **match_mark 匹配**（filter）：打标与匹配正交，可组合联动
 
-### 9.4 mark + 白名单联动
+### 9.4 标记+地址组联动白名单拦截
 
-典型场景「仅白名单 IP 可访问打了 mark 的业务流量」。配 1 条 MARK 策略，平台自动编译为完整的 3 条规则：
+典型场景「仅白名单 IP 可访问某端口」（如 Docker `-p 8080:80` 暴露的宿主端口，或主机本地服务）。用户只填 `流量方向 + 标记 + 端口 + 源地址组`，平台自动编译为完整 3 条规则，落平台内置链，无需建组/选放行组：
 
-- 策略填：`action=MARK` + `mark=N` + `source_group=whitelist`（白名单地址组）+ `mark_acl_group_id=<FORWARD 策略组>`（放行组）+ 目的/端口（识别业务流量）
-- 自动编译：
-  1. 主规则（打标组）：给**所有源**的业务端口流量 `MARK --set-mark N`（清空 source，否则非白名单不打标，兜底 DROP 匹配不到）
-  2. 放行规则（放行组）：`match_mark=N` + `source_group=whitelist` -> ACCEPT（优先级 P）
-  3. 兜底规则（放行组）：`match_mark=N` -> DROP（优先级 P+1，白名单先匹配，其余带标包拒绝）
+- 策略填：`action=MARK` + `direction=FORWARD|INPUT` + `mark=N` + `source_group`（白名单地址组）+ `port_range`（端口）。实例 `group_id=0`（不归属组，规则落内置链）。
+- 自动编译（端口标识 + 源IP管控 分离）：
+  1. 打标（内置 mangle 链 `MARKMANGLE`）：**只匹配目的端口**，给所有源打标 `MARK --set-mark N`（清空 source/source_group，否则非白名单不打标，兜底 DROP 匹配不到）
+  2. 放行（内置 filter 链，优先级 P）：源地址组 + `match_mark=N` -> ACCEPT
+  3. 兜底（优先级 P+1）：`match_mark=N` -> DROP（白名单先匹配，其余带标包拒绝）
+- 流量方向决定过滤链：`FORWARD`（容器转发）-> `MARKACL-FWD`（挂 `MYFW-FORWARD`）；`INPUT`（主机入站）-> `MARKACL-IN`（挂 `MYFW-INPUT`）。打标都在 mangle PREROUTING（DNAT 前，dport 仍是宿主端口）。
 
-按优先级顺序匹配：白名单 IP 的 mark=N 流量先 ACCEPT，其余带标包落到 DROP。对 Docker 暴露端口流量（经 DNAT 走 FORWARD）同样适用——用宿主端口在 PREROUTING/mangle 打标（DNAT 前，dport 仍是宿主端口），FORWARD 匹配标 + 白名单，不依赖容器 IP/端口。
-
+按优先级匹配：白名单 IP 的带标流量先 ACCEPT，其余带标包落到 DROP；不带标的其它流量穿过过滤链不匹配，不受影响。Docker 场景 FORWARD 用 `match_mark` 跨表认领，不依赖容器 IP/端口。详见 `docs/mark-acl-docker.md`。
 ---
 
 ## 10. 规则管理模式

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"iptables-tool/internal/controller/audit"
+	"iptables-tool/internal/controller/policy"
 	"iptables-tool/internal/controller/task"
 	"iptables-tool/internal/model"
 )
@@ -35,6 +36,10 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if err := policy.ValidateFields(fieldsFromTemplate(&tpl)); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		if err := db.Create(&tpl).Error; err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -50,6 +55,10 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		var body model.PolicyTemplate
 		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := policy.ValidateFields(fieldsFromTemplate(&body)); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -125,6 +134,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			Name             string `json:"name"`
 			Apply            bool   `json:"apply"`
 			GroupID          uint   `json:"group_id"`
+			Direction        string `json:"direction"`
 			Source           string `json:"source"`
 			Destination      string `json:"destination"`
 			Protocol         string `json:"protocol"`
@@ -157,7 +167,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			}
 			inst = model.NodePolicyInstance{
 				TemplateID: tpl.ID, NodeID: nodeID, Name: name,
-				GroupID: tpl.GroupID, Source: tpl.Source, Destination: tpl.Destination,
+				GroupID: tpl.GroupID, Direction: tpl.Direction, Source: tpl.Source, Destination: tpl.Destination,
 				Protocol: tpl.Protocol, PortRange: tpl.PortRange, Action: tpl.Action,
 				Mark: tpl.Mark, NatTo: tpl.NatTo, SourceGroup: tpl.SourceGroup,
 				DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
@@ -167,23 +177,29 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			}
 		} else {
 			// 直接新建:不依赖模板,template_id=0(无 drift/同步)
-			if body.GroupID == 0 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
-				return
-			}
 			if body.Name == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "需填写实例名称"})
 				return
 			}
+			// MARK 白名单拦截:group_id 可空(规则落内置链);其他场景 group_id 必填
+			isMarkACL := body.Action == "MARK" && body.SourceGroup != "" && body.PortRange != ""
+			if body.GroupID == 0 && !isMarkACL {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
+				return
+			}
 			inst = model.NodePolicyInstance{
 				TemplateID: 0, NodeID: nodeID, Name: body.Name,
-				GroupID: body.GroupID, Source: body.Source, Destination: body.Destination,
+				GroupID: body.GroupID, Direction: body.Direction, Source: body.Source, Destination: body.Destination,
 				Protocol: body.Protocol, PortRange: body.PortRange, Action: body.Action,
 				Mark: body.Mark, NatTo: body.NatTo, SourceGroup: body.SourceGroup,
 				DestinationGroup: body.DestinationGroup, MatchMark: body.MatchMark,
 				MarkACLGroupID: body.MarkACLGroupID, Priority: body.Priority,
 				Description: body.Description, Enabled: true,
 			}
+		}
+		if err := policy.ValidateFields(fieldsFromInstance(&inst)); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
 		if err := db.Create(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -210,6 +226,16 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		body.ID = id
 		body.Applied = false // 参数变更,需重新下发
+		if err := policy.ValidateFields(fieldsFromInstance(&body)); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// MARK 白名单拦截:group_id 可空;其他场景 group_id 必填
+		isMarkACL := body.Action == "MARK" && body.SourceGroup != "" && body.PortRange != ""
+		if body.GroupID == 0 && !isMarkACL {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
+			return
+		}
 		if err := db.Save(&body).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -251,6 +277,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		// 数值/调度字段始终同步(通用参数,由模板定义)
 		inst.GroupID = tpl.GroupID
+		inst.Direction = tpl.Direction
 		inst.Mark = tpl.Mark
 		inst.MatchMark = tpl.MatchMark
 		inst.MarkACLGroupID = tpl.MarkACLGroupID
@@ -329,6 +356,24 @@ func parseTplID(c *gin.Context) (uint, bool) {
 		return 0, false
 	}
 	return uint(n), true
+}
+
+// fieldsFromTemplate / fieldsFromInstance 从模板/实例抽取规则字段子集,供
+// ValidateFields 统一校验(MARK 取值、白名单需端口等),杜绝误配静默落库。
+func fieldsFromTemplate(t *model.PolicyTemplate) policy.Fields {
+	return policy.Fields{
+		Action: t.Action, Direction: t.Direction, Mark: t.Mark, MatchMark: t.MatchMark, NatTo: t.NatTo,
+		Protocol: t.Protocol, PortRange: t.PortRange, Source: t.Source,
+		SourceGroup: t.SourceGroup,
+	}
+}
+
+func fieldsFromInstance(i *model.NodePolicyInstance) policy.Fields {
+	return policy.Fields{
+		Action: i.Action, Direction: i.Direction, Mark: i.Mark, MatchMark: i.MatchMark, NatTo: i.NatTo,
+		Protocol: i.Protocol, PortRange: i.PortRange, Source: i.Source,
+		SourceGroup: i.SourceGroup,
+	}
 }
 
 func auditTpl(auditSink *audit.Sink, c *gin.Context, op string, id uint, name string) {

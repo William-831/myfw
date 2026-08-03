@@ -42,12 +42,12 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 	}
 
 	// 预加载实例所属策略组(GroupID -> CustomChain)。组是调度单元:组不存在或
-	// 未启用时,其实例不参与编译(父链不会 jump 到该子链)。
+	// 未启用时,其实例不参与编译(父链不会 jump 到该子链)。MARK 白名单拦截实例
+	// 不归属组(group_id=0),规则落平台内置链,无需加载组。
 	groupIDs := make(map[uint]struct{})
 	for i := range instances {
-		groupIDs[instances[i].GroupID] = struct{}{}
-		if instances[i].MarkACLGroupID != 0 {
-			groupIDs[instances[i].MarkACLGroupID] = struct{}{} // MARK 联动放行组也需加载
+		if instances[i].GroupID != 0 {
+			groupIDs[instances[i].GroupID] = struct{}{}
 		}
 	}
 	groupByID := make(map[uint]*model.CustomChain)
@@ -67,21 +67,31 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 
 	out := make([]*myfwv1.CompiledRule, 0, len(instances))
 	setNames := make(map[string]struct{})
+	usedBuiltin := make(map[string]struct{}) // 收集用到的 MARK 白名单内置链
 	for i := range instances {
 		inst := &instances[i]
-		g, ok := groupByID[inst.GroupID]
-		if !ok {
-			continue // 所属组不存在或未启用,实例不生效
+		// MARK 白名单拦截:填了源地址组+端口,group_id=0 也生效(落内置链)
+		isMarkACL := inst.Action == "MARK" && inst.SourceGroup != "" && inst.PortRange != ""
+		var groupChain, groupParent string
+		if inst.GroupID != 0 {
+			g, ok := groupByID[inst.GroupID]
+			if !ok {
+				continue // 所属组不存在或未启用,实例不生效
+			}
+			groupChain, groupParent = g.Name, g.Parent
+		} else if !isMarkACL {
+			continue // 无组且非 MARK 白名单,不生效
 		}
-		var aclGroup *model.CustomChain
-		if inst.MarkACLGroupID != 0 {
-			aclGroup = groupByID[inst.MarkACLGroupID]
-		}
-		crs, err := compileInstance(inst, g.Name, g.Parent, aclGroup)
+		crs, err := compileInstance(inst, groupChain, groupParent)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("compiler: instance %d: %w", inst.ID, err)
 		}
 		out = append(out, crs...)
+		for _, r := range crs {
+			if r.Chain == "MARKMANGLE" || r.Chain == "MARKACL-FWD" || r.Chain == "MARKACL-IN" {
+				usedBuiltin[r.Chain] = struct{}{}
+			}
+		}
 		// 收集实例引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
 		if inst.SourceGroup != "" {
 			setNames[inst.SourceGroup] = struct{}{}
@@ -97,6 +107,16 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 	customChains, err := c.loadCustomChains(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("compiler: load custom chains: %w", err)
+	}
+	// 追加 MARK 白名单内置链(按需,供 driver 创建子链并挂到系统链)
+	if _, ok := usedBuiltin["MARKMANGLE"]; ok {
+		customChains = append(customChains, &myfwv1.CustomChainDef{Name: "MARKMANGLE", Parent: "MYFW-MANGLE", Table: "mangle"})
+	}
+	if _, ok := usedBuiltin["MARKACL-FWD"]; ok {
+		customChains = append(customChains, &myfwv1.CustomChainDef{Name: "MARKACL-FWD", Parent: "MYFW-FORWARD", Table: "filter"})
+	}
+	if _, ok := usedBuiltin["MARKACL-IN"]; ok {
+		customChains = append(customChains, &myfwv1.CustomChainDef{Name: "MARKACL-IN", Parent: "MYFW-INPUT", Table: "filter"})
 	}
 	return out, sets, customChains, nil
 }
@@ -253,9 +273,10 @@ func parseLabels(s string) []string {
 	return nil
 }
 
-// compileInstance 将节点策略实例编译为 CompiledRule(可多条:MARK 联动时自动追加放行规则)。
-// 方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名)。rule id 用 "i<实例ID>"。
-func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent string, aclGroup *model.CustomChain) ([]*myfwv1.CompiledRule, error) {
+// compileInstance 将节点策略实例编译为 CompiledRule(可多条:MARK 白名单拦截时自动追加
+// 放行/兜底规则)。方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名);
+// MARK 白名单拦截实例无组(group_id=0),规则落平台内置链。rule id 用 "i<实例ID>"。
+func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent string) ([]*myfwv1.CompiledRule, error) {
 	dir, err := parseDirection(parentToDirection(groupParent))
 	if err != nil {
 		return nil, err
@@ -288,17 +309,29 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent str
 	}
 	rules := []*myfwv1.CompiledRule{main}
 
-	// MARK 联动:填了白名单(source_group)+放行组(acl_group),自动生成完整的白名单
-	// 访问控制(仅白名单 IP 可访问打了 mark 的业务流量):
-	//   1. 主规则给所有源打标--清空 source/source_group,仅按目的/端口识别业务流量,
-	//      否则非白名单不打标,DROP 兜底匹配不到,拦截失效。
-	//   2. 白名单 + 标 -> ACCEPT(放行组,优先级 P)。
-	//   3. 标 -> DROP 兜底(放行组,优先级 P+1,白名单先匹配,其余带标包拒绝)。
-	if inst.Action == "MARK" && inst.SourceGroup != "" && aclGroup != nil {
+	// MARK 白名单拦截:填了源地址组+端口,自动生成完整拦截链(对用户透明,落平台内置链):
+	//   1. 打标(内置 mangle 链 MARKMANGLE):只匹配目的端口,给所有源打标--清空 source/
+	//      source_group,否则非白名单不打标,兜底 DROP 匹配不到,拦截失效。DNAT 前 dport
+	//      仍是宿主端口。实现"端口标识"。
+	//   2. 白名单+标 -> ACCEPT(内置 filter 链,优先级 P):源地址组控制放行,实现"源IP管控"。
+	//   3. 标 -> DROP 兜底(优先级 P+1,白名单先匹配,其余带标包拒绝)。
+	// 流量方向决定过滤链落点:FORWARD(容器转发)->MARKACL-FWD,INPUT(主机入站)->MARKACL-IN。
+	if inst.Action == "MARK" && inst.SourceGroup != "" && inst.PortRange != "" {
+		// 打标只匹配目的端口:清空 source/source_group/destination/match_mark,
+		// 否则旧数据残留(如 destination/match_mark)会让打标规则带额外条件,
+		// 非白名单不打标,兜底 DROP 匹配不到,拦截失效。
 		main.Source = ""
 		main.SourceGroup = ""
-		main.Description = inst.Description + " (联动打标:所有源)"
-		aclDir, _ := parseDirection(parentToDirection(aclGroup.Parent))
+		main.Destination = ""
+		main.MatchMark = 0
+		main.Chain = "MARKMANGLE"
+		main.Description = inst.Description + " (白名单打标:按端口)"
+		aclChain := "MARKACL-FWD"
+		aclDir := myfwv1.Direction_DIRECTION_FORWARD
+		if inst.Direction == "INPUT" {
+			aclChain = "MARKACL-IN"
+			aclDir = myfwv1.Direction_DIRECTION_INBOUND
+		}
 		base := "i" + strconv.FormatUint(uint64(inst.ID), 10)
 		rules = append(rules,
 			&myfwv1.CompiledRule{
@@ -307,18 +340,18 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent str
 				SourceGroup: inst.SourceGroup,
 				MatchMark:   inst.Mark,
 				Action:      myfwv1.Action_ACTION_ACCEPT,
-				Chain:       aclGroup.Name,
+				Chain:       aclChain,
 				Priority:    int32(inst.Priority),
-				Description: "MARK 联动放行(白名单): " + inst.Description,
+				Description: "白名单放行: " + inst.Description,
 			},
 			&myfwv1.CompiledRule{
 				Id:          base + "-drop",
 				Direction:   aclDir,
 				MatchMark:   inst.Mark,
 				Action:      myfwv1.Action_ACTION_DROP,
-				Chain:       aclGroup.Name,
+				Chain:       aclChain,
 				Priority:    int32(inst.Priority) + 1,
-				Description: "MARK 联动兜底拒绝: " + inst.Description,
+				Description: "白名单兜底拒绝: " + inst.Description,
 			},
 		)
 	}

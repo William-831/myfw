@@ -124,6 +124,13 @@ func (f *Fake) Run(ctx context.Context, args ...string) (string, error) {
 			fmt.Fprintf(&b, "-A %s %s\n", chain, r)
 		}
 		return b.String(), nil
+
+	case "-L": // list chains (name only, for pruneCustomChains)
+		var b strings.Builder
+		for chain := range f.Tables[table] {
+			fmt.Fprintf(&b, "Chain %s (0 references)\n", chain)
+		}
+		return b.String(), nil
 	}
 	return "", fmt.Errorf("fakeexec: unsupported verb %q", verb)
 }

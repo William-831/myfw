@@ -8,6 +8,7 @@ type PolicyTemplate struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	Name             string    `gorm:"size:255" json:"name"`
 	GroupID          uint      `gorm:"index" json:"group_id"` // 所属策略组,继承方向/子链/全局优先级
+	Direction        string    `gorm:"size:16" json:"direction"` // MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站),仅 MARK+白名单用
 	Source           string    `gorm:"size:128" json:"source"`
 	Destination      string    `gorm:"size:128" json:"destination"`
 	Protocol         string    `gorm:"size:16" json:"protocol"`
@@ -35,6 +36,7 @@ type NodePolicyInstance struct {
 	NodeID           string    `gorm:"size:64;index" json:"node_id"`
 	Name             string    `gorm:"size:255" json:"name"`
 	GroupID          uint      `gorm:"index" json:"group_id"`
+	Direction        string    `gorm:"size:16" json:"direction"` // MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站),仅 MARK+白名单用
 	Source           string    `gorm:"size:128" json:"source"`
 	Destination      string    `gorm:"size:128" json:"destination"`
 	Protocol         string    `gorm:"size:16" json:"protocol"`
