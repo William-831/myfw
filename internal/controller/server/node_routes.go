@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -54,6 +55,32 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB) {
 		for i := range nodes {
 			nodes[i].DriftCount = driftCount[nodes[i].ID]
 		}
+		// 聚合各节点当前有效证书过期时间(revoked=false 中 not_after 最大),避免 N+1
+		if len(nodes) > 0 {
+			ids := make([]string, 0, len(nodes))
+			for i := range nodes {
+				ids = append(ids, nodes[i].ID)
+			}
+			var rows []struct {
+				NodeID   string    `gorm:"column:node_id"`
+				NotAfter time.Time `gorm:"column:not_after"`
+			}
+			db.Model(&model.Certificate{}).
+				Select("node_id, MAX(not_after) as not_after").
+				Where("revoked = ? AND node_id IN ?", false, ids).
+				Group("node_id").
+				Scan(&rows)
+			certMap := make(map[string]time.Time, len(rows))
+			for _, r := range rows {
+				certMap[r.NodeID] = r.NotAfter
+			}
+			for i := range nodes {
+				if t, ok := certMap[nodes[i].ID]; ok {
+					nt := t
+					nodes[i].CertNotAfter = &nt
+				}
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"nodes": nodes})
 	})
 
@@ -63,6 +90,12 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB) {
 		if err := db.Preload("Capability").Where("id = ?", id).First(&node).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
 			return
+		}
+		// 当前有效证书过期时间(revoked=false 中 not_after 最大)
+		var cert model.Certificate
+		if err := db.Where("node_id = ? AND revoked = ?", id, false).Order("not_after DESC").First(&cert).Error; err == nil {
+			nt := cert.NotAfter
+			node.CertNotAfter = &nt
 		}
 		c.JSON(http.StatusOK, node)
 	})

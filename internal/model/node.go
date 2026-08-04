@@ -36,6 +36,10 @@ type Node struct {
 	// DriftCount 该节点 drift 实例数(实例参数 vs 模板当前参数),非持久化,
 	// 由节点列表接口聚合返回,供节点列表角标提示模板更新未同步。
 	DriftCount int `gorm:"-" json:"drift_count"`
+
+	// CertNotAfter 当前有效证书(revoked=false 中 not_after 最大者)过期时间,非持久化,
+	// 由节点列表/详情接口聚合返回,供前端展示与临期预警。
+	CertNotAfter *time.Time `gorm:"-" json:"cert_not_after,omitempty"`
 }
 
 // NodeCapability is the latest probe result reported by a node's Agent.

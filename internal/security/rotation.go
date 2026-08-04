@@ -132,27 +132,50 @@ func (cr *CertRotation) GetKeyPEM() []byte { return cr.keyPEM }
 // GetCertPEM 获取当前证书。
 func (cr *CertRotation) GetCertPEM() []byte { return cr.certPEM }
 
-// StartRotationLoop 启动后台轮换循环。
+// StartRotationLoop 启动后台轮换循环：用 Timer 定点唤醒而非轮询。
+// 续签成功后按新证书重算唤醒时间，失败 1h 重试。正常仅临期一次唤醒，零轮询开销。
 func (cr *CertRotation) StartRotationLoop(ctx context.Context, renewFn func(ctx context.Context) error) {
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if !cr.NeedsRotation() {
-					continue
+			if delay := cr.nextRenewDelay(); delay > 0 {
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
 				}
-				cr.cfg.Logger.Info("certificate nearing expiry, attempting renewal")
-				if err := renewFn(ctx); err != nil {
-					cr.cfg.Logger.Error("certificate renewal failed", "err", err)
+			}
+			cr.cfg.Logger.Info("certificate nearing expiry, attempting renewal")
+			if err := renewFn(ctx); err != nil {
+				cr.cfg.Logger.Error("certificate renewal failed", "err", err)
+				// 失败后 1h 重试
+				timer := time.NewTimer(time.Hour)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
 				}
 			}
 		}
 	}()
+}
+
+// nextRenewDelay 返回距续签触发的剩余时间；<=0 表示需立即续签。
+func (cr *CertRotation) nextRenewDelay() time.Duration {
+	if len(cr.certPEM) == 0 {
+		return 0
+	}
+	block, _ := pem.Decode(cr.certPEM)
+	if block == nil {
+		return 0
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return 0
+	}
+	return time.Until(cert.NotAfter) - cr.cfg.RenewBefore
 }
 
 // atomicWrite 原子写入文件（先写临时文件再重命名）。

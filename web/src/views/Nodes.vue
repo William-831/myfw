@@ -70,6 +70,17 @@
             <span class="small">{{ formatDate(row.last_seen) }}</span>
           </template>
         </el-table-column>
+        <el-table-column v-if="columnVisible.certExpiry" label="证书过期" min-width="170">
+          <template #default="{ row }">
+            <template v-if="row.cert_not_after">
+              <div class="small">{{ formatDate(row.cert_not_after) }}</div>
+              <el-tag :type="certExpiryInfo(row.cert_not_after).type" size="small" effect="dark">
+                {{ certExpiryInfo(row.cert_not_after).text }}
+              </el-tag>
+            </template>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, row)">
@@ -206,6 +217,15 @@
         </el-descriptions-item>
         <el-descriptions-item label="Docker">{{ detailNode.capability?.docker_present ? '已安装' : '未安装' }}</el-descriptions-item>
         <el-descriptions-item label="Kubernetes">{{ detailNode.capability?.k8s_present ? '已安装' : '未安装' }}</el-descriptions-item>
+        <el-descriptions-item label="证书过期" :span="2">
+          <template v-if="detailNode.cert_not_after">
+            <span class="small">{{ formatDate(detailNode.cert_not_after) }}</span>
+            <el-tag :type="certExpiryInfo(detailNode.cert_not_after).type" size="small" effect="dark" style="margin-left: 8px">
+              {{ certExpiryInfo(detailNode.cert_not_after).text }}
+            </el-tag>
+          </template>
+          <span v-else>-</span>
+        </el-descriptions-item>
         <el-descriptions-item label="最后活跃" :span="2">{{ formatDate(detailNode.last_seen) }}</el-descriptions-item>
         <el-descriptions-item label="创建时间" :span="2">{{ formatDate(detailNode.created_at) }}</el-descriptions-item>
       </el-descriptions>
@@ -413,11 +433,12 @@ const saving = ref(false)
 const rulesLoading = ref(false)
 
 // 列显隐：常用列（主机名/IP/后端/状态/操作）始终显示，非常用列可收纳
-const columnVisible = reactive({ system: true, labels: true, lastSeen: true })
+const columnVisible = reactive({ system: true, labels: true, lastSeen: true, certExpiry: true })
 const toggleableCols = [
   { key: 'system', label: '系统' },
   { key: 'labels', label: '标签' },
-  { key: 'lastSeen', label: '最后活跃' }
+  { key: 'lastSeen', label: '最后活跃' },
+  { key: 'certExpiry', label: '证书过期' }
 ]
 
 // 添加节点表单
@@ -439,7 +460,7 @@ const editRules = {
 // 节点详情
 const detailNode = reactive({
   id: '', hostname: '', ip: '', status: '', capability: null,
-  labels: '', last_seen: '', created_at: ''
+  labels: '', last_seen: '', created_at: '', cert_not_after: ''
 })
 
 // iptables 规则
@@ -490,6 +511,18 @@ const getStatusType = (status) => {
 const formatDate = (dateStr) => {
   if (!dateStr) return '-'
   try { return new Date(dateStr).toLocaleString() } catch { return dateStr }
+}
+
+// 证书过期信息：返回 el-tag 类型与文案（已过期/<24h 红，<7天 橙，否则绿）
+const certExpiryInfo = (notAfter) => {
+  if (!notAfter) return null
+  const remain = new Date(notAfter).getTime() - Date.now()
+  if (remain <= 0) return { type: 'danger', text: '已过期' }
+  const hours = remain / 3600000
+  if (hours < 24) return { type: 'danger', text: `${Math.ceil(hours)} 小时后过期` }
+  const days = hours / 24
+  if (days < 7) return { type: 'warning', text: `${Math.ceil(days)} 天后过期` }
+  return { type: 'success', text: `${Math.ceil(days)} 天后过期` }
 }
 
 const parseLabels = (labelsStr) => {

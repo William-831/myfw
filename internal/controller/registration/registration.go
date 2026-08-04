@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
@@ -51,8 +53,12 @@ func New(db *gorm.DB, ca *pki.CA, ttl time.Duration, audit AuditSink) *Service {
 // once the client cert is used, but the Controller will not dispatch rules
 // until an admin approves it.
 func (s *Service) Register(ctx context.Context, req *myfwv1.RegisterRequest) (*myfwv1.RegisterResponse, error) {
-	if req == nil || req.BootstrapToken == "" || req.CandidateId == "" || len(req.CsrPem) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "bootstrap_token, candidate_id and csr_pem are required")
+	if req == nil || req.CandidateId == "" || len(req.CsrPem) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "candidate_id and csr_pem are required")
+	}
+	// 空 token 走续签分支（依赖 mTLS 已认证旧证书）；非空 token 走首次注册
+	if req.BootstrapToken == "" {
+		return s.renewCert(ctx, req)
 	}
 
 	// Consume the bootstrap token inside a transaction so a race between two
@@ -181,6 +187,111 @@ func (s *Service) Register(ctx context.Context, req *myfwv1.RegisterRequest) (*m
 		ClientCertPem: certPEM,
 		NodeStatus:    string(nodeStat),
 	}, nil
+}
+
+// renewCert 处理空 token 的续签请求：用 mTLS 旧证书身份签发新证书，
+// 事务内吊销旧证书并新增证书记录。设计见 docs/design.md § 13。
+func (s *Service) renewCert(ctx context.Context, req *myfwv1.RegisterRequest) (*myfwv1.RegisterResponse, error) {
+	if s.CA == nil {
+		return nil, status.Error(codes.Unavailable, "certificate renewal requires mTLS enabled")
+	}
+	cert, err := clientCertFromContext(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+	nodeID, err := pki.NodeIDFromCert(cert)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+	if nodeID != req.CandidateId {
+		return nil, status.Error(codes.PermissionDenied, "candidate_id does not match certificate")
+	}
+	oldFP := pki.Fingerprint(cert)
+
+	// 校验旧证书未吊销 + 节点非归档
+	var oldCert model.Certificate
+	if err := s.DB.WithContext(ctx).Where("fingerprint = ?", oldFP).First(&oldCert).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, status.Error(codes.PermissionDenied, "unknown certificate")
+		}
+		return nil, status.Error(codes.Internal, "certificate lookup failed")
+	}
+	if oldCert.Revoked {
+		return nil, status.Error(codes.PermissionDenied, "certificate revoked")
+	}
+	var node model.Node
+	if err := s.DB.WithContext(ctx).Where("id = ?", nodeID).First(&node).Error; err != nil {
+		return nil, status.Error(codes.PermissionDenied, "unknown node")
+	}
+	if node.Status == model.NodeStatusArchived {
+		return nil, status.Error(codes.PermissionDenied, "node archived")
+	}
+
+	// 签发新证书
+	signed, notAfter, err := s.CA.SignAgentCert(req.CsrPem, nodeID, s.AgentCertTTL)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "sign csr: %v", err)
+	}
+	newFP, err := pki.FingerprintPEM(signed)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "fingerprint: %v", err)
+	}
+
+	// 事务：吊销旧证书 + 新增新证书记录
+	now := time.Now().UTC()
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Certificate{}).Where("id = ?", oldCert.ID).Updates(map[string]any{
+			"revoked":    true,
+			"revoked_at": &now,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.Certificate{
+			NodeID:      nodeID,
+			Fingerprint: newFP,
+			NotBefore:   now,
+			NotAfter:    notAfter,
+		}).Error
+	}); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	if s.Audit != nil {
+		detail, _ := json.Marshal(map[string]any{
+			"node_id":         nodeID,
+			"old_fingerprint": oldFP,
+			"new_fingerprint": newFP,
+			"not_after":       notAfter,
+		})
+		_ = s.Audit.Write(ctx, model.AuditLog{
+			Actor:  "agent",
+			Action: "node.cert_renew",
+			NodeID: nodeID,
+			Detail: string(detail),
+		})
+	}
+
+	return &myfwv1.RegisterResponse{
+		NodeId:        nodeID,
+		ClientCertPem: signed,
+		NodeStatus:    string(node.Status),
+	}, nil
+}
+
+// clientCertFromContext 从 gRPC mTLS 握手提取已验证的客户端证书。
+func clientCertFromContext(ctx context.Context) (*x509.Certificate, error) {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, errors.New("no peer info")
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return nil, errors.New("not a TLS connection")
+	}
+	if len(tlsInfo.State.VerifiedChains) == 0 || len(tlsInfo.State.VerifiedChains[0]) == 0 {
+		return nil, errors.New("client certificate required")
+	}
+	return tlsInfo.State.VerifiedChains[0][0], nil
 }
 
 // allocateNodeID keeps the candidate id whenever possible so /var/lib/myfw-agent/node.id

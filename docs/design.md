@@ -123,7 +123,28 @@ pending_approval -> dispatching -> applying -> confirm_wait -> confirmed(生效)
 - 节点身份：Agent 生成候选 ID -> bootstrap token 注册 -> 管理员 approve -> ACTIVE
 - 应用层会话：HMAC 防重放 + IP 钉扎 + 证书轮换
 
-## 13. 标记+地址组联动白名单拦截
+## 13. 证书签发与续签
+
+**签发**：节点首次注册（bootstrap token）时，Controller 用 CA 签发 Agent 客户端证书，TTL = `AgentCertTTL`（默认 8760h），写入 `Certificate` 表（fingerprint 唯一索引）。
+
+**续签**：Agent 主动轮换，无需人工干预。
+- 触发：启动时检查；后台用 `time.Timer` 定点唤醒（计算 `NotAfter - RenewBefore` 到点触发，非轮询），续签成功按新证书重算、失败 1h 重试。正常仅临期一次唤醒，零轮询开销
+- 流程：Agent 用旧证书 dial -> 生成新 CSR -> 调 `Register` RPC（**空 token**）-> Controller 校验旧证书身份 -> 签发新证书 -> 吊销旧证书 + 新增证书记录 -> Agent 原子写盘
+- 识别：`Register` 收到空 `BootstrapToken` 即走续签分支（依赖 mTLS 已认证旧证书）；非空 token 走首次注册
+- 安全：续签需旧证书通过 mTLS 握手 + 业务层校验未吊销 + 节点非归档；`CandidateId` 须与证书 nodeID 一致防越权
+- 禁用 mTLS 时无客户端证书，不触发续签
+
+> TLS 层 `ClientAuth=VerifyClientCertIfGiven`：首次注册无证书可连，续签带旧证书完成握手，`Register` handler 内部从 peer 提取证书做身份校验。
+
+## 14. 节点证书过期展示
+
+节点详情与列表显示当前有效证书（`revoked=false` 中 `not_after` 最大者）的过期时间。
+
+- 后端：节点列表/详情接口聚合 `cert_not_after`（列表用 `GROUP BY node_id` 批量查询避免 N+1），作为 `Node` 的非持久化字段返回
+- 前端：详情对话框新增「证书过期时间」项；节点列表新增可收纳「证书过期」列
+- 临近过期高亮（前端固定阈值）：剩余 < 7 天橙色、< 24 小时红色、已过期深红
+
+## 15. 标记+地址组联动白名单拦截
 
 **背景**：宿主机 Docker 跑容器（`-p 8080:80`），目标仅白名单 IP 可访问宿主机端口。光打 `MARK` 规则只盖戳不丢包，拦截失效，必须在 filter 链补 `match_mark -j DROP`。
 
