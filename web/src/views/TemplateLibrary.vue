@@ -101,7 +101,7 @@
         </div>
         <el-form-item label="动作">
           <el-select v-model="form.action" style="width: 100%">
-            <el-option label="允许 ACCEPT" value="ACCEPT" /><el-option label="丢弃 DROP" value="DROP" /><el-option label="拒绝 REJECT" value="REJECT" /><el-option label="标记 MARK" value="MARK" /><el-option label="DNAT" value="DNAT" /><el-option label="SNAT" value="SNAT" />
+            <el-option label="允许 ACCEPT" value="ACCEPT" /><el-option label="丢弃 DROP" value="DROP" /><el-option label="拒绝 REJECT" value="REJECT" /><el-option label="标记 MARK" value="MARK" /><el-option label="目的转换 DNAT" value="DNAT" /><el-option label="源转换 SNAT" value="SNAT" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.action === 'DNAT' || form.action === 'SNAT'" label="NAT目标"><el-input v-model="form.nat_to" placeholder="192.168.1.100:8080" /></el-form-item>
@@ -246,7 +246,6 @@ const previewCommand = computed(() => {
   if (f.destination) parts.push('-d', f.destination)
   if (f.source_group) parts.push('-m', 'set', '--match-set', f.source_group, 'src')
   if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
-  if (f.match_mark) parts.push('-m', 'mark', '--mark', String(f.match_mark))
   if (f.protocol && f.protocol !== 'ANY') {
     parts.push('-p', f.protocol.toLowerCase())
     if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)

@@ -135,7 +135,7 @@
           <el-form-item label="端口范围" class="form-col"><el-input v-model="instForm.port_range" placeholder="如 80 或 1000:2000" /></el-form-item>
         </div>
         <el-form-item label="动作">
-          <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许" value="ACCEPT" /><el-option label="丢弃" value="DROP" /><el-option label="拒绝" value="REJECT" /><el-option label="标记" value="MARK" /><el-option label="DNAT" value="DNAT" /><el-option label="SNAT" value="SNAT" /></el-select>
+          <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许 ACCEPT" value="ACCEPT" /><el-option label="丢弃 DROP" value="DROP" /><el-option label="拒绝 REJECT" value="REJECT" /><el-option label="标记 MARK" value="MARK" /><el-option label="目的转换 DNAT" value="DNAT" /><el-option label="源转换 SNAT" value="SNAT" /></el-select>
         </el-form-item>
         <el-form-item v-if="instForm.action === 'MARK'" label="流量方向">
           <el-select v-model="instForm.direction" style="width: 100%">
@@ -150,15 +150,7 @@
           <span class="form-hint">选方向+源(地址或组)+端口+标记值,自动生成:打标 -> 白名单放行 -> 其余丢弃</span>
         </el-form-item>
         <el-form-item v-if="instForm.action === 'DNAT' || instForm.action === 'SNAT'" label="NAT 目标"><el-input v-model="instForm.nat_to" placeholder="如 1.2.3.4 或 1.2.3.4:8080" /></el-form-item>
-        <div class="form-row">
-          <el-form-item v-if="instForm.action !== 'MARK'" label="匹配标记" class="form-col">
-            <el-select v-model="instForm.match_mark" clearable placeholder="0=不匹配" style="width: 100%">
-              <el-option label="无" :value="0" />
-              <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="优先级" class="form-col"><el-input-number v-model="instForm.priority" style="width: 100%" /></el-form-item>
-        </div>
+        <el-form-item label="优先级"><el-input-number v-model="instForm.priority" style="width: 100%" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="instForm.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="instForm.enabled" /></el-form-item>
         <el-form-item v-if="isCreate" label="立即应用"><el-switch v-model="instForm.apply" /></el-form-item>
@@ -243,7 +235,6 @@ const previewCommand = computed(() => {
   if (f.destination) parts.push('-d', f.destination)
   if (f.source_group) parts.push('-m', 'set', '--match-set', f.source_group, 'src')
   if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
-  if (f.match_mark) parts.push('-m', 'mark', '--mark', String(f.match_mark))
   if (f.protocol && f.protocol !== 'ANY') {
     parts.push('-p', f.protocol.toLowerCase())
     if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)
@@ -373,6 +364,8 @@ const saveInst = async () => {
   } else {
     if (!instForm.group_id) { ElMessage.warning('请选策略组'); return }
   }
+  // 匹配标记入口已移除(仅 MARK 打标保留),强制清零避免旧实例残留 match_mark
+  instForm.match_mark = 0
   savingInst.value = true
   try {
     if (isCreate.value) {
