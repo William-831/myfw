@@ -1,4 +1,4 @@
-# Linux 网络防火墙统一管理平台 · 设计文档
+# Linux 网络防火墙统一管理平台 · 功能说明文档
 
 ## 1. 系统定位与总体架构
 
@@ -123,7 +123,41 @@ pending_approval -> dispatching -> applying -> confirm_wait -> confirmed(生效)
 - 节点身份：Agent 生成候选 ID -> bootstrap token 注册 -> 管理员 approve -> ACTIVE
 - 应用层会话：HMAC 防重放 + IP 钉扎 + 证书轮换
 
-## 13. 部署方案
+## 13. 标记+地址组联动白名单拦截
 
-- **Controller**：Docker Compose，host 编译二进制挂载（绕过 docker build 拉镜像）
-- **Agent**：裸机 systemd（deploy/systemd/），静态编译无 CGO
+**背景**：宿主机 Docker 跑容器（`-p 8080:80`），目标仅白名单 IP 可访问宿主机端口。光打 `MARK` 规则只盖戳不丢包，拦截失效，必须在 filter 链补 `match_mark -j DROP`。
+
+**方案**：用户只填 4 项--流量方向 + 标记 + 端口 + 源地址组，平台自动编译 3 条规则，落 MYFW 内置链，与 Docker/K8s 共存。
+
+流量方向决定过滤链落点：
+
+| 方向 | 场景 | 打标 | 过滤 |
+|---|---|---|---|
+| 容器转发(FORWARD) | Docker `-p` 端口映射 | mangle PREROUTING | filter FORWARD |
+| 主机入站(INPUT) | 主机本地服务(无 Docker) | mangle PREROUTING | filter INPUT |
+
+打标都在 mangle PREROUTING（DNAT 前，dport 仍是宿主端口）；过滤按方向落 FORWARD 或 INPUT。
+
+自动编译的 3 条规则（以容器转发为例）：
+```
+mangle/MYFW-MARKMANGLE:   -p tcp --dport <端口> -j MARK --set-mark <标记>          # 打标:只匹配端口
+filter/MYFW-MARKACL-FWD:  -m set --match-set <源地址组> src -m mark --mark <标记> -j ACCEPT  # 白名单放行
+filter/MYFW-MARKACL-FWD:  -m mark --mark <标记> -j DROP                            # 兜底丢弃
+```
+主机入站方向则过滤链为 `MYFW-MARKACL-IN`（挂 `MYFW-INPUT`）。
+
+设计要点（端口标识 + 源 IP 管控分离）：
+- 打标规则只匹配目的端口：清空 source/source_group，所有到该端口的流量都打标
+- 白名单规则用源地址组控制放行：源在白名单地址组 + 有标记 -> ACCEPT
+- 兜底丢弃：有标记但非白名单 -> DROP；不带标记的其它流量穿过过滤链不匹配，不受影响
+
+内置链 `MYFW-MARKMANGLE`（挂 `MYFW-MANGLE`）、`MYFW-MARKACL-FWD`（挂 `MYFW-FORWARD`）、`MYFW-MARKACL-IN`（挂 `MYFW-INPUT`）由编译器按需下发，driver 自动创建+挂载。实例 `group_id=0`（不归属用户组）。
+
+流量匹配验证：
+
+| 来源 | 打标 | 过滤链匹配 | 结果 |
+|---|---|---|---|
+| 白名单 IP | mark=N | 命中白名单+标 ACCEPT | **放行** |
+| 非白名单 IP | mark=N | 跳过 ACCEPT，命中标 DROP | **拒绝** |
+| 其它流量 | 无标 | 穿过不匹配 | 不受影响 |
+| 容器回包 | 无标(反向) | 首条 ESTABLISHED | 放行 |
