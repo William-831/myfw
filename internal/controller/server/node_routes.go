@@ -55,24 +55,19 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB) {
 		for i := range nodes {
 			nodes[i].DriftCount = driftCount[nodes[i].ID]
 		}
-		// 聚合各节点当前有效证书过期时间(revoked=false 中 not_after 最大),避免 N+1
+		// 聚合各节点当前有效证书过期时间(revoked=false 中 not_after 最大)
 		if len(nodes) > 0 {
 			ids := make([]string, 0, len(nodes))
 			for i := range nodes {
 				ids = append(ids, nodes[i].ID)
 			}
-			var rows []struct {
-				NodeID   string    `gorm:"column:node_id"`
-				NotAfter time.Time `gorm:"column:not_after"`
-			}
-			db.Model(&model.Certificate{}).
-				Select("node_id, MAX(not_after) as not_after").
-				Where("revoked = ? AND node_id IN ?", false, ids).
-				Group("node_id").
-				Scan(&rows)
-			certMap := make(map[string]time.Time, len(rows))
-			for _, r := range rows {
-				certMap[r.NodeID] = r.NotAfter
+			var certs []model.Certificate
+			db.Where("node_id IN ? AND revoked = ?", ids, false).Find(&certs)
+			certMap := make(map[string]time.Time, len(certs))
+			for _, c := range certs {
+				if t, ok := certMap[c.NodeID]; !ok || c.NotAfter.After(t) {
+					certMap[c.NodeID] = c.NotAfter
+				}
 			}
 			for i := range nodes {
 				if t, ok := certMap[nodes[i].ID]; ok {
