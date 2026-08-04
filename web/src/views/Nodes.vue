@@ -90,7 +90,7 @@
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="rules">
-                    <el-icon><Connection /></el-icon>查看规则
+                    <el-icon><Connection /></el-icon>快速诊断
                   </el-dropdown-item>
                   <el-dropdown-item command="view">详情</el-dropdown-item>
                   <el-dropdown-item command="edit">编辑</el-dropdown-item>
@@ -232,13 +232,39 @@
       </el-descriptions>
     </el-dialog>
 
-    <!-- iptables 规则对话框（Tab 分类 + 筛选 + 查看完整命令） -->
-    <el-dialog v-model="rulesDialogVisible" :title="`iptables 规则 - ${rulesNode.ip || rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
+    <!-- 快速诊断对话框（只读：健康状态 + 链统计 + 规则概览） -->
+    <el-dialog v-model="rulesDialogVisible" :title="`快速诊断 - ${rulesNode.ip || rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
       <div v-loading="rulesLoading">
         <div v-if="!rulesLoading && Object.keys(iptablesRules).length === 0" class="empty-state">
           暂无规则数据。Agent 启动后会自动上报当前 iptables 规则。
         </div>
         <template v-else-if="!rulesLoading">
+          <!-- 健康状态 -->
+          <div class="health-grid">
+            <div v-for="h in healthChecks" :key="h.label" class="health-item" :class="h.ok ? 'health-ok' : 'health-bad'">
+              <span class="health-icon">{{ h.ok ? '✓' : '✗' }}</span>
+              <div class="health-body">
+                <div class="health-label">{{ h.label }}</div>
+                <div class="health-detail">{{ h.detail }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 关键链统计 -->
+          <div class="chain-stats">
+            <div class="stats-title">关键链统计</div>
+            <el-table :data="chainStats" size="small" border stripe style="margin-bottom: 12px">
+              <el-table-column prop="table" label="表" width="90" />
+              <el-table-column prop="chain" label="链" width="180" />
+              <el-table-column label="归属" width="90">
+                <template #default="{ row }">
+                  <el-tag :type="row.is_myfw ? 'success' : 'info'" size="small">{{ row.is_myfw ? 'MYFW' : '系统' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="count" label="规则数" width="90" align="center" />
+            </el-table>
+          </div>
+
           <!-- 筛选栏 -->
           <div class="rules-toolbar">
             <el-input v-model="ruleSearch" placeholder="搜索规则内容..." clearable size="small" style="width: 280px">
@@ -253,9 +279,6 @@
               <el-option v-for="ch in currentTableChains" :key="ch" :label="ch" :value="ch" />
             </el-select>
             <span class="rule-count">当前表共 {{ filteredRuleCount }} 条</span>
-            <el-button type="primary" size="small" @click="handleAddRule">
-              <el-icon><Plus /></el-icon>添加规则
-            </el-button>
             <el-button size="small" @click="handleCheckDrift" :loading="driftLoading">合规检查</el-button>
           </div>
 
@@ -289,7 +312,7 @@
                       </el-tag>
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="210" align="center">
+                  <el-table-column label="操作" width="100" align="center">
                     <template #default="{ row }">
                       <el-popover trigger="click" :width="440" placement="left">
                         <template #reference>
@@ -303,8 +326,6 @@
                           </el-button>
                         </div>
                       </el-popover>
-                      <el-button size="small" link type="warning" @click="handleEditRule(row)">编辑</el-button>
-                      <el-button size="small" link type="danger" @click="handleDeleteRule(row)">删除</el-button>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -314,70 +335,6 @@
           </el-tabs>
         </template>
       </div>
-    </el-dialog>
-
-    <!-- 规则操作对话框（增删改插，双模式） -->
-    <el-dialog v-model="ruleOpDialogVisible" :title="ruleOpTitle" width="620px" :close-on-click-modal="false">
-      <el-form :model="ruleOpForm" label-width="90px" v-if="ruleOpForm.op !== 'delete'">
-        <el-form-item label="表">
-          <el-select v-model="ruleOpForm.table" style="width: 160px">
-            <el-option label="filter" value="filter" />
-            <el-option label="nat" value="nat" />
-            <el-option label="mangle" value="mangle" />
-            <el-option label="raw" value="raw" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="链">
-          <el-select v-model="ruleOpForm.chain" filterable allow-create default-first-option style="width: 200px" placeholder="如 MYFW-INPUT">
-            <el-option v-for="ch in chainOptions" :key="ch" :label="ch" :value="ch" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="模式">
-          <el-radio-group v-model="ruleOpMode">
-            <el-radio value="structured">结构化</el-radio>
-            <el-radio value="expert">专家模式</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="ruleOpMode === 'structured'">
-          <el-form-item label="动作">
-            <el-select v-model="ruleOpForm.action" style="width: 160px">
-              <el-option label="ACCEPT" value="ACCEPT" />
-              <el-option label="DROP" value="DROP" />
-              <el-option label="REJECT" value="REJECT" />
-              <el-option label="MARK" value="MARK" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="协议">
-            <el-select v-model="ruleOpForm.protocol" style="width: 160px">
-              <el-option label="任意" value="any" />
-              <el-option label="TCP" value="tcp" />
-              <el-option label="UDP" value="udp" />
-              <el-option label="ICMP" value="icmp" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="源地址"><el-input v-model="ruleOpForm.source" placeholder="IP/CIDR，可空" /></el-form-item>
-          <el-form-item label="目的地址"><el-input v-model="ruleOpForm.destination" placeholder="IP/CIDR，可空" /></el-form-item>
-          <el-form-item label="端口"><el-input v-model="ruleOpForm.port" placeholder="如 80 或 1000:2000" /></el-form-item>
-        </template>
-        <template v-else>
-          <el-form-item label="规则体">
-            <el-input v-model="ruleOpForm.rule_line" type="textarea" :rows="2" placeholder="-p tcp --dport 80 -j ACCEPT" />
-          </el-form-item>
-        </template>
-        <el-form-item v-if="ruleOpForm.op === 'insert'" label="插入位置">
-          <el-input-number v-model="ruleOpForm.position" :min="1" />
-        </el-form-item>
-      </el-form>
-      <el-alert v-else type="warning" :closable="false" style="margin-bottom: 12px">
-        确认删除以下规则？
-      </el-alert>
-      <div v-if="ruleOpForm.op === 'delete'">
-        <code class="rule-code">{{ ruleOpForm.rule_line }}</code>
-      </div>
-      <template #footer>
-        <el-button @click="ruleOpDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitRuleOp" :loading="ruleOpSaving">执行</el-button>
-      </template>
     </el-dialog>
 
     <!-- 合规检查对话框（策略漂移检测） -->
@@ -409,7 +366,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, operateNodeRule, getNodeDrift, getTasks } from '@/api'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const loading = ref(false)
@@ -465,7 +422,7 @@ const detailNode = reactive({
 })
 
 // iptables 规则
-const rulesNode = reactive({ id: '', hostname: '', ip: '' })
+const rulesNode = reactive({ id: '', hostname: '', ip: '', capability: null })
 const iptablesRules = ref({})
 const activeTable = ref('filter')
 const ruleSearch = ref('')
@@ -748,6 +705,7 @@ const handleViewRules = async (row) => {
   rulesNode.id = row.id
   rulesNode.hostname = row.hostname
   rulesNode.ip = row.ip
+  rulesNode.capability = row.capability || null
   rulesLoading.value = true
   rulesDialogVisible.value = true
   // 重置筛选
@@ -780,94 +738,66 @@ const handleViewRules = async (row) => {
   }
 }
 
-// 规则操作（增删改插，双模式）
-const ruleOpDialogVisible = ref(false)
-const ruleOpSaving = ref(false)
-const ruleOpMode = ref('structured')
-const ruleOpTitle = ref('')
-const ruleOpForm = reactive({
-  op: 'add', table: 'filter', chain: 'MYFW-INPUT', position: 1,
-  rule_line: '', action: 'ACCEPT', protocol: 'tcp',
-  source: '', destination: '', port: ''
+// 健康状态检查（基于上报规则分析）
+const healthChecks = computed(() => {
+  const checks = []
+  const backendOk = rulesNode.capability?.backend_available !== false
+  checks.push({
+    label: '防火墙后端',
+    ok: backendOk,
+    detail: backendOk ? (rulesNode.capability?.selected_backend || '可用') : (rulesNode.capability?.backend_reason || '不可用')
+  })
+  const allRules = []
+  Object.values(iptablesRules.value).forEach(chains => {
+    Object.entries(chains).forEach(([chain, rules]) => {
+      rules.forEach(r => allRules.push({ ...r, chain }))
+    })
+  })
+  const hasMyfw = allRules.some(r => r.is_myfw || (r.chain || '').startsWith('MYFW-'))
+  checks.push({
+    label: 'MYFW 命名空间',
+    ok: hasMyfw,
+    detail: hasMyfw ? 'MYFW 链已就位' : '未发现 MYFW 链'
+  })
+  const systemChains = ['INPUT', 'FORWARD', 'OUTPUT', 'PREROUTING', 'POSTROUTING']
+  const jumpSet = new Set()
+  allRules.forEach(r => {
+    if (systemChains.includes(r.chain)) {
+      const m = (r.rule_line || '').match(/-j\s+(MYFW-\S+)/)
+      if (m) jumpSet.add(m[1])
+    }
+  })
+  checks.push({
+    label: '入口 jump',
+    ok: jumpSet.size > 0,
+    detail: jumpSet.size > 0 ? `已接管 ${jumpSet.size} 条系统链` : '系统链未 jump 到 MYFW'
+  })
+  const estChains = ['MYFW-INPUT', 'MYFW-FORWARD', 'MYFW-OUTPUT']
+  const estOk = estChains.every(ch => {
+    for (const table of Object.keys(iptablesRules.value)) {
+      const cr = iptablesRules.value[table][ch]
+      if (cr && cr.length > 0) return /ESTABLISHED/.test(cr[0].rule_line || '')
+    }
+    return false
+  })
+  checks.push({
+    label: 'ESTABLISHED 兜底',
+    ok: estOk,
+    detail: estOk ? '已建立连接放行就位' : '缺少 ESTABLISHED 首条'
+  })
+  return checks
 })
 
-// 各表 MYFW 托管链,用于链下拉选项(节点级直操作只允许 MYFW-*,内置链由平台 jump 接管)
-const CHAINS_BY_TABLE = {
-  filter: ['MYFW-INPUT', 'MYFW-OUTPUT', 'MYFW-FORWARD'],
-  nat: ['MYFW-PREROUTING', 'MYFW-POSTROUTING'],
-  mangle: ['MYFW-MANGLE'],
-  raw: []
-}
-const chainOptions = computed(() => CHAINS_BY_TABLE[ruleOpForm.table] || [])
-
-const handleAddRule = () => {
-  ruleOpTitle.value = '添加规则'
-  ruleOpMode.value = 'structured'
-  ruleOpForm.op = 'add'
-  ruleOpForm.table = activeTable.value || 'filter'
-  ruleOpForm.chain = 'MYFW-INPUT'
-  ruleOpForm.position = 1
-  ruleOpForm.rule_line = ''
-  ruleOpForm.action = 'ACCEPT'
-  ruleOpForm.protocol = 'tcp'
-  ruleOpForm.source = ''
-  ruleOpForm.destination = ''
-  ruleOpForm.port = ''
-  ruleOpDialogVisible.value = true
-}
-
-const handleEditRule = (row) => {
-  ruleOpTitle.value = '编辑规则（替换）'
-  ruleOpMode.value = 'expert'
-  ruleOpForm.op = 'replace'
-  ruleOpForm.table = activeTable.value || row.table_type || 'filter'
-  ruleOpForm.chain = row.chain || 'MYFW-INPUT'
-  ruleOpForm.position = row.index || 1
-  ruleOpForm.rule_line = row.rule_line || ''
-  ruleOpDialogVisible.value = true
-}
-
-const handleDeleteRule = (row) => {
-  ruleOpTitle.value = '删除规则'
-  ruleOpForm.op = 'delete'
-  ruleOpForm.table = activeTable.value || row.table_type || 'filter'
-  ruleOpForm.chain = row.chain || 'MYFW-INPUT'
-  ruleOpForm.position = row.index || 1
-  ruleOpForm.rule_line = row.rule_line || ''
-  ruleOpDialogVisible.value = true
-}
-
-const submitRuleOp = async () => {
-  const opMap = { add: 1, insert: 2, delete: 3, replace: 4 }
-  const op = {
-    table: ruleOpForm.table,
-    chain: ruleOpForm.chain,
-    op: opMap[ruleOpForm.op] || 0,
-    position: ruleOpForm.position || 0,
-    rule_line: ruleOpForm.op === 'delete' ? ruleOpForm.rule_line : (ruleOpMode.value === 'expert' ? ruleOpForm.rule_line : ''),
-    action: ruleOpForm.action,
-    protocol: ruleOpForm.protocol,
-    source: ruleOpForm.source,
-    destination: ruleOpForm.destination,
-    port: ruleOpForm.port,
-  }
-  ruleOpSaving.value = true
-  try {
-    const data = await operateNodeRule(rulesNode.id, op)
-    if (data.result?.ok) {
-      ElMessage.success('操作成功：' + (data.result.message || ''))
-      ruleOpDialogVisible.value = false
-      // 刷新规则列表（实时拉取最新状态）
-      await handleViewRules({ id: rulesNode.id, hostname: rulesNode.hostname })
-    } else {
-      ElMessage.error(data.result?.message || '操作失败')
-    }
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.error || '操作失败')
-  } finally {
-    ruleOpSaving.value = false
-  }
-}
+// 关键链统计
+const chainStats = computed(() => {
+  const stats = []
+  Object.entries(iptablesRules.value).forEach(([table, chains]) => {
+    Object.entries(chains).forEach(([chain, rules]) => {
+      stats.push({ table, chain, count: rules.length, is_myfw: chain.startsWith('MYFW-') })
+    })
+  })
+  return stats
+})
 
 // 合规检查（策略漂移检测）
 const driftDialogVisible = ref(false)
@@ -935,6 +865,19 @@ onMounted(loadNodes)
 .backend-reason { font-size: 12px; color: #f56c6c; }
 .muted { color: #999; }
 .small { font-size: 12px; }
+
+/* 健康状态卡片 */
+.health-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.health-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 6px; border: 1px solid #e4e7ed; }
+.health-item.health-ok { background: #f0f9eb; border-color: #e1f3d8; }
+.health-item.health-bad { background: #fef0f0; border-color: #fde2e2; }
+.health-icon { font-size: 18px; font-weight: 700; }
+.health-ok .health-icon { color: #67c23a; }
+.health-bad .health-icon { color: #f56c6c; }
+.health-label { font-size: 13px; font-weight: 600; color: #303133; }
+.health-detail { font-size: 12px; color: #909399; margin-top: 2px; }
+.chain-stats { margin-bottom: 14px; }
+.stats-title { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px; }
 
 .rules-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .rule-count { font-size: 12px; color: #909399; margin-left: auto; }
