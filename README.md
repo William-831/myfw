@@ -1,26 +1,18 @@
 # iptables-tool
 
-面向 Linux 服务器环境的统一网络防火墙管理平台。
+Linux 服务器统一网络防火墙管理平台。Controller 集中管理多节点 iptables，Agent 落地执行，规则收敛在 `MYFW` 命名空间（不动 DOCKER/KUBE/用户手工规则）。
 
-- **Controller**：Docker 部署的 Web 主控（Gin + gRPC + GORM）。
-- **Agent**：裸机 systemd 部署的被控二进制（无 Docker、无 CGO、静态编译）。
-- **数据库**：生产接现成的 OceanBase（MySQL 协议兼容，通过环境变量注入），开发用 SQLite。
-- **通信**：Agent 主动连 Controller，强制 mTLS + 应用层会话安全（HMAC 防重放 + IP 钉扎 + 证书轮换）。
-- **规则隔离**：所有平台规则收敛在 `MYFW` 命名空间，不动 DOCKER / KUBE / 用户手工规则。
+## 核心特性
 
-## 当前进度
+- **两级策略模型**：PolicyTemplate（模板库）+ NodePolicyInstance（节点实例，独立参数快照）
+- **MARK 白名单**：方向+源+端口+标记，自动生成打标+放行+兜底DROP 三条联动规则
+- **保护期回滚**：下发后 5 分钟确认窗口，超时自动回滚快照，误操作可恢复
+- **多节点管理**：节点级 dispatch、drift 漂移检测、地址组(ipset)、自定义链
+- **安全通信**：Agent 主动连 Controller，mTLS + HMAC 防重放 + IP 钉扎 + 证书轮换
 
-M0-M12 已完成，M13（打包分发）待启动。详见 [docs/progress.md](./docs/progress.md)。
+## 技术栈
 
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [docs/design.md](./docs/design.md) | 架构、模型、原则、决策 |
-| [docs/deployment.md](./docs/deployment.md) | Controller / Agent 部署与运维手册 |
-| [docs/development-plan.md](./docs/development-plan.md) | 分阶段开发方案、目录结构、Git 工作流 |
-| [docs/progress.md](./docs/progress.md) | 当前进度追踪 |
-| [docs/remote-debug.md](./docs/remote-debug.md) | 远程调试部署方案 |
+Go（Gin + gRPC + GORM）+ Vue 3（Element Plus）+ SQLite(dev)/MySQL(prod)
 
 ## 快速开始
 
@@ -28,8 +20,20 @@ M0-M12 已完成，M13（打包分发）待启动。详见 [docs/progress.md](./
 # 开发环境（SQLite）
 make dev-controller
 
-# 编译 Agent（静态链接）
+# 编译 Agent（静态链接，Linux）
 make build-agent-linux
+
+# Docker 部署 Controller（host 编译挂载）
+docker-compose up -d
 ```
 
-详见 [docs/deployment.md](./docs/deployment.md#3-开发环境sqlite本地跑通)。
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [design.md](./docs/design.md) | 架构、模型、MYFW 链结构、状态机 |
+| [deployment.md](./docs/deployment.md) | Controller/Agent 部署运维 |
+| [remote-debug.md](./docs/remote-debug.md) | 远程联调方案 |
+| [mark-acl-docker.md](./docs/mark-acl-docker.md) | MARK 白名单拦截设计 |
+| [development-plan.md](./docs/development-plan.md) | 开发方案与里程碑 |
+| [progress.md](./docs/progress.md) | 开发进度 |
