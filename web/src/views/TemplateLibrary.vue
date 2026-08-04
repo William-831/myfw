@@ -4,7 +4,10 @@
       <div class="header-left">
         <h2 class="page-title">策略模板库</h2>
         <el-tag size="small" type="info">{{ templates.length }} 个模板</el-tag>
-      </div>
+          <el-button text :icon="allExpanded ? Fold : Expand" size="small" @click="allExpanded ? collapseAll() : expandAll()" style="margin-left: 6px; padding: 0 8px;">
+            {{ allExpanded ? "折叠" : "展开" }}
+          </el-button>
+        </div>
       <div class="header-right">
         <el-button @click="openMarkManager">标记管理</el-button>
         <el-switch v-model="multiSelect" active-text="多选" inline-prompt />
@@ -69,7 +72,7 @@
         </el-form-item>
         <el-form-item label="所属组" prop="group_id" :rules="[{ required: true, message: '必选' }]">
           <el-select v-model="form.group_id" placeholder="策略组(继承方向/子链)" style="width: 100%">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent}, #${cc.priority ?? 50})`" :value="cc.id" />
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name} - ${cc.description || cc.parent}`" :value="cc.id" />
           </el-select>
         </el-form-item>
         <div class="form-row">
@@ -175,7 +178,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Expand, Fold } from '@element-plus/icons-vue'
 import {
   getTemplates, createTemplate, updateTemplate, deleteTemplate,
   getCustomChains, getAddressGroups, getNodes, createInstance,
@@ -226,7 +229,7 @@ const groupedTemplates = computed(() => {
   const groups = []
   for (const gid of Object.keys(byGroup)) {
     const cc = customChains.value.find((c) => c.id === Number(gid))
-    groups.push({ key: 'g' + gid, label: cc ? `MYFW-${cc.name} (${cc.parent})` : `组#${gid}`, templates: byGroup[gid] })
+    groups.push({ key: 'g' + gid, label: cc ? `${cc.name} - ${cc.description || cc.parent}` : `组#${gid}`, templates: byGroup[gid] })
   }
   if (ungrouped.length) groups.push({ key: 'ungrouped', label: '未归组', templates: ungrouped })
   return groups
@@ -285,6 +288,10 @@ const loadDeps = async () => {
     // 依赖加载失败不阻塞模板展示
   }
 }
+
+const expandAll = () => { openedGroups.value = groupedTemplates.value.map((g) => g.key) }
+const collapseAll = () => { openedGroups.value = [] }
+const allExpanded = computed(() => openedGroups.value.length === groupedTemplates.value.length)
 
 const onCardClick = (t) => {
   if (multiSelect.value) toggleSelect(t.id, !selected.value.includes(t.id))
@@ -426,30 +433,34 @@ onMounted(() => {
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header-left { display: flex; align-items: center; gap: 12px; }
 .header-right { display: flex; align-items: center; gap: 12px; }
+.fold-group { margin-right: 2px; }
+.fold-group .el-button { padding: 0 11px; }
 .page-title { font-size: 18px; font-weight: 600; color: var(--c-text-1, #1e293b); margin: 0; }
 
 .tpl-collapse { border: none; }
-.tpl-collapse :deep(.el-collapse-item__header) { font-weight: 600; color: var(--c-text-1, #1e293b); }
+.tpl-collapse :deep(.el-collapse-item__header) { font-weight: 600; font-size: 15px; color: var(--c-text-1, #1e293b); border: none; padding: 4px 0; }
+.tpl-collapse :deep(.el-collapse-item__wrap) { border: none; }
+.tpl-collapse :deep(.el-collapse-item__content) { padding-bottom: 12px; }
 .group-title { margin-right: 10px; }
 .group-count { margin-left: 4px; }
 .empty { padding: 40px 0; }
 
-.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 4px 0; }
-.tpl-card { position: relative; border: 1px solid var(--c-border, #e2e8f0); border-radius: 10px; padding: 14px; background: var(--c-surface, #fff); transition: box-shadow .2s, border-color .2s; cursor: pointer; }
-.tpl-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.08); }
-.tpl-card.disabled { opacity: .6; }
-.tpl-card.selected { border-color: var(--c-primary, #4f46e5); box-shadow: 0 0 0 2px var(--c-primary-soft, rgba(79,70,229,.08)); }
-.card-checkbox { position: absolute; top: 10px; right: 10px; }
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding: 4px 0; }
+.tpl-card { position: relative; border: 1px solid var(--c-border, #e2e8f0); border-radius: 16px; padding: 16px; background: var(--c-surface, #fff); transition: transform .2s ease, box-shadow .2s ease, border-color .2s; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.tpl-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,.08); transform: translateY(-2px); }
+.tpl-card.disabled { opacity: .55; }
+.tpl-card.selected { border-color: var(--c-primary, #4f46e5); box-shadow: 0 0 0 2px var(--c-primary-soft, rgba(79,70,229,.1)); }
+.card-checkbox { position: absolute; top: 12px; right: 12px; }
 .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-.tpl-name { font-weight: 600; color: #1e293b; }
+.tpl-name { font-weight: 600; font-size: 15px; color: #1e293b; letter-spacing: .01em; }
 .card-rule { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; font-size: 13px; color: #475569; }
 .field .lbl { color: #94a3b8; margin-right: 4px; }
-.action { margin-left: auto; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; background: #f1f5f9; }
+.action { margin-left: auto; padding: 3px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; background: #f1f5f9; }
 .action.accept { color: #16a34a; background: #dcfce7; }
 .action.drop { color: #dc2626; background: #fee2e2; }
 .action.reject { color: #d97706; background: #fef3c7; }
 .action.mark { color: #2563eb; background: #dbeafe; }
-.card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid #f1f5f9; }
+.card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px solid #f1f5f9; }
 .prio { font-size: 12px; color: #94a3b8; }
 .actions { display: flex; gap: 4px; }
 

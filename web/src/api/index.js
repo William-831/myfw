@@ -77,6 +77,11 @@ export const rollbackTask = (id) => service.post(`/v1/tasks/${id}/rollback`)
 export const getAuditLogs = (params) => service.get('/v1/audit/logs', { params })
 export const exportAuditLogs = (params) => service.get('/v1/audit/export', { params, responseType: 'blob' })
 
+// 系统设置:日志/审批保留天数 + 手动清理异常数据
+export const getRetention = () => service.get('/v1/system/retention')
+export const updateRetention = (data) => service.put('/v1/system/retention', data)
+export const cleanupNow = () => service.post('/v1/system/cleanup')
+
 // 仪表盘
 export const getDashboardStats = () => service.get('/v1/dashboard/stats')
 

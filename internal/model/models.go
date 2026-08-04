@@ -28,6 +28,7 @@ func AllModels() []any {
 		&NodePolicyInstance{},
 		&Mark{},
 		&User{},
+		&SystemSetting{},
 	}
 }
 

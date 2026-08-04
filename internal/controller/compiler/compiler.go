@@ -40,65 +40,9 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 	if err != nil {
 		return nil, nil, nil, err
 	}
-
-	// 预加载实例所属策略组(GroupID -> CustomChain)。组是调度单元:组不存在或
-	// 未启用时,其实例不参与编译(父链不会 jump 到该子链)。MARK 白名单拦截实例
-	// 不归属组(group_id=0),规则落平台内置链,无需加载组。
-	groupIDs := make(map[uint]struct{})
-	for i := range instances {
-		if instances[i].GroupID != 0 {
-			groupIDs[instances[i].GroupID] = struct{}{}
-		}
-	}
-	groupByID := make(map[uint]*model.CustomChain)
-	if len(groupIDs) > 0 {
-		ids := make([]uint, 0, len(groupIDs))
-		for id := range groupIDs {
-			ids = append(ids, id)
-		}
-		var groups []model.CustomChain
-		if err := c.DB.WithContext(ctx).Where("id IN ? AND enabled = ?", ids, true).Find(&groups).Error; err != nil {
-			return nil, nil, nil, err
-		}
-		for i := range groups {
-			groupByID[groups[i].ID] = &groups[i]
-		}
-	}
-
-	out := make([]*myfwv1.CompiledRule, 0, len(instances))
-	setNames := make(map[string]struct{})
-	usedBuiltin := make(map[string]struct{}) // 收集用到的 MARK 白名单内置链
-	for i := range instances {
-		inst := &instances[i]
-		// MARK 白名单拦截:填了源地址组+端口,group_id=0 也生效(落内置链)
-		isMarkACL := inst.Action == "MARK" && inst.SourceGroup != "" && inst.PortRange != ""
-		var groupChain, groupParent string
-		if inst.GroupID != 0 {
-			g, ok := groupByID[inst.GroupID]
-			if !ok {
-				continue // 所属组不存在或未启用,实例不生效
-			}
-			groupChain, groupParent = g.Name, g.Parent
-		} else if !isMarkACL {
-			continue // 无组且非 MARK 白名单,不生效
-		}
-		crs, err := compileInstance(inst, groupChain, groupParent)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("compiler: instance %d: %w", inst.ID, err)
-		}
-		out = append(out, crs...)
-		for _, r := range crs {
-			if r.Chain == "MARKMANGLE" || r.Chain == "MARKACL-FWD" || r.Chain == "MARKACL-IN" {
-				usedBuiltin[r.Chain] = struct{}{}
-			}
-		}
-		// 收集实例引用的地址组名,稍后一次性加载为下发的 AddressSet 期望态。
-		if inst.SourceGroup != "" {
-			setNames[inst.SourceGroup] = struct{}{}
-		}
-		if inst.DestinationGroup != "" {
-			setNames[inst.DestinationGroup] = struct{}{}
-		}
+	out, _, setNames, usedBuiltin, err := c.compileInstances(ctx, instances)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	sets, err := c.loadAddressSets(ctx, setNames)
 	if err != nil {
@@ -119,6 +63,96 @@ func (c *Compiler) CompileForNode(ctx context.Context, nodeID string) ([]*myfwv1
 		customChains = append(customChains, &myfwv1.CustomChainDef{Name: "MARKACL-IN", Parent: "MYFW-INPUT", Table: "filter"})
 	}
 	return out, sets, customChains, nil
+}
+
+// compileInstances 编译给定实例列表的核心逻辑,被 CompileForNode(全量下发) 与
+// CompileInstances(diff 预览,含禁用实例) 共用。返回:
+//   - out: 编译后的 CompiledRule(MARK 白名单实例可能多条)
+//   - chainToTable: 用到的 chain -> table 映射(组链取 CustomChain.Table,内置链硬编码)
+//   - setNames: 引用的地址组名(供 CompileForNode 加载 AddressSet 期望态)
+//   - usedBuiltin: 用到的 MARK 白名单内置链(供 CompileForNode 追加内置链定义)
+//
+// 组是调度单元:组不存在或未启用时其实例不参与编译;MARK 白名单拦截实例无组(group_id=0)
+// 规则落平台内置链。调用方决定传哪些实例(不限定 enabled,故禁用实例也可编译生成预览)。
+func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodePolicyInstance) (out []*myfwv1.CompiledRule, chainToTable map[string]string, setNames map[string]struct{}, usedBuiltin map[string]struct{}, err error) {
+	chainToTable = make(map[string]string)
+	setNames = make(map[string]struct{})
+	usedBuiltin = make(map[string]struct{})
+
+	// 预加载实例所属策略组(GroupID -> CustomChain)。
+	groupIDs := make(map[uint]struct{})
+	for i := range instances {
+		if instances[i].GroupID != 0 {
+			groupIDs[instances[i].GroupID] = struct{}{}
+		}
+	}
+	groupByID := make(map[uint]*model.CustomChain)
+	if len(groupIDs) > 0 {
+		ids := make([]uint, 0, len(groupIDs))
+		for id := range groupIDs {
+			ids = append(ids, id)
+		}
+		var groups []model.CustomChain
+		if e := c.DB.WithContext(ctx).Where("id IN ? AND enabled = ?", ids, true).Find(&groups).Error; e != nil {
+			return nil, nil, nil, nil, e
+		}
+		for i := range groups {
+			groupByID[groups[i].ID] = &groups[i]
+		}
+	}
+
+	out = make([]*myfwv1.CompiledRule, 0, len(instances))
+	for i := range instances {
+		inst := &instances[i]
+		// MARK 白名单拦截:填了源地址组+端口,group_id=0 也生效(落内置链)
+		isMarkACL := inst.Action == "MARK" && (inst.Source != "" || inst.SourceGroup != "") && inst.PortRange != ""
+		var groupChain, groupParent string
+		if inst.GroupID != 0 {
+			g, ok := groupByID[inst.GroupID]
+			if !ok {
+				continue // 所属组不存在或未启用,实例不生效
+			}
+			groupChain, groupParent = g.Name, g.Parent
+			chainToTable[groupChain] = g.Table
+		} else if !isMarkACL {
+			continue // 无组且非 MARK 白名单,不生效
+		}
+		crs, e := compileInstance(inst, groupChain, groupParent)
+		if e != nil {
+			return nil, nil, nil, nil, fmt.Errorf("compiler: instance %d: %w", inst.ID, e)
+		}
+		out = append(out, crs...)
+		for _, r := range crs {
+			if r.Chain == "MARKMANGLE" || r.Chain == "MARKACL-FWD" || r.Chain == "MARKACL-IN" {
+				usedBuiltin[r.Chain] = struct{}{}
+			}
+		}
+		// 收集实例引用的地址组名,供 CompileForNode 加载 AddressSet 期望态。
+		if inst.SourceGroup != "" {
+			setNames[inst.SourceGroup] = struct{}{}
+		}
+		if inst.DestinationGroup != "" {
+			setNames[inst.DestinationGroup] = struct{}{}
+		}
+	}
+	// MARK 白名单内置链表名(mangle 打标 / filter 放行+兜底),供 diff 预览拼接 -A/-D 命令。
+	if _, ok := usedBuiltin["MARKMANGLE"]; ok {
+		chainToTable["MARKMANGLE"] = "mangle"
+	}
+	if _, ok := usedBuiltin["MARKACL-FWD"]; ok {
+		chainToTable["MARKACL-FWD"] = "filter"
+	}
+	if _, ok := usedBuiltin["MARKACL-IN"]; ok {
+		chainToTable["MARKACL-IN"] = "filter"
+	}
+	return out, chainToTable, setNames, usedBuiltin, nil
+}
+
+// CompileInstances 编译给定实例列表为 CompiledRule + chain->table 映射,供 diff 预览
+// (禁用实例也需编译,以生成 -D 移除命令)。不限定 enabled,调用方决定传哪些实例。
+func (c *Compiler) CompileInstances(ctx context.Context, instances []model.NodePolicyInstance) ([]*myfwv1.CompiledRule, map[string]string, error) {
+	rules, chainToTable, _, _, err := c.compileInstances(ctx, instances)
+	return rules, chainToTable, err
 }
 
 // loadCustomChains 加载所有启用的自定义子链,转为下发的 CustomChainDef 期望态。
@@ -316,7 +350,7 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent str
 	//   2. 白名单+标 -> ACCEPT(内置 filter 链,优先级 P):源地址组控制放行,实现"源IP管控"。
 	//   3. 标 -> DROP 兜底(优先级 P+1,白名单先匹配,其余带标包拒绝)。
 	// 流量方向决定过滤链落点:FORWARD(容器转发)->MARKACL-FWD,INPUT(主机入站)->MARKACL-IN。
-	if inst.Action == "MARK" && inst.SourceGroup != "" && inst.PortRange != "" {
+	if inst.Action == "MARK" && (inst.Source != "" || inst.SourceGroup != "") && inst.PortRange != "" {
 		// 打标只匹配目的端口:清空 source/source_group/destination/match_mark,
 		// 否则旧数据残留(如 destination/match_mark)会让打标规则带额外条件,
 		// 非白名单不打标,兜底 DROP 匹配不到,拦截失效。
@@ -337,6 +371,7 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent str
 			&myfwv1.CompiledRule{
 				Id:          base + "-acl",
 				Direction:   aclDir,
+				Source:      inst.Source,
 				SourceGroup: inst.SourceGroup,
 				MatchMark:   inst.Mark,
 				Action:      myfwv1.Action_ACTION_ACCEPT,

@@ -288,13 +288,13 @@ func ValidateFields(f Fields) error {
 	if f.PortRange != "" && f.Protocol == "" {
 		return errors.New("policy: port_range requires a protocol")
 	}
-	// MARK 白名单拦截:填了源地址组则必须指定端口--打标按端口识别业务流量,编译器自动
+	// MARK 白名单拦截:填了源(地址或地址组)则必须指定端口--打标按端口识别业务流量,编译器自动
 	// 生成 mangle 打标 + filter 白名单放行 + 兜底 DROP(落内置链,无需放行组)。
-	if f.Action == "MARK" && f.SourceGroup != "" && f.PortRange == "" {
+	if f.Action == "MARK" && (f.Source != "" || f.SourceGroup != "") && f.PortRange == "" {
 		return errors.New("policy: MARK 白名单拦截需指定端口(port_range)")
 	}
 	// MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站),空默认 FORWARD
-	if f.Action == "MARK" && f.SourceGroup != "" && f.PortRange != "" && f.Direction != "" {
+	if f.Action == "MARK" && (f.Source != "" || f.SourceGroup != "") && f.PortRange != "" && f.Direction != "" {
 		if f.Direction != "FORWARD" && f.Direction != "INPUT" {
 			return fmt.Errorf("policy: MARK 白名单方向须为 FORWARD 或 INPUT")
 		}

@@ -351,6 +351,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerAddressGroupRoutes(r, db)
 	registerCustomChainRoutes(r, db)
 	registerMarkRoutes(r, db, auditSink)
+	registerSystemRoutes(r, db)
 
 	r.Static("/assets", "/var/www/myfw/assets")
 	r.NoRoute(func(c *gin.Context) {
@@ -389,6 +390,8 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("server: listen grpc %s: %w", s.cfg.Server.GRPC.Listen, err)
 	}
+
+	StartRetentionLoop(s.db, s.log.Info)
 
 	errCh := make(chan error, 2)
 

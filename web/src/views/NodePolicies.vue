@@ -10,6 +10,15 @@
       </div>
     </div>
     <ExpertMode v-if="expertMode" />
+    <el-alert
+      v-if="guardTask"
+      type="warning"
+      :closable="false"
+      class="guard-banner"
+      @click="guard.open()"
+    >
+      <span>⏰ 该节点有保护期待确认任务 — 操作者 {{ guardTask.reviewer || '-' }}，{{ guardTask.policy_name || '节点策略' }}，点击前往确认</span>
+    </el-alert>
     <el-row v-else :gutter="14" class="np-body">
       <!-- 左:节点列表 -->
       <el-col :span="6">
@@ -40,13 +49,14 @@
           <div v-if="!selectedNodeId" class="empty-mini">请选择左侧节点</div>
           <div v-else-if="!instances.length" class="empty-mini">该节点暂无策略实例,点"从模板实例化"添加</div>
           <div v-else class="inst-list">
-            <div v-for="inst in instances" :key="inst.id" class="inst-item" :class="{ disabled: !inst.enabled, drift: inst.drift, 'not-applied': inst.enabled && !inst.applied }">
+            <div v-for="inst in sortedInstances" :key="inst.id" class="inst-item" :class="{ disabled: !inst.enabled, drift: inst.drift, 'not-applied': inst.enabled && !inst.applied }">
               <div class="inst-top">
                 <span class="inst-name">{{ inst.name }}</span>
                 <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
                 <el-tag v-if="inst.drift" size="small" type="warning" effect="dark">⚠ 模板已更新</el-tag>
                 <el-tag v-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
                 <el-tag v-else-if="inst.enabled && inst.applied" size="small" type="success" effect="plain">已下发</el-tag>
+                <el-tag v-if="!inst.enabled && inst.applied" size="small" type="danger" effect="dark">待移除</el-tag>
                 <el-tag :type="inst.enabled ? 'success' : 'info'" size="small">{{ inst.enabled ? '启用' : '禁用' }}</el-tag>
               </div>
               <div class="inst-rule">
@@ -99,16 +109,16 @@
         <el-form-item label="实例名称"><el-input v-model="instForm.name" /></el-form-item>
         <el-form-item v-if="instForm.action !== 'MARK'" label="所属组">
           <el-select v-model="instForm.group_id" style="width: 100%">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.id" />
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name} - ${cc.description || cc.parent}`" :value="cc.id" />
           </el-select>
         </el-form-item>
-        <div v-if="instForm.action !== 'MARK'" class="form-row">
-          <el-form-item label="源地址" class="form-col"><el-input v-model="instForm.source" placeholder="空=任意" /></el-form-item>
-          <el-form-item label="目标地址" class="form-col"><el-input v-model="instForm.destination" placeholder="空=任意" /></el-form-item>
+        <div class="form-row">
+          <el-form-item label="源地址" class="form-col"><el-input v-model="instForm.source" :placeholder="instForm.action === 'MARK' ? '白名单 IP/CIDR,如 192.168.1.5' : '空=任意'" /></el-form-item>
+          <el-form-item v-if="instForm.action !== 'MARK'" label="目标地址" class="form-col"><el-input v-model="instForm.destination" placeholder="空=任意" /></el-form-item>
         </div>
         <div class="form-row">
           <el-form-item label="源地址组" class="form-col">
-            <el-select v-model="instForm.source_group" clearable placeholder="空=不匹配组" style="width: 100%">
+            <el-select v-model="instForm.source_group" clearable :placeholder="instForm.action === 'MARK' ? '白名单地址组(与源地址二选一)' : '空=不匹配组'" style="width: 100%">
               <el-option v-for="ag in addressGroups" :key="ag.id" :label="ag.name" :value="ag.name" />
             </el-select>
           </el-form-item>
@@ -137,7 +147,7 @@
           <el-select v-model="instForm.mark" style="width: 100%" placeholder="选标记(标记管理中维护)">
             <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
           </el-select>
-          <span class="form-hint">选方向+源地址组(白名单)+端口+标记值,自动生成:打标 -> 白名单放行 -> 其余丢弃</span>
+          <span class="form-hint">选方向+源(地址或组)+端口+标记值,自动生成:打标 -> 白名单放行 -> 其余丢弃</span>
         </el-form-item>
         <el-form-item v-if="instForm.action === 'DNAT' || instForm.action === 'SNAT'" label="NAT 目标"><el-input v-model="instForm.nat_to" placeholder="如 1.2.3.4 或 1.2.3.4:8080" /></el-form-item>
         <div class="form-row">
@@ -155,7 +165,7 @@
       </el-form>
       <div class="cmd-preview">
         <div class="cmd-preview-head">命令预览(规则落 MYFW 自定义链,系统链已自动跳转)</div>
-        <pre class="cmd-preview-code">{{ previewCommand }}</pre>
+        <pre class="cmd-preview-code"><span v-for="(line, i) in previewCommand" :key="i" :class="'cmd-' + line.type">{{ line.text }}{{ i < previewCommand.length - 1 ? '\n' : '' }}</span></pre>
       </div>
       <template #footer>
         <el-button @click="formVisible = false">取消</el-button>
@@ -166,17 +176,33 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
-import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks } from '@/api'
+import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks } from '@/api'
+import { useGuardStore } from '@/stores/guard'
+
+const route = useRoute()
+const guard = useGuardStore()
+const guardTask = ref(null) // 该节点保护期待确认任务(跳转来时高亮提示)
 
 const nodesLoading = ref(false)
 const instLoading = ref(false)
 const dispatching = ref(false)
 const nodes = ref([])
 const instances = ref([])
+
+// 排序:未下发(enabled && !applied)或待移除(!enabled && applied)置顶,其次按添加时间倒序(新在上)
+const sortedInstances = computed(() => {
+  return [...instances.value].sort((a, b) => {
+    const ap = (a.enabled && !a.applied) || (!a.enabled && a.applied) ? 0 : 1
+    const bp = (b.enabled && !b.applied) || (!b.enabled && b.applied) ? 0 : 1
+    if (ap !== bp) return ap - bp
+    return new Date(b.created_at) - new Date(a.created_at)
+  })
+})
 const templates = ref([])
 const customChains = ref([])
 const addressGroups = ref([])
@@ -198,15 +224,16 @@ const forwardGroups = computed(() => customChains.value.filter((c) => c.parent =
 const previewCommand = computed(() => {
   const f = instForm
   // MARK 白名单拦截:预览 3 条规则链(打标 + 白名单放行 + 兜底丢弃),落平台内置链
-  if (f.action === 'MARK' && f.source_group && f.port_range) {
+  if (f.action === 'MARK' && (f.source || f.source_group) && f.port_range) {
     const acl = f.direction === 'INPUT' ? 'MYFW-MARKACL-IN' : 'MYFW-MARKACL-FWD'
     const pp = f.protocol && f.protocol !== 'ANY' ? `-p ${f.protocol.toLowerCase()} --dport ${f.port_range}` : `--dport ${f.port_range}`
     const m = String(f.mark || 0)
+    const src = f.source ? `-s ${f.source}` : `-m set --match-set ${f.source_group} src`
     return [
-      `iptables -t mangle -A MYFW-MARKMANGLE ${pp} -j MARK --set-mark ${m}`,
-      `iptables -t filter -A ${acl} -m set --match-set ${f.source_group} src -m mark --mark ${m} -j ACCEPT`,
-      `iptables -t filter -A ${acl} -m mark --mark ${m} -j DROP`,
-    ].join('\n')
+      { text: `iptables -t mangle -A MYFW-MARKMANGLE ${pp} -j MARK --set-mark ${m}`, type: 'mark' },
+      { text: `iptables -t filter -A ${acl} ${src} -m mark --mark ${m} -j ACCEPT`, type: 'accept' },
+      { text: `iptables -t filter -A ${acl} -m mark --mark ${m} -j DROP`, type: 'drop' },
+    ]
   }
   const cc = customChains.value.find(c => c.id === f.group_id)
   const table = cc?.table || 'filter'
@@ -230,15 +257,18 @@ const previewCommand = computed(() => {
   } else if (f.action) {
     parts.push('-j', f.action)
   }
-  return parts.join(' ')
+  return [{ text: parts.join(' '), type: 'default' }]
 })
 
 // 一键启停:切换实例 enabled(需重新下发节点才生效)
 const toggleEnabled = async (inst, v) => {
   try {
     await updateInstance(inst.id, { ...inst, enabled: v })
-    ElMessage.success(v ? '已启用,请下发节点生效' : '已禁用,请下发节点生效')
+    // 自动下发节点,使禁用/启用立即生效(进保护期,顶部确认)
+    await dispatchNode(selectedNodeId.value, { auto_approve: true })
+    ElMessage.success(v ? '已启用并下发,请到顶部确认' : '已禁用并下发,请到顶部确认')
     loadInstances()
+    guard.refresh()
   } catch (e) {
     ElMessage.error(e?.response?.data?.error || '切换失败')
     loadInstances()
@@ -317,10 +347,10 @@ const formVisible = ref(false)
 const savingInst = ref(false)
 const isCreate = ref(false)
 const defaultForm = () => ({
-  name: '', group_id: null, direction: 'FORWARD', source: '', destination: '',
+  template_id: 0, name: '', group_id: 0, direction: 'FORWARD', source: '', destination: '',
   source_group: '', destination_group: '', protocol: 'ANY',
   port_range: '', action: 'ACCEPT', mark: 0, nat_to: '',
-  match_mark: 0, mark_acl_group_id: null, priority: 50, description: '', enabled: true, apply: false
+  match_mark: 0, mark_acl_group_id: 0, priority: 50, description: '', enabled: true, apply: false
 })
 const instForm = reactive(defaultForm())
 const openCreate = () => {
@@ -337,7 +367,7 @@ const saveInst = async () => {
   if (!instForm.name) { ElMessage.warning('请填实例名称'); return }
   // MARK 白名单拦截:方向+源地址组+端口+标记值;其他动作需选策略组
   if (instForm.action === 'MARK') {
-    if (!instForm.source_group) { ElMessage.warning('请选源地址组(白名单)'); return }
+    if (!instForm.source && !instForm.source_group) { ElMessage.warning('请填源地址或源地址组(白名单)'); return }
     if (!instForm.port_range) { ElMessage.warning('请填端口'); return }
     if (!instForm.mark) { ElMessage.warning('请选标记值'); return }
   } else {
@@ -384,10 +414,17 @@ const handleDeleteInst = async (inst) => {
 }
 
 const handleDispatch = async () => {
+  const pending = instances.value.filter(i => i.enabled && !i.applied)
+  if (!pending.length) {
+    ElMessage.info('没有未下发的策略实例,无需下发')
+    return
+  }
   dispatching.value = true
   try {
     await dispatchNode(selectedNodeId.value, { auto_approve: true })
     ElMessage.success('已下发,进入保护期,请到顶部确认')
+    loadInstances()
+    guard.refresh()
   } catch (e) {
     ElMessage.error(e?.response?.data?.error || '下发失败')
   } finally {
@@ -395,14 +432,35 @@ const handleDispatch = async () => {
   }
 }
 
-onMounted(() => {
-  loadNodes()
+onMounted(async () => {
+  await loadNodes()
   loadDeps()
+  if (route.query.node) {
+    const n = nodes.value.find((x) => x.id === route.query.node)
+    if (n) selectNode(n)
+    try {
+      const d = await getTasks({ status: 'confirm_wait' })
+      guardTask.value = (d.tasks || []).find((t) => t.node_id === route.query.node) || null
+    } catch {}
+  }
+})
+
+// 页面已加载时从保护期跳转也能选中节点 + 显示 banner
+watch(() => route.query.node, async (nodeId) => {
+  if (!nodeId) { guardTask.value = null; return }
+  if (!nodes.value.length) return
+  const n = nodes.value.find((x) => x.id === nodeId)
+  if (n) selectNode(n)
+  try {
+    const d = await getTasks({ status: 'confirm_wait' })
+    guardTask.value = (d.tasks || []).find((t) => t.node_id === nodeId) || null
+  } catch {}
 })
 </script>
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.guard-banner { margin-bottom: 12px; cursor: pointer; font-weight: 500; }
 .header-left { display: flex; align-items: center; gap: 12px; }
 .page-title { font-size: 18px; font-weight: 600; color: var(--c-text-1, #1e293b); margin: 0; }
 .np-body { min-height: 480px; }
@@ -434,6 +492,9 @@ onMounted(() => {
 .cmd-preview { margin-top: 12px; }
 .cmd-preview-head { font-size: 12px; color: #64748b; margin-bottom: 6px; }
 .cmd-preview-code { background: #0f172a; color: #e2e8f0; padding: 10px; border-radius: 6px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.cmd-mark { color: #60a5fa; }
+.cmd-accept { color: #4ade80; }
+.cmd-drop { color: #f87171; }
 .actions { display: flex; gap: 4px; }
 .form-row { display: flex; gap: 12px; }
 .form-col { flex: 1; }

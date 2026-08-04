@@ -23,6 +23,7 @@ type Task struct {
 	NodeID       string     `gorm:"size:64;index" json:"node_id"`
 	PolicyID     uint       `gorm:"index" json:"policy_id"`
 	PolicyName   string     `gorm:"size:255" json:"policy_name"` // 策略名快照,审批展示用(避免 policy 改/删后丢失)
+	ChangeType   string     `gorm:"size:16" json:"change_type"`  // 变更类型:dispatch(下发)/disable(禁用)/mixed(混合),节点级 dispatch 填充,前端据此标注
 	Status       TaskStatus `gorm:"size:24;index" json:"status"`
 	Version      int64      `json:"version"`
 	DiffBefore   string     `gorm:"type:text" json:"diff_before"`

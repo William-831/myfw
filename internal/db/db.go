@@ -118,6 +118,9 @@ func Migrate(gdb *gorm.DB) error {
 	if err := model.MigrateInstanceSyncedAt(gdb); err != nil {
 		return fmt.Errorf("db: migrate instance synced_at: %w", err)
 	}
+	if err := model.SeedCustomChains(gdb); err != nil {
+		return fmt.Errorf("db: seed custom chains: %w", err)
+	}
 	return nil
 }
 

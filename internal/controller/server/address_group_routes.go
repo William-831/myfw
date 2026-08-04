@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -58,7 +59,7 @@ func createAddressGroup(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		membersJSON, _ := json.Marshal(in.Members)
+		membersJSON, _ := json.Marshal(normalizeMembers(in.Members))
 		g := model.AddressGroup{
 			Name:        in.Name,
 			Kind:        in.Kind,
@@ -98,7 +99,7 @@ func updateAddressGroup(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		membersJSON, _ := json.Marshal(in.Members)
+		membersJSON, _ := json.Marshal(normalizeMembers(in.Members))
 		g.Name = in.Name
 		g.Kind = in.Kind
 		g.Members = string(membersJSON)
@@ -115,6 +116,19 @@ func deleteAddressGroup(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		g, ok := loadAddressGroup(c, db)
 		if !ok {
+			return
+		}
+		// 引用检查:策略/模板/实例的 source_group/destination_group 引用本组则拒绝删除
+		var count int64
+		db.Model(&model.Policy{}).Where("source_group = ? OR destination_group = ?", g.Name, g.Name).Count(&count)
+		if count == 0 {
+			db.Model(&model.PolicyTemplate{}).Where("source_group = ? OR destination_group = ?", g.Name, g.Name).Count(&count)
+		}
+		if count == 0 {
+			db.Model(&model.NodePolicyInstance{}).Where("source_group = ? OR destination_group = ?", g.Name, g.Name).Count(&count)
+		}
+		if count > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("地址组被 %d 条策略/模板/实例引用,请先移除引用后再删除", count)})
 			return
 		}
 		if err := db.Delete(g).Error; err != nil {
@@ -153,7 +167,7 @@ func addressGroupToMap(g model.AddressGroup) map[string]any {
 	}
 }
 
-// validateAddressGroupInput 校验名称、类型与每个 CIDR 格式。
+// validateAddressGroupInput 校验名称、类型与每个 IP/CIDR。兼容无前缀 IP(视为 /32)。
 func validateAddressGroupInput(in addressGroupInput) error {
 	if strings.TrimSpace(in.Name) == "" {
 		return errors.New("address group: name is required")
@@ -164,9 +178,42 @@ func validateAddressGroupInput(in addressGroupInput) error {
 		return errors.New("address group: kind must be whitelist/blacklist/custom")
 	}
 	for _, m := range in.Members {
-		if _, _, err := net.ParseCIDR(strings.TrimSpace(m)); err != nil {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		if !strings.Contains(m, "/") {
+			if net.ParseIP(m) == nil {
+				return errors.New("address group: invalid IP/CIDR: " + m)
+			}
+			continue // 无前缀 IP 合法,存储时补 /32
+		}
+		if _, _, err := net.ParseCIDR(m); err != nil {
 			return errors.New("address group: invalid CIDR: " + m)
 		}
 	}
 	return nil
+}
+
+// normalizeMembers 规范化成员:无前缀 IP 补 /32(IPv4)/128(IPv6),去空白与空项。
+// ipset hash:net 要求 CIDR,裸 IP 需补前缀,否则 syncSets 下发 ipset add 失败。
+func normalizeMembers(ms []string) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		if !strings.Contains(m, "/") {
+			if ip := net.ParseIP(m); ip != nil {
+				if ip.To4() != nil {
+					m += "/32"
+				} else {
+					m += "/128"
+				}
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }

@@ -182,7 +182,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				return
 			}
 			// MARK 白名单拦截:group_id 可空(规则落内置链);其他场景 group_id 必填
-			isMarkACL := body.Action == "MARK" && body.SourceGroup != "" && body.PortRange != ""
+			isMarkACL := body.Action == "MARK" && (body.Source != "" || body.SourceGroup != "") && body.PortRange != ""
 			if body.GroupID == 0 && !isMarkACL {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 				return
@@ -225,13 +225,23 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			return
 		}
 		body.ID = id
-		body.Applied = false // 参数变更,需重新下发
+		// applied 语义 = "节点上是否有该实例的规则":
+		//   禁用已下发实例 -> 节点规则仍在(待下次 dispatch 移除),保留 applied=true,
+		//     供 Submit 识别"待禁用"实例(enabled=false AND applied=true)生成 -D 移除预览;
+		//   其他变更(参数改动/启用/禁用未下发实例) -> 节点规则将与参数不符,置 applied=false 待下发。
+		var orig model.NodePolicyInstance
+		db.First(&orig, id)
+		if !body.Enabled && orig.Enabled && orig.Applied {
+			body.Applied = true
+		} else {
+			body.Applied = false
+		}
 		if err := policy.ValidateFields(fieldsFromInstance(&body)); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		// MARK 白名单拦截:group_id 可空;其他场景 group_id 必填
-		isMarkACL := body.Action == "MARK" && body.SourceGroup != "" && body.PortRange != ""
+		isMarkACL := body.Action == "MARK" && (body.Source != "" || body.SourceGroup != "") && body.PortRange != ""
 		if body.GroupID == 0 && !isMarkACL {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 			return
@@ -336,8 +346,9 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// 下发后标记该节点 enabled 实例为已下发
-		db.Model(&model.NodePolicyInstance{}).Where("node_id = ? AND enabled = ?", nodeID, true).Update("applied", true)
+		// 下发后 applied 反映节点实际状态 = enabled:启用实例已下发(applied=true),
+		// 禁用实例规则已移除(applied=false)。乐观标记--apply 失败时由保护期回滚兜底。
+		db.Model(&model.NodePolicyInstance{}).Where("node_id = ?", nodeID).Update("applied", gorm.Expr("enabled"))
 		c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 	})
 }

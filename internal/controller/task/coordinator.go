@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,7 +138,9 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 			policyName = p.Name
 		}
 	} else {
-		policyName = "节点策略"
+		policyName = "节点策略下发"
+		// 节点级 dispatch:policy_name/diff_after/change_type 按每个 task 单独算
+		// (区分待下发与待禁用实例),见 fillNodeDispatchPreview。
 	}
 
 	tasks := make([]*model.Task, 0, len(nodeIDs))
@@ -160,6 +163,14 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// 节点级 dispatch:按每个 task 填充 policy_name/diff_after/change_type,
+	// 区分待下发(enabled=true,applied=false)与待禁用(enabled=false,applied=true)实例。
+	if policyID == 0 {
+		for _, t := range tasks {
+			co.fillNodeDispatchPreview(ctx, t)
+		}
 	}
 
 	detail := map[string]any{
@@ -589,4 +600,135 @@ func errNotFoundOr(err error) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+// fillNodeDispatchPreview 填充节点级 dispatch 任务的 policy_name/diff_after/change_type:
+//   - 待下发实例(enabled=true,applied=false)-> 生成 -A 追加命令
+//   - 待禁用实例(enabled=false,applied=true)-> 生成 -D 移除命令,policy_name 标注"[禁用]"
+//
+// 让保护期面板能区分本次是下发新规则还是禁用旧规则,并显著标注禁用任务。
+func (co *Coordinator) fillNodeDispatchPreview(ctx context.Context, t *model.Task) {
+	var pending, disabling []model.NodePolicyInstance
+	co.DB.WithContext(ctx).Where("node_id = ? AND enabled = ? AND applied = ?", t.NodeID, true, false).
+		Order("priority ASC, id ASC").Find(&pending)
+	co.DB.WithContext(ctx).Where("node_id = ? AND enabled = ? AND applied = ?", t.NodeID, false, true).
+		Order("priority ASC, id ASC").Find(&disabling)
+
+	// policy_name:待下发实例名 + 待禁用实例名(前缀"[禁用]")
+	var names []string
+	for _, inst := range pending {
+		names = append(names, inst.Name)
+	}
+	for _, inst := range disabling {
+		names = append(names, "[禁用]"+inst.Name)
+	}
+	if len(names) > 0 {
+		t.PolicyName = strings.Join(names, ", ")
+	}
+
+	// change_type:仅禁用->disable,仅下发->dispatch,两者皆有->mixed
+	switch {
+	case len(disabling) > 0 && len(pending) > 0:
+		t.ChangeType = "mixed"
+	case len(disabling) > 0:
+		t.ChangeType = "disable"
+	default:
+		t.ChangeType = "dispatch"
+	}
+
+	// diff_after:待下发 -A + 待禁用 -D
+	var lines []string
+	if len(pending) > 0 {
+		rules, c2t, err := co.Comp.CompileInstances(ctx, pending)
+		if err == nil {
+			lines = append(lines, formatRuleLines(rules, c2t, "A")...)
+		}
+	}
+	if len(disabling) > 0 {
+		rules, c2t, err := co.Comp.CompileInstances(ctx, disabling)
+		if err == nil {
+			lines = append(lines, formatRuleLines(rules, c2t, "D")...)
+		}
+	}
+	if len(lines) > 0 {
+		t.DiffAfter = strings.Join(lines, "\n")
+	}
+	co.DB.Model(&model.Task{}).Where("id = ?", t.ID).Updates(map[string]any{
+		"policy_name": t.PolicyName,
+		"change_type": t.ChangeType,
+		"diff_after":  t.DiffAfter,
+	})
+}
+
+// formatRuleLines 将 CompiledRule 列表拼为 iptables 命令行,mode="A" 追加/"D" 移除,
+// 供 diff_after 预览。chainToTable 提供 chain->table 映射(组链 + MARK 白名单内置链)。
+func formatRuleLines(rules []*myfwv1.CompiledRule, chainToTable map[string]string, mode string) []string {
+	lines := make([]string, 0, len(rules))
+	for _, r := range rules {
+		table := chainToTable[r.Chain]
+		if table == "" {
+			table = "filter"
+		}
+		line := fmt.Sprintf("iptables -t %s -%s MYFW-%s", table, mode, r.Chain)
+		if r.Source != "" {
+			line += " -s " + r.Source
+		}
+		if r.Destination != "" {
+			line += " -d " + r.Destination
+		}
+		if p := protoShort(r.Protocol); p != "" {
+			line += " -p " + p
+			if r.PortRange != "" {
+				line += " --dport " + r.PortRange
+			}
+		}
+		if r.SourceGroup != "" {
+			line += " -m set --match-set MYFW-" + r.SourceGroup + " src"
+		}
+		if r.MatchMark != 0 {
+			line += fmt.Sprintf(" -m mark --mark %d", r.MatchMark)
+		}
+		line += " -j " + actionShort(r.Action)
+		if r.Action == myfwv1.Action_ACTION_MARK {
+			line += fmt.Sprintf(" --set-mark %d", r.Mark)
+		}
+		if r.Action == myfwv1.Action_ACTION_DNAT && r.NatTo != "" {
+			line += " --to-destination " + r.NatTo
+		}
+		if r.Action == myfwv1.Action_ACTION_SNAT && r.NatTo != "" {
+			line += " --to-source " + r.NatTo
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// protoShort / actionShort 将 proto/enum 转为 iptables 命令用的短名,供 diff_after 预览。
+func protoShort(p myfwv1.Protocol) string {
+	switch p {
+	case myfwv1.Protocol_PROTOCOL_TCP:
+		return "tcp"
+	case myfwv1.Protocol_PROTOCOL_UDP:
+		return "udp"
+	case myfwv1.Protocol_PROTOCOL_ICMP:
+		return "icmp"
+	}
+	return ""
+}
+func actionShort(a myfwv1.Action) string {
+	switch a {
+	case myfwv1.Action_ACTION_ACCEPT:
+		return "ACCEPT"
+	case myfwv1.Action_ACTION_DROP:
+		return "DROP"
+	case myfwv1.Action_ACTION_REJECT:
+		return "REJECT"
+	case myfwv1.Action_ACTION_MARK:
+		return "MARK"
+	case myfwv1.Action_ACTION_DNAT:
+		return "DNAT"
+	case myfwv1.Action_ACTION_SNAT:
+		return "SNAT"
+	}
+	return "ACCEPT"
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -122,6 +123,19 @@ func deleteCustomChain(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ch, ok := loadCustomChain(c, db)
 		if !ok {
+			return
+		}
+		// 引用检查:策略/模板/实例的 group_id 或 mark_acl_group_id 引用本组则拒绝删除
+		var count int64
+		db.Model(&model.Policy{}).Where("group_id = ? OR mark_acl_group_id = ?", ch.ID, ch.ID).Count(&count)
+		if count == 0 {
+			db.Model(&model.PolicyTemplate{}).Where("group_id = ? OR mark_acl_group_id = ?", ch.ID, ch.ID).Count(&count)
+		}
+		if count == 0 {
+			db.Model(&model.NodePolicyInstance{}).Where("group_id = ? OR mark_acl_group_id = ?", ch.ID, ch.ID).Count(&count)
+		}
+		if count > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("自定义链被 %d 条策略/模板/实例引用,请先移除引用后再删除", count)})
 			return
 		}
 		if err := db.Delete(ch).Error; err != nil {
