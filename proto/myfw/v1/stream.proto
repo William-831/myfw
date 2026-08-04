@@ -117,6 +117,7 @@ message ControllerToAgent {
     SyncRulesRequest sync_rules = 6;
     RuleOperation rule_operation = 7;
     ExecCommand exec_command = 8;   // 专家模式:裸 iptables 命令
+    RenewCertCommand renew_cert = 9; // 触发 Agent 证书续签
   }
 }
 
@@ -159,6 +160,11 @@ message RuleOperation {
 message ExecCommand {
   string task_id = 1;
   string command = 2;   // 完整裸命令(iptables 族)
+}
+
+// RenewCertCommand 触发 Agent 立即续签客户端证书。续签由 Agent 用旧证书
+// 发起 CSR（Controller 无法替 Agent 续签），成功后 Agent 重建连接加载新证书。
+message RenewCertCommand {
 }
 
 // ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace

@@ -8,10 +8,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/model"
 )
 
-func registerNodeRoutes(r gin.IRouter, db *gorm.DB) {
+func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 	g := r.Group("/api/v1/nodes")
 
 	g.GET("/list", func(c *gin.Context) {
@@ -137,5 +138,15 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB) {
 			return
 		}
 		c.Status(http.StatusNoContent)
+	})
+
+	// 续签证书：下发 RenewCert 指令到 Agent，Agent 异步续签后重建连接
+	g.POST("/:id/renew-cert", func(c *gin.Context) {
+		id := c.Param("id")
+		if err := streamSvc.SendRenewCert(c.Request.Context(), id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "续签指令已下发"})
 	})
 }

@@ -48,6 +48,9 @@ type Handler struct {
 	// ExecExecutor 专家模式执行任意 iptables 族命令（白名单校验后调用），由 cmd/agent 注入。
 	ExecExecutor func(ctx context.Context, name string, args []string) (string, error)
 
+	// RenewCertFn 证书续签回调，由 cmd/agent 注入（调用 requestCertRenewal）。
+	RenewCertFn func(ctx context.Context) error
+
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
 	last map[string]string
@@ -63,6 +66,14 @@ func New(drv Driver, log *slog.Logger) *Handler {
 // SetHashNotifier registers a notifier to receive successful Apply hashes.
 func (h *Handler) SetHashNotifier(n HashNotifier) {
 	h.HashNotifier = n
+}
+
+// OnRenewCert 触发证书续签。
+func (h *Handler) OnRenewCert(ctx context.Context) error {
+	if h.RenewCertFn == nil {
+		return errors.New("renew cert not supported")
+	}
+	return h.RenewCertFn(ctx)
 }
 
 // OnApply snapshots the current namespace, then applies the new RuleSet.

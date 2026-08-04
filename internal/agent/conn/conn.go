@@ -143,6 +143,8 @@ type Handler interface {
 	OnRuleOperation(ctx context.Context, op *myfwv1.RuleOperation) *myfwv1.TaskResult
 	// OnExec 执行专家模式裸 iptables 命令（白名单校验后）。
 	OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1.TaskResult
+	// OnRenewCert 触发证书续签，成功返回 nil（Agent 将重建连接加载新证书）。
+	OnRenewCert(ctx context.Context) error
 }
 
 // Reporter is used by Watchdog to send drift reports and sync requests through the stream.
@@ -225,6 +227,10 @@ func (h NopHandler) OnRuleOperation(ctx context.Context, op *myfwv1.RuleOperatio
 func (h NopHandler) OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1.TaskResult {
 	return &myfwv1.TaskResult{TaskId: cmd.TaskId, Ok: false, Message: "no handler wired", TsUnix: time.Now().Unix()}
 }
+func (h NopHandler) OnRenewCert(ctx context.Context) error { return nil }
+
+// errRenewRequired 表示证书续签成功，需重建连接加载新证书。
+var errRenewRequired = errors.New("certificate renewed, reconnect required")
 
 // Loop opens an AgentStream and pushes a Heartbeat every Interval until ctx
 // is cancelled. Any RPC error causes a reconnect with exponential backoff.
@@ -233,7 +239,7 @@ func (h NopHandler) OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1
 // The sendCh parameter is a shared channel for sending messages from other
 // goroutines (like Watchdog) through the stream. It must be created before
 // calling Loop and persist across reconnections.
-func Loop(ctx context.Context, conn *grpc.ClientConn, log *slog.Logger, nodeID string, cap *myfwv1.Capability, h Handler, opts HeartbeatOptions, sendCh chan *myfwv1.AgentToController) error {
+func Loop(ctx context.Context, conn *grpc.ClientConn, log *slog.Logger, nodeID string, cap *myfwv1.Capability, h Handler, opts HeartbeatOptions, sendCh chan *myfwv1.AgentToController, renewCh <-chan struct{}) error {
 	if h == nil {
 		h = NopHandler{Log: log}
 	}
@@ -245,8 +251,13 @@ func Loop(ctx context.Context, conn *grpc.ClientConn, log *slog.Logger, nodeID s
 		if ctx.Err() != nil {
 			return nil
 		}
-		err := runStream(ctx, client, log, nodeID, cap, h, opts, sendCh)
+		err := runStream(ctx, client, log, nodeID, cap, h, opts, sendCh, renewCh)
 		if ctx.Err() != nil {
+			return nil
+		}
+		// 续签成功：退出让外层重建连接加载新证书，不 backoff
+		if errors.Is(err, errRenewRequired) {
+			log.Info("reconnecting after certificate renewal")
 			return nil
 		}
 		// Unimplemented is expected until M5 wires the server side — log at
@@ -270,7 +281,7 @@ func Loop(ctx context.Context, conn *grpc.ClientConn, log *slog.Logger, nodeID s
 
 // runStream 打开一个 AgentStream，推送心跳直到出错或 ctx 取消。
 // 下游消息分发到 h。sendCh 用于从其他 goroutine（如 Watchdog）发送消息。
-func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.Logger, nodeID string, cap *myfwv1.Capability, h Handler, opts HeartbeatOptions, sendCh chan *myfwv1.AgentToController) error {
+func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.Logger, nodeID string, cap *myfwv1.Capability, h Handler, opts HeartbeatOptions, sendCh chan *myfwv1.AgentToController, renewCh <-chan struct{}) error {
 	// 生成会话令牌用于防重放
 	sessionSecret := make([]byte, 32)
 	if _, err := readRandom(sessionSecret); err != nil {
@@ -296,6 +307,7 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 
 	// 序列化发送到单个 goroutine（gRPC ClientStream 非并发安全）
 	rxErr := make(chan error, 1)
+	renewSig := make(chan struct{}, 1) // 续签成功信号：RX 续签后发，主 select 收后退出重建
 
 	// RX goroutine: 分发 Controller-to-Agent 消息
 	go func() {
@@ -351,6 +363,13 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 						return
 					}
 				}
+			case *myfwv1.ControllerToAgent_RenewCert:
+				log.Info("renew cert requested", "node_id", nodeID)
+				if err := h.OnRenewCert(ctx); err != nil {
+					log.Error("renew cert failed", "err", err)
+				} else {
+					select { case renewSig <- struct{}{}: default: }
+				}
 			case *myfwv1.ControllerToAgent_Ack:
 				// heartbeat ack — nothing to do beyond keepalive.
 			default:
@@ -386,6 +405,12 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 		case <-ctx.Done():
 			_ = stream.CloseSend()
 			return nil
+		case <-renewCh:
+			_ = stream.CloseSend()
+			return errRenewRequired
+		case <-renewSig:
+			_ = stream.CloseSend()
+			return errRenewRequired
 		case err := <-rxErr:
 			if errors.Is(err, context.Canceled) {
 				return nil

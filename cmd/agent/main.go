@@ -129,9 +129,12 @@ func run() error {
 		}
 	}
 
+	// renewCh: 续签成功后通知连接循环重建（加载新证书）
+	renewCh := make(chan struct{}, 1)
+	var rotator *security.CertRotation
 	// 4. 证书自动轮换：检查是否需要轮换
 	if !cfg.Controller.TLS.Disable {
-		rotator := security.NewCertRotation(security.RotationConfig{
+		rotator = security.NewCertRotation(security.RotationConfig{
 			CertTTL:     24 * time.Hour,
 			RenewBefore: 5 * time.Hour,
 			KeyDir:      cfg.Node.DataDir,
@@ -145,22 +148,19 @@ func run() error {
 		}
 		// 启动后台轮换循环
 		rotator.StartRotationLoop(ctx, func(ctx context.Context) error {
-			return requestCertRenewal(ctx, cfg, nodeID, rotator, cap)
+			err := requestCertRenewal(ctx, cfg, nodeID, rotator, cap)
+			if err == nil {
+				log.Info("certificate renewed, reconnecting with new cert")
+				select {
+				case renewCh <- struct{}{}:
+				default:
+				}
+			}
+			return err
 		})
 	}
 
-	// 5. mTLS 长连接流（心跳 + 任务接收）
-	streamConn, err := conn.Dial(ctx, cfg.Controller.Endpoint, conn.TLSMaterial{
-		Disable:    cfg.Controller.TLS.Disable,
-		CAFile:     cfg.Controller.TLS.CAFile,
-		CertFile:   cfg.Controller.TLS.CertFile,
-		KeyFile:    cfg.Controller.TLS.KeyFile,
-		ServerName: cfg.Controller.ServerName,
-	})
-	if err != nil {
-		return err
-	}
-	defer streamConn.Close()
+	// 5. mTLS 长连接流在连接循环中建立（续签后重建，见末尾连接循环）
 
 	// 5. 根据探测结果构建防火墙驱动，并验证后端是否可正常执行命令
 	drv := selectDriver(cap, log)
@@ -204,6 +204,13 @@ func run() error {
 		return string(out), err
 	}
 
+	// 注入证书续签回调：Controller 下发 RenewCert 指令时触发
+	if rotator != nil {
+		h.RenewCertFn = func(ctx context.Context) error {
+			return requestCertRenewal(ctx, cfg, nodeID, rotator, cap)
+		}
+	}
+
 	// 8. 共享发送通道（漂移报告等跨重连消息）
 	sendCh := make(chan *myfwv1.AgentToController, 8)
 
@@ -222,9 +229,32 @@ func run() error {
 		defer wd.Stop()
 	}
 
-	// 10. 连接循环（阻塞）
-	if err := conn.Loop(ctx, streamConn, log, nodeID, cap, h, conn.HeartbeatOptions{}, sendCh); err != nil {
-		return err
+	// 10. 连接循环：续签后重建 ClientConn 加载新证书
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		streamConn, err := conn.Dial(ctx, cfg.Controller.Endpoint, conn.TLSMaterial{
+			Disable:    cfg.Controller.TLS.Disable,
+			CAFile:     cfg.Controller.TLS.CAFile,
+			CertFile:   cfg.Controller.TLS.CertFile,
+			KeyFile:    cfg.Controller.TLS.KeyFile,
+			ServerName: cfg.Controller.ServerName,
+		})
+		if err != nil {
+			log.Warn("dial failed, backing off", "err", err)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		err = conn.Loop(ctx, streamConn, log, nodeID, cap, h, conn.HeartbeatOptions{}, sendCh, renewCh)
+		streamConn.Close()
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 
 	<-ctx.Done()

@@ -136,6 +136,11 @@ pending_approval -> dispatching -> applying -> confirm_wait -> confirmed(生效)
 
 > TLS 层 `ClientAuth=VerifyClientCertIfGiven`：首次注册无证书可连，续签带旧证书完成握手，`Register` handler 内部从 peer 提取证书做身份校验。
 
+**手动续签**：管理员可主动触发某节点证书续签，用于续签失败兜底或强制轮换。
+- 入口：Web UI 节点操作「续签证书」+ `scripts/renew-cert.sh`（curl API，支持 `NODE_IDS` 批量）
+- 链路：Controller `POST /api/v1/nodes/:id/renew-cert` -> stream 下发 `RenewCert` 指令 -> Agent 调 `requestCertRenewal` -> 续签成功后重建 `ClientConn`（加载新证书）重连
+- 重连：`grpc.ClientConn` 的 TLS 证书启动时加载到内存，续签后须重建。Agent `conn.Loop` 收到 `renewCh` 信号主动退出，`main` 外层 `for` 重新 `Dial` 新证书，无缝重建
+
 ## 14. 节点证书过期展示
 
 节点详情与列表显示当前有效证书（`revoked=false` 中 `not_after` 最大者）的过期时间。

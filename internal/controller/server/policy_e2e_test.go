@@ -95,7 +95,7 @@ func bootAgent(t *testing.T, caDir, grpcAddr, webURL string) (nodeID string, fak
 		_ = conn.Loop(ctx, streamConn, ctrlserver.TestLogger(), nodeID,
 			agentcap.Detect(ctx), h,
 			conn.HeartbeatOptions{Interval: 200 * time.Millisecond, InitialBackoff: 100 * time.Millisecond},
-			sendCh)
+			sendCh, nil)
 		_ = streamConn.Close()
 	}()
 

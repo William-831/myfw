@@ -94,6 +94,7 @@
                   </el-dropdown-item>
                   <el-dropdown-item command="view">详情</el-dropdown-item>
                   <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                  <el-dropdown-item command="renew" divided>续签证书</el-dropdown-item>
                   <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -408,7 +409,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, getNodeIptablesRules, operateNodeRule, getNodeDrift, getTasks } from '@/api'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, operateNodeRule, getNodeDrift, getTasks } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const loading = ref(false)
@@ -596,6 +597,7 @@ const handleCommand = (cmd, row) => {
     case 'view': handleView(row); break
     case 'edit': handleEdit(row); break
     case 'rules': handleViewRules(row); break
+    case 'renew': handleRenew(row); break
     case 'delete': handleDelete(row); break
   }
 }
@@ -882,6 +884,22 @@ const handleCheckDrift = async () => {
     ElMessage.error('合规检查失败')
   } finally {
     driftLoading.value = false
+  }
+}
+
+// 续签证书
+const handleRenew = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定续签节点 ${row.hostname || row.id} 的证书？续签后节点将短暂重连。`,
+      '续签证书',
+      { type: 'warning', confirmButtonText: '续签', cancelButtonText: '取消' }
+    )
+    await renewNodeCert(row.id)
+    ElMessage.success('续签指令已下发，节点将重连加载新证书')
+    setTimeout(loadNodes, 3000)
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.error || '续签失败')
   }
 }
 

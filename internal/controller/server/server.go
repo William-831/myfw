@@ -340,7 +340,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	authH.Register(r)
 
 	assets.Register(r)
-	registerNodeRoutes(r, db)
+	registerNodeRoutes(r, db, streamSvc)
 	registerTaskRoutes(r, streamSvc)
 	registerTaskLifecycleRoutes(r, co)
 	registerPolicyRoutes(r, policySvc, co, comp, auditSink)

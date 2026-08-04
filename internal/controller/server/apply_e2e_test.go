@@ -155,7 +155,7 @@ func TestApplyEndToEnd(t *testing.T) {
 		_ = conn.Loop(ctx, streamConn, ctrlserver.TestLogger(), nodeID,
 			agentcap.Detect(ctx), h,
 			conn.HeartbeatOptions{Interval: 200 * time.Millisecond, InitialBackoff: 100 * time.Millisecond},
-			sendCh)
+			sendCh, nil)
 		close(loopDone)
 	}()
 

@@ -447,6 +447,21 @@ func (s *Service) SendExecAndWait(ctx context.Context, nodeID, command string, t
 	}
 }
 
+// SendRenewCert 下发证书续签指令到 Agent。续签由 Agent 异步执行，成功后 Agent
+// 重建连接加载新证书；本方法仅负责下发指令，不等待续签结果。
+func (s *Service) SendRenewCert(ctx context.Context, nodeID string) error {
+	if archived, err := s.isArchived(ctx, nodeID); err != nil {
+		return err
+	} else if archived {
+		return errors.New("node archived")
+	}
+	return s.Reg.Send(nodeID, &myfwv1.ControllerToAgent{
+		Payload: &myfwv1.ControllerToAgent_RenewCert{
+			RenewCert: &myfwv1.RenewCertCommand{},
+		},
+	})
+}
+
 // isMYFWRules 判断规则是否属于 MYFW 命名空间（与 server 包判定保持一致）。
 func isMYFWRules(rule string) bool {
 	return strings.HasPrefix(rule, "-A MYFW-") || strings.Contains(rule, "-j MYFW-")
