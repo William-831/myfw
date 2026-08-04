@@ -5,7 +5,7 @@
 > 配套文档：[design.md](./design.md)
 >
 > **部署形态约定**：
-> - Controller：Docker Compose；镜像内 `go build` 编译，或 host 编译二进制后挂载（绕过 docker build 拉基础镜像）
+> - Controller：Docker Compose；host 编译二进制后挂载（绕过 docker build 拉基础镜像）
 > - 数据库：当前部署用 SQLite；生产可切换 MySQL/OceanBase（外部资源，环境变量注入，规划中）
 > - Agent：裸机 systemd，不提供容器镜像
 
