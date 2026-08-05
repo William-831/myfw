@@ -195,8 +195,8 @@ const handleCommand = (command) => {
 
 .aside {
   background: var(--c-sidebar);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border-right: 1px solid var(--c-border);
   overflow: hidden;
 }
@@ -272,8 +272,8 @@ const handleCommand = (command) => {
   align-items: center;
   padding: 0 24px;
   background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--c-border);
 }
 

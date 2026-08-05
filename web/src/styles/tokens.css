@@ -104,7 +104,6 @@ body {
   background-image:
     radial-gradient(ellipse 60% 40% at 20% 0%, rgba(0, 113, 227, 0.05), transparent 70%),
     radial-gradient(ellipse 50% 40% at 80% 100%, rgba(94, 92, 230, 0.04), transparent 70%);
-  background-attachment: fixed;
   color: var(--c-text-2);
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
@@ -112,19 +111,18 @@ body {
   letter-spacing: -0.01em;
 }
 
-/* 毛玻璃卡片 */
+/* 毛玻璃卡片(降低 blur 半径优化重绘性能) */
 .el-card {
   background: var(--c-surface);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-card);
-  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+  transition: box-shadow var(--transition), border-color var(--transition);
 }
 
 .el-card:hover {
-  transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
   border-color: var(--c-border-hover);
 }

@@ -401,8 +401,8 @@ onMounted(() => { loadNodes(); loadDashboard(); loadConfidence(); loadLogs() })
 .audit-dashboard .num-card,
 .audit-dashboard .chart-row,
 .audit-dashboard .tl-section {
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .ring-card, .progress-card, .num-card {
   background: var(--c-surface); border: 1px solid var(--c-border);
