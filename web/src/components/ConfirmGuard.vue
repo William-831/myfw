@@ -197,7 +197,7 @@ onUnmounted(() => {
 .empty { text-align: center; color: #909399; padding: 40px 0; font-size: 13px; }
 
 .guard-card {
-  border: 1px solid #e2e8f0; border-radius: 14px; padding: 14px; margin-bottom: 12px;
+  border: 1px solid var(--c-text-1); border-radius: 14px; padding: 14px; margin-bottom: 12px;
   background: #fff; cursor: pointer; transition: box-shadow .2s, transform .15s;
   box-shadow: 0 1px 3px rgba(0,0,0,.04);
 }
@@ -207,9 +207,9 @@ onUnmounted(() => {
 .guard-card.card-mixed { border-color: #e6a23c; background: #fdf6ec; }
 .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .card-node { font-weight: 600; font-size: 14px; color: #1e293b; font-family: 'Courier New', monospace; }
-.card-meta { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+.card-meta { font-size: 12px; color: var(--c-text-3); margin-bottom: 8px; }
 .card-diff { margin-bottom: 10px; }
-.diff-text { margin: 0; padding: 8px; background: #0f172a; color: #e2e8f0; border-radius: 6px; font-size: 11px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; max-height: 100px; overflow: auto; }
+.diff-text { margin: 0; padding: 8px; background: var(--c-surface); color: var(--c-text-1); border-radius: 6px; font-size: 11px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; max-height: 100px; overflow: auto; }
 .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
 .countdown { font-size: 12px; color: #e6a23c; }
 .countdown.urgent { color: #f56c6c; font-weight: 600; }
@@ -217,8 +217,8 @@ onUnmounted(() => {
 
 .detail-diff { margin-top: 16px; }
 .detail-diff h4 { margin: 0 0 8px; color: #1e293b; font-size: 14px; }
-.diff-code { margin: 0; padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: 8px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
-.no-diff { color: #94a3b8; font-size: 13px; }
+.diff-code { margin: 0; padding: 12px; background: var(--c-surface); color: var(--c-text-1); border-radius: 8px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
+.no-diff { color: var(--c-text-3); font-size: 13px; }
 .ml-2 { margin-left: 8px; }
 :deep(.el-progress--line) { margin-bottom: 0; }
 :deep(.blink .el-progress-bar__outer) { animation: prog-blink 1s ease-in-out infinite; }

@@ -412,7 +412,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #0f172a;
+  background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
@@ -426,12 +426,12 @@ onMounted(() => {
   background: transparent;
   border: none;
   outline: none;
-  color: #e2e8f0;
+  color: var(--c-text-1);
   font-family: var(--font-mono);
   font-size: 13px;
 }
 .cmd-input::placeholder {
-  color: #475569;
+  color: var(--c-text-2);
 }
 .cmd-input:disabled {
   cursor: not-allowed;
@@ -467,7 +467,7 @@ onMounted(() => {
 
 /* 执行反馈终端 */
 .terminal {
-  background: #0f172a;
+  background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: var(--radius-sm);
   padding: 12px 16px;
@@ -476,7 +476,7 @@ onMounted(() => {
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 13px;
-  color: #cbd5e1;
+  color: var(--c-text-2);
 }
 .empty-hint {
   color: #64748b;
@@ -487,7 +487,7 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 .cmd-line {
-  color: #94a3b8;
+  color: var(--c-text-3);
   display: flex;
   align-items: center;
 }
@@ -497,13 +497,13 @@ onMounted(() => {
   margin-right: 8px;
 }
 .cmd {
-  color: #e2e8f0;
+  color: var(--c-text-1);
 }
 .output {
   margin: 4px 0 0 16px;
   white-space: pre-wrap;
   word-break: break-all;
-  color: #cbd5e1;
+  color: var(--c-text-2);
   font-family: inherit;
 }
 .entry.ok .output {

@@ -44,10 +44,10 @@ const items = computed(() => {
     name, value, color, pct: Math.round((value / base) * 100)
   })
   return [
-    mk('在线', props.active, '#10b981'),
-    mk('离线', offline.value, '#cbd5e1'),
-    mk('待审核', props.pending, '#f59e0b'),
-    mk('异常', props.abnormal, '#f43f5e')
+    mk('在线', props.active, '#34d399'),
+    mk('离线', offline.value, '#64748b'),
+    mk('待审核', props.pending, '#fbbf24'),
+    mk('异常', props.abnormal, '#fb7185')
   ]
 })
 
@@ -56,8 +56,8 @@ const render = () => {
   setOption({
     tooltip: { trigger: 'item', formatter: '{b}: {c} 个 ({d}%)' },
     graphic: [
-      { type: 'text', left: 'center', top: '40%', style: { text: `${props.total}`, fontSize: 30, fontWeight: 600, fill: '#0f172a', textAlign: 'center' } },
-      { type: 'text', left: 'center', top: '58%', style: { text: '节点总数', fontSize: 12, fill: '#94a3b8', textAlign: 'center' } }
+      { type: 'text', left: 'center', top: '40%', style: { text: `${props.total}`, fontSize: 30, fontWeight: 600, fill: '#f1f5f9', textAlign: 'center' } },
+      { type: 'text', left: 'center', top: '58%', style: { text: '节点总数', fontSize: 12, fill: '#cbd5e1', textAlign: 'center' } }
     ],
     series: [{
       type: 'pie',

@@ -1,39 +1,39 @@
 :root {
-  /* 中性色阶(slate 系,全站底色) */
-  --c-bg: #fafbfc;
-  --c-surface: #ffffff;
-  --c-surface-2: #f8fafc;           /* 次级面 / hover 底 */
-  --c-border: #eef0f3;              /* 卡片边框,近隐形 */
-  --c-border-soft: #f1f3f5;         /* 内部分隔线,极浅 */
-  --c-text-1: #0f172a;              /* 主文字 */
-  --c-text-2: #475569;              /* 次文字 */
-  --c-text-3: #94a3b8;              /* 弱文字 / 标签 */
+  /* 深色主色调(slate 系) */
+  --c-bg: #0f172a;
+  --c-surface: #1e293b;
+  --c-surface-2: #334155;
+  --c-border: rgba(255, 255, 255, 0.06);
+  --c-border-soft: rgba(255, 255, 255, 0.04);
+  --c-text-1: #f1f5f9;
+  --c-text-2: #cbd5e1;
+  --c-text-3: #64748b;
 
-  /* 品牌与操作色 */
-  --c-primary: #4f46e5;             /* indigo,现代商务 */
-  --c-primary-soft: rgba(79, 70, 229, 0.08);
+  /* 品牌与操作色(亮色适应深色背景) */
+  --c-primary: #818cf8;
+  --c-primary-soft: rgba(129, 140, 248, 0.12);
   --c-sidebar: #0f172a;
 
-  /* 状态色(降饱和商务化) */
-  --c-success: #10b981;             /* emerald */
-  --c-warning: #f59e0b;             /* amber */
-  --c-danger: #f43f5e;              /* rose */
+  /* 状态色 */
+  --c-success: #34d399;
+  --c-warning: #fbbf24;
+  --c-danger: #fb7185;
   --c-info: #64748b;
-  --c-muted: #cbd5e1;               /* 离线 / 弱状态 */
+  --c-muted: #475569;
 
   /* 尺寸 / 阴影 / 字体 token */
-  --radius: 10px;
-  --radius-sm: 6px;
+  --radius: 12px;
+  --radius-sm: 8px;
   --radius-xs: 4px;
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-hover: 0 8px 24px rgba(15, 23, 42, 0.06);
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.3);
+  --shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.4);
   --font-sans: 'Inter', 'PingFang SC', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
   --gap: 16px;
   --gap-sm: 12px;
   --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* Element Plus 主题跟随 */
+  /* Element Plus 深色变量覆盖 */
   --el-color-primary: var(--c-primary);
   --el-color-success: var(--c-success);
   --el-color-warning: var(--c-warning);
@@ -41,6 +41,47 @@
   --el-color-info: var(--c-info);
   --el-border-radius-base: var(--radius-sm);
   --el-font-family: var(--font-sans);
+  --el-bg-color: var(--c-bg);
+  --el-bg-color-overlay: var(--c-surface);
+  --el-fill-color: var(--c-surface);
+  --el-fill-color-light: var(--c-surface-2);
+  --el-fill-color-lighter: #475569;
+  --el-border-color: rgba(255, 255, 255, 0.08);
+  --el-border-color-light: rgba(255, 255, 255, 0.06);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.04);
+  --el-text-color-primary: var(--c-text-1);
+  --el-text-color-regular: var(--c-text-2);
+  --el-text-color-placeholder: var(--c-text-3);
+  --el-card-bg-color: var(--c-surface);
+  --el-dialog-bg-color: var(--c-surface);
+  --el-input-bg-color: var(--c-surface-2);
+  --el-input-border-color: var(--c-border);
+  --el-input-focus-border-color: var(--c-primary);
+  --el-input-text-color: var(--c-text-1);
+  --el-input-placeholder-color: var(--c-text-3);
+  --el-table-bg-color: var(--c-surface);
+  --el-table-tr-bg-color: var(--c-surface);
+  --el-table-header-bg-color: var(--c-surface-2);
+  --el-table-row-hover-bg-color: var(--c-surface-2);
+  --el-table-border-color: rgba(255, 255, 255, 0.06);
+  --el-table-text-color: var(--c-text-1);
+  --el-menu-bg-color: var(--c-sidebar);
+  --el-menu-text-color: var(--c-text-2);
+  --el-menu-active-color: var(--c-primary);
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.04);
+  --el-popover-bg-color: var(--c-surface);
+  --el-tooltip-bg-color: var(--c-surface-2);
+  --el-tag-bg-color: var(--c-surface-2);
+  --el-tag-text-color: var(--c-text-1);
+  --el-tag-border-color: var(--c-border);
+  --el-collapse-header-bg-color: var(--c-surface);
+  --el-collapse-content-bg-color: var(--c-surface);
+  --el-pagination-bg-color: var(--c-surface);
+  --el-pagination-button-color: var(--c-text-2);
+  --el-pagination-hover-color: var(--c-primary);
+  --el-switch-off-color: var(--c-muted);
+  --el-select-bg-color: var(--c-surface-2);
+  --el-select-border-color: var(--c-border);
 }
 
 * {
@@ -62,33 +103,39 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* 统一 Element Plus 卡片为商务质感 */
+/* 统一卡片深色质感 */
 .el-card {
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-card);
+  background: var(--c-surface);
 }
 
 .el-card__header {
   padding: 14px 18px;
-  border-bottom: 1px solid var(--c-border);
+  border-bottom: 1px solid var(--c-border-soft);
   font-weight: 600;
   color: var(--c-text-1);
 }
 
-/* 全站滚动条 */
+/* 输入框聚焦发光 */
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.15) !important;
+}
+
+/* 深色滚动条 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
+  background: #475569;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #64748b;
 }
 
 ::-webkit-scrollbar-track {

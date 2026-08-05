@@ -75,9 +75,9 @@ onMounted(load)
 
 <style scoped>
 .settings-page { display: flex; flex-direction: column; gap: 16px; }
-.hint { margin-left: 12px; color: #94a3b8; font-size: 12px; }
+.hint { margin-left: 12px; color: var(--c-text-3); font-size: 12px; }
 .cleanup-card .tip { margin-bottom: 12px; }
-.result { margin-top: 12px; padding: 12px; background: #f8fafc; border-radius: 6px; }
+.result { margin-top: 12px; padding: 12px; background: var(--c-surface-2); border-radius: 6px; }
 .result h4 { margin: 0 0 8px; color: #1e293b; }
-.result ul { margin: 0; padding-left: 20px; color: #475569; line-height: 1.8; }
+.result ul { margin: 0; padding-left: 20px; color: var(--c-text-2); line-height: 1.8; }
 </style>

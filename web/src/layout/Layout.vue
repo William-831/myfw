@@ -232,13 +232,13 @@ const handleCommand = (command) => {
   margin: 4px 10px;
   padding-left: 14px !important;
   border-radius: 8px;
-  color: #94a3b8;
+  color: var(--c-text-2);
   transition: background var(--transition), color var(--transition);
 }
 
 .sidebar-menu :deep(.el-menu-item:hover) {
   background: rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
+  color: var(--c-text-1);
 }
 
 .sidebar-menu :deep(.el-menu-item.is-active) {

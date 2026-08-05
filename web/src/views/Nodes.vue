@@ -877,13 +877,13 @@ onMounted(loadNodes)
 .health-label { font-size: 13px; font-weight: 600; color: #303133; }
 .health-detail { font-size: 12px; color: #909399; margin-top: 2px; }
 .chain-stats { margin-bottom: 14px; }
-.stats-title { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px; }
+.stats-title { font-size: 13px; font-weight: 600; color: var(--c-text-1); margin-bottom: 8px; }
 
 .rules-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .rule-count { font-size: 12px; color: #909399; margin-left: auto; }
 .tab-badge { margin-left: 6px; }
 .rule-chain-section { margin-bottom: 16px; }
-.chain-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #374151; cursor: pointer; user-select: none; }
+.chain-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--c-text-1); cursor: pointer; user-select: none; }
 .chain-header:hover .chain-name { color: #2563eb; }
 .chain-toggle { transition: transform 0.2s; }
 .chain-toggle.is-collapsed { transform: rotate(-90deg); }
@@ -894,7 +894,7 @@ onMounted(loadNodes)
 .cmd-popover { padding: 4px; }
 .cmd-label { font-size: 12px; color: #909399; margin-bottom: 8px; }
 .cmd-code { display: block; font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; background: #f5f7fa; padding: 10px; border-radius: 4px; word-break: break-all; }
-.drift-section-title { font-weight: 600; margin-bottom: 8px; color: #374151; }
+.drift-section-title { font-weight: 600; margin-bottom: 8px; color: var(--c-text-1); }
 .drift-item { padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
 .drift-item code { font-size: 12px; color: #1f2937; }
 </style>

@@ -33,24 +33,15 @@ import { login } from '@/api'
 
 const router = useRouter()
 const loading = ref(false)
-
 const loginFormRef = ref(null)
-
-const loginForm = reactive({
-  username: '',
-  password: ''
-})
-
+const loginForm = reactive({ username: '', password: '' })
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
 }
-
 const handleLogin = async () => {
-  if (!loginFormRef.value || !loginFormRef.value.validate()) {
-    return
-  }
-
+  if (!loginFormRef.value) return
+  try { await loginFormRef.value.validate() } catch { return }
   loading.value = true
   try {
     const res = await login(loginForm)
@@ -58,11 +49,7 @@ const handleLogin = async () => {
     localStorage.setItem('username', res.username)
     ElMessage.success('登录成功')
     router.push('/dashboard')
-  } catch (err) {
-    ElMessage.error('用户名或密码错误')
-  } finally {
-    loading.value = false
-  }
+  } catch { ElMessage.error('用户名或密码错误') } finally { loading.value = false }
 }
 </script>
 
@@ -72,53 +59,22 @@ const handleLogin = async () => {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #0f172a;
 }
-
 .login-box {
-  background: #fff;
-  border-radius: 12px;
-  padding: 40px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+  background: rgba(30, 41, 59, 0.85);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 48px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
   width: 400px;
 }
-
-.logo-section {
-  text-align: center;
-  margin-bottom: 32px;
-}
-
-.logo-icon {
-  font-size: 48px;
-}
-
-.logo-text {
-  font-size: 32px;
-  font-weight: bold;
-  color: #1f2937;
-  margin-left: 8px;
-}
-
-.logo-subtitle {
-  font-size: 14px;
-  color: #9ca3af;
-  margin-top: 8px;
-}
-
-.login-form {
-  margin-bottom: 16px;
-}
-
-.login-btn {
-  width: 100%;
-  height: 44px;
-  font-size: 16px;
-}
-
-.hint-text {
-  text-align: center;
-  font-size: 12px;
-  color: #9ca3af;
-  margin: 0;
-}
+.logo-section { text-align: center; margin-bottom: 32px; }
+.logo-icon { font-size: 48px; }
+.logo-text { font-size: 32px; font-weight: bold; color: #f1f5f9; margin-left: 8px; }
+.logo-subtitle { font-size: 14px; color: #64748b; margin-top: 8px; }
+.login-form { margin-bottom: 16px; }
+.login-btn { width: 100%; height: 44px; font-size: 16px; }
+.hint-text { text-align: center; font-size: 12px; color: #64748b; margin: 0; }
 </style>
