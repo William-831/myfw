@@ -466,10 +466,12 @@ watch(() => route.query.node, async (nodeId) => {
 .inst-head { display: flex; justify-content: space-between; align-items: center; }
 .inst-actions { display: flex; gap: 8px; }
 .inst-list { display: flex; flex-direction: column; gap: 10px; }
-.inst-item { border: 1px solid var(--c-text-1); border-radius: 8px; padding: 12px 14px; }
+.inst-item { border: 1px solid var(--c-border); border-radius: 12px; padding: 14px 16px; background: var(--c-surface); box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04); transition: box-shadow var(--transition), border-color var(--transition); }
+.inst-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.08); border-color: var(--c-border-hover); }
 .inst-item.drift { border-color: var(--c-warning); background: rgba(251,191,36,0.08); }
 .inst-item.not-applied { border-left: 3px solid var(--c-warning); }
-.inst-item.disabled { opacity: .6; }
+.inst-item.disabled { opacity: .55; border-left: 3px solid var(--c-danger); background: rgba(0,0,0,0.02); }
+.inst-item.disabled .inst-name { text-decoration: line-through; color: var(--c-text-3); }
 .inst-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .inst-name { font-weight: 600; color: #1e293b; }
 .inst-rule { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--c-text-2); flex-wrap: wrap; }

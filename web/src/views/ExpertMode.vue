@@ -465,21 +465,23 @@ onMounted(() => {
   margin-top: 10px;
 }
 
-/* 执行反馈终端 */
+/* 执行反馈终端(深色背景,高辨识度,可拖拽放大) */
 .terminal {
-  background: var(--c-surface);
+  background: #1a1a1f;
   border: 1px solid var(--c-border);
   border-radius: var(--radius-sm);
   padding: 12px 16px;
   margin-top: 12px;
-  height: 280px;
+  height: 320px;
+  min-height: 200px;
+  resize: vertical;
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 13px;
-  color: var(--c-text-2);
+  color: #e5e7eb;
 }
 .empty-hint {
-  color: #64748b;
+  color: #6b7280;
   padding: 16px 0;
   line-height: 1.6;
 }
@@ -487,30 +489,30 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 .cmd-line {
-  color: var(--c-text-3);
+  color: #9ca3af;
   display: flex;
   align-items: center;
 }
 .entry-time {
-  color: #64748b;
+  color: #6b7280;
   font-size: 11px;
   margin-right: 8px;
 }
 .cmd {
-  color: var(--c-text-1);
+  color: #f3f4f6;
 }
 .output {
   margin: 4px 0 0 16px;
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--c-text-2);
+  color: #d1d5db;
   font-family: inherit;
 }
 .entry.ok .output {
-  color: #86efac;
+  color: #4ade80;
 }
 .entry.err .output {
-  color: #fca5a5;
+  color: #f87171;
 }
 .entry.running {
   color: #fbbf24;
