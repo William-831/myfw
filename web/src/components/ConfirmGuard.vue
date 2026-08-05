@@ -6,7 +6,7 @@
       </el-button>
     </el-badge>
 
-    <el-drawer v-model="guard.drawerOpen" title="保护期待确认" direction="rtl" size="460px">
+    <el-drawer v-model="guard.drawerOpen" title="保护期待确认" direction="rtl" size="460px" append-to-body>
       <div v-loading="loading" class="guard-list">
         <div v-if="!tasks.length && !loading" class="empty">暂无保护期内任务</div>
         <div v-for="t in tasks" :key="t.id" class="guard-card" :class="{ 'card-disable': t.change_type === 'disable', 'card-mixed': t.change_type === 'mixed' }" @click="openDetail(t)">
@@ -35,7 +35,7 @@
     </el-drawer>
 
     <!-- 点击卡片弹出详情弹窗 -->
-    <el-dialog v-model="detailVisible" title="任务详情" width="680px" :close-on-click-modal="false">
+    <el-dialog v-model="detailVisible" title="任务详情" width="680px" :close-on-click-modal="false" append-to-body>
       <el-descriptions :column="2" border size="small">
         <el-descriptions-item label="策略">{{ detailTask.policy_name || '节点策略' }}</el-descriptions-item>
         <el-descriptions-item label="节点">{{ nodeIP(detailTask.node_id) }}</el-descriptions-item>
