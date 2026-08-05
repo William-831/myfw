@@ -78,6 +78,7 @@ export const rollbackTask = (id) => service.post(`/v1/tasks/${id}/rollback`)
 export const getAuditLogs = (params) => service.get('/v1/audit/logs', { params })
 export const exportAuditLogs = (params) => service.get('/v1/audit/export', { params, responseType: 'blob' })
 export const getAuditDashboard = (days = 7) => service.get('/v1/audit/dashboard', { params: { days } })
+export const getAuditConfidence = (days = 30) => service.get('/v1/audit/confidence', { params: { days } })
 
 // 系统设置:日志/审批保留天数 + 手动清理异常数据
 export const getRetention = () => service.get('/v1/system/retention')

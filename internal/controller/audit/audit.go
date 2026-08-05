@@ -5,6 +5,8 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -58,9 +60,11 @@ func (s *Sink) Query(ctx context.Context, action, nodeID, scene, result string, 
 
 // DashboardStats 保护期变更仪表盘统计(design.md § 10)。
 type DashboardStats struct {
-	Summary      map[string]int `json:"summary"`      // submit/confirmed/manual_rollback/auto_rollback/failed/expert_bypass/total
+	Summary      map[string]int `json:"summary"`      // submit/confirmed/manual_rollback/auto_rollback/failed/expert_bypass/total/drift_count/self_heal
 	Distribution map[string]int `json:"distribution"` // success/rolled_back/failed/pending
-	Daily        []DailyStat    `json:"daily"`        // 按天聚合趋势
+	Daily        []DailyStat    `json:"daily"`        // 按天聚合趋势,含 Drift 字段
+	HealthRate   float64        `json:"health_rate"`  // 健康率 = confirmed / (confirmed + rolled_back + failed)
+	RollbackCost float64        `json:"rollback_cost"` // 回滚消耗 = (auto_rollback + manual_rollback) / submit
 }
 
 // DailyStat 单日保护期变更趋势。
@@ -70,6 +74,7 @@ type DailyStat struct {
 	Confirm  int    `json:"confirm"`
 	Rollback int    `json:"rollback"`
 	Expert   int    `json:"expert"`
+	Drift    int    `json:"drift"` // 漂移事件
 }
 
 // Dashboard 聚合近 days 天保护期变更统计:按 action 计数汇总指标 + 按天趋势。
@@ -106,6 +111,8 @@ func (s *Sink) Dashboard(ctx context.Context, days int) (*DashboardStats, error)
 	failed := cnt["task.apply_failed"] + cnt["task.reject"]
 	expert := cnt["iptables.exec"]
 	submit := cnt["task.submit"]
+	drift := cnt["node.drift"]
+	heal := cnt["node.heartbeat"]
 
 	stats.Summary["submit"] = int(submit)
 	stats.Summary["confirmed"] = int(confirmed)
@@ -114,6 +121,18 @@ func (s *Sink) Dashboard(ctx context.Context, days int) (*DashboardStats, error)
 	stats.Summary["failed"] = int(failed)
 	stats.Summary["expert_bypass"] = int(expert)
 	stats.Summary["total"] = int(submit) + int(expert)
+	stats.Summary["drift_count"] = int(drift)
+	stats.Summary["self_heal"] = int(heal)
+
+	// 健康率 = 确认生效 / (确认 + 回滚 + 失败)
+	effective := confirmed + manualRB + autoRB + failed
+	if effective > 0 {
+		stats.HealthRate = float64(confirmed) / float64(effective)
+	}
+	// 回滚消耗 = 回滚 / 提交
+	if submit > 0 {
+		stats.RollbackCost = float64(manualRB+autoRB) / float64(submit)
+	}
 
 	// distribution:保护期变更终态分布(排除专家绕过)
 	stats.Distribution["success"] = int(confirmed)
@@ -153,6 +172,8 @@ func (s *Sink) Dashboard(ctx context.Context, days int) (*DashboardStats, error)
 			ds.Rollback += int(d.Cnt)
 		case "iptables.exec":
 			ds.Expert = int(d.Cnt)
+		case "node.drift":
+			ds.Drift = int(d.Cnt)
 		}
 	}
 	dates := make([]string, 0, len(dailyMap))
@@ -162,6 +183,101 @@ func (s *Sink) Dashboard(ctx context.Context, days int) (*DashboardStats, error)
 	sort.Strings(dates)
 	for _, d := range dates {
 		stats.Daily = append(stats.Daily, *dailyMap[d])
+	}
+	return stats, nil
+}
+
+// ConfidenceStats 变更置信度:按 actor/node/policy 维度统计提交回滚率。
+type ConfidenceStats struct {
+	ByActor  map[string]*ConfidenceItem `json:"by_actor"`
+	ByNode   map[string]*ConfidenceItem `json:"by_node"`
+	ByPolicy map[string]*ConfidenceItem `json:"by_policy"`  // key = "policy_<id>"
+}
+
+// ConfidenceItem 单维度置信度。
+type ConfidenceItem struct {
+	Total      int     `json:"total"`
+	RolledBack int     `json:"rolled_back"`
+	Confidence float64 `json:"confidence"`
+}
+
+// Confidence 计算近 days 天变更置信度:按 actor/node/policy 维度统计提交与回滚。
+func (s *Sink) Confidence(ctx context.Context, days int) (*ConfidenceStats, error) {
+	if s == nil || s.DB == nil {
+		return &ConfidenceStats{ByActor: map[string]*ConfidenceItem{}, ByNode: map[string]*ConfidenceItem{}, ByPolicy: map[string]*ConfidenceItem{}}, nil
+	}
+	if days <= 0 {
+		days = 30
+	}
+	since := time.Now().AddDate(0, 0, -days)
+	var logs []model.AuditLog
+	if err := s.DB.WithContext(ctx).Where("created_at >= ?", since).Find(&logs).Error; err != nil {
+		return nil, err
+	}
+
+	// 收集 submit 的 taskID -> policyID 映射
+	submitPolicy := map[string]uint{}
+	for _, log := range logs {
+		if log.Action == "task.submit" {
+			var d struct {
+				PolicyID uint `json:"policy_id"`
+			}
+			if err := json.Unmarshal([]byte(log.Detail), &d); err == nil && d.PolicyID > 0 {
+				submitPolicy[log.TaskID] = d.PolicyID
+			}
+		}
+	}
+
+	stats := &ConfidenceStats{
+		ByActor:  map[string]*ConfidenceItem{},
+		ByNode:   map[string]*ConfidenceItem{},
+		ByPolicy: map[string]*ConfidenceItem{},
+	}
+
+	inc := func(m map[string]*ConfidenceItem, key string, rollback bool) {
+		item, ok := m[key]
+		if !ok {
+			item = &ConfidenceItem{}
+			m[key] = item
+		}
+		item.Total++
+		if rollback {
+			item.RolledBack++
+		}
+	}
+
+	for _, log := range logs {
+		switch log.Action {
+		case "task.submit":
+			inc(stats.ByActor, log.Actor, false)
+			inc(stats.ByNode, log.NodeID, false)
+			if pid, ok := submitPolicy[log.TaskID]; ok {
+				inc(stats.ByPolicy, fmt.Sprintf("policy_%d", pid), false)
+			}
+		case "task.auto_rollback", "task.manual_rollback":
+			inc(stats.ByActor, log.Actor, true)
+			inc(stats.ByNode, log.NodeID, true)
+			if pid, ok := submitPolicy[log.TaskID]; ok {
+				inc(stats.ByPolicy, fmt.Sprintf("policy_%d", pid), true)
+			}
+		}
+	}
+
+	// 计算置信度
+	for _, v := range stats.ByActor {
+		if v.Total > 0 {
+			v.Confidence = float64(v.Total-v.RolledBack) / float64(v.Total)
+		}
+	}
+	for _, v := range stats.ByNode {
+		if v.Total > 0 {
+			v.Confidence = float64(v.Total-v.RolledBack) / float64(v.Total)
+		}
+	}
+	for _, v := range stats.ByPolicy {
+		if v.Total > 0 {
+			v.Confidence = float64(v.Total-v.RolledBack) / float64(v.Total)
+		}
 	}
 	return stats, nil
 }

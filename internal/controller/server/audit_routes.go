@@ -42,6 +42,16 @@ func registerAuditRoutes(r gin.IRouter, auditSink *audit.Sink) {
 		c.JSON(http.StatusOK, stats)
 	})
 
+	r.GET("/api/v1/audit/confidence", func(c *gin.Context) {
+		days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+		stats, err := auditSink.Confidence(c.Request.Context(), days)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, stats)
+	})
+
 	r.GET("/api/v1/audit/export", func(c *gin.Context) {
 		action := c.Query("action")
 		nodeID := c.Query("node_id")
