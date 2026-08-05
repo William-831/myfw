@@ -195,6 +195,9 @@ const handleCommand = (command) => {
 
 .aside {
   background: var(--c-sidebar);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-right: 1px solid var(--c-border);
   overflow: hidden;
 }
 
@@ -204,20 +207,20 @@ const handleCommand = (command) => {
   justify-content: center;
   height: 60px;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--c-border-soft);
 }
 
 .logo-text {
   font-size: 18px;
   font-weight: 700;
-  color: #fff;
-  letter-spacing: 0.02em;
+  color: var(--c-text-1);
+  letter-spacing: -0.01em;
 }
 
 .logo-sub {
   margin-top: 2px;
   font-size: 11px;
-  color: #64748b;
+  color: var(--c-text-3);
 }
 
 .sidebar-menu {
@@ -243,8 +246,8 @@ const handleCommand = (command) => {
 
 .sidebar-menu :deep(.el-menu-item.is-active) {
   position: relative;
-  background: rgba(79, 70, 229, 0.16);
-  color: #fff;
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--c-primary);
 }
 
 .sidebar-menu :deep(.el-menu-item.is-active)::before {
@@ -268,9 +271,9 @@ const handleCommand = (command) => {
   justify-content: space-between;
   align-items: center;
   padding: 0 24px;
-  background: rgba(255, 255, 255, 0.025);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
   border-bottom: 1px solid var(--c-border);
 }
 

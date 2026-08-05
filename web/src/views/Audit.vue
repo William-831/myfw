@@ -23,7 +23,7 @@
       <div class="ring-card">
         <svg viewBox="0 0 120 120" class="ring-svg">
           <circle cx="60" cy="60" r="48" fill="none" stroke="var(--c-border)" stroke-width="8"/>
-          <circle cx="60" cy="60" r="48" fill="none" stroke="#818cf8" stroke-width="8"
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#0071e3" stroke-width="8"
             :stroke-dasharray="302" :stroke-dashoffset="302 * (1 - avgConfidence)" transform="rotate(-90 60 60)" stroke-linecap="round"/>
           <text x="60" y="52" text-anchor="middle" fill="var(--c-text-1)" font-size="22" font-weight="700">{{ Math.round(avgConfidence * 100) }}%</text>
           <text x="60" y="72" text-anchor="middle" fill="var(--c-text-2)" font-size="11">变更置信度</text>
@@ -191,9 +191,9 @@ const healthRate = computed(() => dash.value.health_rate || 0)
 const rollbackCost = computed(() => dash.value.rollback_cost || 0)
 const healthColor = computed(() => {
   const r = healthRate.value
-  if (r >= 0.8) return '#34d399'
-  if (r >= 0.6) return '#fbbf24'
-  return '#fb7185'
+  if (r >= 0.8) return '#34c759'
+  if (r >= 0.6) return '#ff9f0a'
+  return '#ff3b30'
 })
 const avgConfidence = computed(() => {
   const items = Object.values(confidence.value.by_actor || {})
@@ -320,14 +320,14 @@ const renderChart = () => {
     return total > 0 ? Math.round((d.confirm / total) * 100) : 0
   })
   setOption({
-    color: ['#818cf8', '#34d399', '#fbbf24', '#f472b6'],
+    color: ['#0071e3', '#34c759', '#ff9f0a', '#af52de'],
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    legend: { data: ['提交', '确认', '回滚', '成功率'], bottom: 0, textStyle: { color: '#cbd5e1' } },
+    legend: { data: ['提交', '确认', '回滚', '成功率'], bottom: 0, textStyle: { color: '#6e6e73' } },
     grid: { left: 50, right: 50, top: 16, bottom: 40 },
-    xAxis: { type: 'category', data: dates, axisLabel: { color: '#cbd5e1', fontSize: 11 }, axisLine: { lineStyle: { color: '#334155' } }, axisTick: { show: false } },
+    xAxis: { type: 'category', data: dates, axisLabel: { color: '#6e6e73', fontSize: 11 }, axisLine: { lineStyle: { color: 'rgba(0,0,0,0.08)' } }, axisTick: { show: false } },
     yAxis: [
-      { type: 'value', name: '次数', nameTextStyle: { color: '#cbd5e1', fontSize: 11 }, axisLabel: { color: '#cbd5e1' }, splitLine: { lineStyle: { color: '#1e293b', type: 'dashed' } } },
-      { type: 'value', name: '成功率 %', max: 100, nameTextStyle: { color: '#cbd5e1', fontSize: 11 }, axisLabel: { color: '#cbd5e1', formatter: '{value}%' }, splitLine: { show: false } }
+      { type: 'value', name: '次数', nameTextStyle: { color: '#6e6e73', fontSize: 11 }, axisLabel: { color: '#6e6e73' }, splitLine: { lineStyle: { color: 'rgba(0,0,0,0.04)', type: 'dashed' } } },
+      { type: 'value', name: '成功率 %', max: 100, nameTextStyle: { color: '#6e6e73', fontSize: 11 }, axisLabel: { color: '#6e6e73', formatter: '{value}%' }, splitLine: { show: false } }
     ],
     series: [
       { name: '提交', type: 'bar', data: daily.map(d => d.submit), barWidth: 10, itemStyle: { borderRadius: [3, 3, 0, 0] } },
@@ -475,12 +475,12 @@ onMounted(() => { loadNodes(); loadDashboard(); loadConfidence(); loadLogs() })
 .badge-failed { background: rgba(251, 113, 133, .15); color: var(--c-danger); }
 .badge-info { background: rgba(148, 163, 184, .15); color: var(--c-text-2); }
 .tl-detail { display: flex; align-items: center; gap: 8px; margin-top: 4px; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background .15s; }
-.tl-detail:hover { background: rgba(255,255,255,.03); }
+.tl-detail:hover { background: rgba(0, 0, 0, 0.02); }
 .tl-action { font-size: 12px; color: var(--c-primary); font-weight: 500; white-space: nowrap; }
 .tl-desc { font-size: 13px; color: var(--c-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-sublogs { margin-top: 6px; margin-left: 8px; display: flex; flex-direction: column; gap: 4px; }
 .tl-subitem { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 8px; border-radius: 4px; cursor: pointer; color: var(--c-text-2); }
-.tl-subitem:hover { background: rgba(255,255,255,.03); }
+.tl-subitem:hover { background: rgba(0, 0, 0, 0.02); }
 .sub-action { color: var(--c-text-2); min-width: 80px; }
 .sub-desc { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub-time { color: var(--c-text-3); font-size: 11px; white-space: nowrap; }
@@ -497,19 +497,19 @@ onMounted(() => { loadNodes(); loadDashboard(); loadConfidence(); loadLogs() })
 .drawer-overlay { position: fixed; inset: 0; z-index: 3000; background: rgba(0,0,0,.4); display: flex; justify-content: flex-end; }
 .drawer-panel {
   width: 480px; max-width: 90vw; height: 100%; overflow-y: auto;
-  background: rgba(15, 23, 42, .88); backdrop-filter: blur(16px);
-  border-left: 1px solid rgba(51, 65, 85, .6); padding: 0;
+  background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(16px);
+  border-left: 1px solid var(--c-border); padding: 0;
   display: flex; flex-direction: column;
 }
 .drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--c-border); font-size: 15px; font-weight: 600; color: var(--c-text); }
 .drawer-body { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
-.detail-card { background: rgba(30, 41, 59, .6); border: 1px solid var(--c-border); border-radius: 8px; padding: 12px; }
+.detail-card { background: rgba(0, 0, 0, 0.03); border: 1px solid var(--c-border); border-radius: 8px; padding: 12px; }
 .detail-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.dcard-action { background: rgba(129, 140, 248, .08); border-color: rgba(129, 140, 248, .2); }
+.dcard-action { background: rgba(0, 113, 227, 0.06); border-color: rgba(0, 113, 227, 0.15); }
 .dcard-full { grid-column: 1 / -1; }
 .dc-label { font-size: 11px; color: var(--c-text-3); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
 .dc-value { font-size: 14px; color: var(--c-text); word-break: break-all; }
-.detail-json { margin: 0; max-height: 300px; overflow: auto; padding: 8px; background: rgba(0,0,0,.2); border-radius: 4px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: var(--c-text-2); }
+.detail-json { margin: 0; max-height: 300px; overflow: auto; padding: 8px; background: rgba(0, 0, 0, 0.03); border-radius: 4px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: var(--c-text-2); }
 .drawer-enter-active, .drawer-leave-active { transition: .25s ease; }
 .drawer-enter-active .drawer-panel, .drawer-leave-active .drawer-panel { transition: transform .25s ease; }
 .drawer-enter-from { opacity: 0; }

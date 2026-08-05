@@ -59,22 +59,26 @@ const handleLogin = async () => {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: #0f172a;
+  background: #f5f5f7;
+  background-image:
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(0, 113, 227, 0.08), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 80% 100%, rgba(94, 92, 230, 0.06), transparent 70%);
 }
 .login-box {
-  background: rgba(30, 41, 59, 0.85);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 24px;
   padding: 48px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.08);
   width: 400px;
 }
 .logo-section { text-align: center; margin-bottom: 32px; }
 .logo-icon { font-size: 48px; }
-.logo-text { font-size: 32px; font-weight: bold; color: #f1f5f9; margin-left: 8px; }
-.logo-subtitle { font-size: 14px; color: #64748b; margin-top: 8px; }
+.logo-text { font-size: 32px; font-weight: 700; color: #1d1d1f; margin-left: 8px; letter-spacing: -0.02em; }
+.logo-subtitle { font-size: 14px; color: #6e6e73; margin-top: 8px; }
 .login-form { margin-bottom: 16px; }
-.login-btn { width: 100%; height: 44px; font-size: 16px; }
-.hint-text { text-align: center; font-size: 12px; color: #64748b; margin: 0; }
+.login-btn { width: 100%; height: 48px; font-size: 16px; border-radius: 12px; }
+.hint-text { text-align: center; font-size: 12px; color: #aeaeb2; margin: 0; }
 </style>
