@@ -183,7 +183,7 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		detail["skip_approval"] = true
 		detail["reason"] = "root auto-approve (单用户体系,跳过审批,保留保护期)"
 	}
-	co.audit(ctx, opts.Author, "task.submit", tasks, detail)
+	co.audit(ctx, opts.Author, "task.submit", model.AuditSceneNormal, model.AuditResultPending, tasks, detail)
 
 	if opts.AutoApprove {
 		for _, t := range tasks {
@@ -238,7 +238,7 @@ func (co *Coordinator) Reject(ctx context.Context, taskID, reviewer, reason stri
 	if err != nil {
 		return nil, err
 	}
-	co.audit(ctx, reviewer, "task.reject", []*model.Task{updated}, map[string]any{"reason": reason})
+	co.audit(ctx, reviewer, "task.reject", model.AuditSceneNormal, model.AuditResultFailed, []*model.Task{updated}, map[string]any{"reason": reason})
 	return updated, nil
 }
 
@@ -268,7 +268,7 @@ func (co *Coordinator) Confirm(ctx context.Context, taskID, reviewer string) (*m
 	// Tell the Agent to discard its retained snapshot.
 	co.sendConfirmToAgent(ctx, updated)
 	co.cancelTimer(taskID)
-	co.audit(ctx, reviewer, "task.confirm", []*model.Task{updated}, nil)
+	co.audit(ctx, reviewer, "task.confirm", model.AuditSceneNormal, model.AuditResultSuccess, []*model.Task{updated}, nil)
 	return updated, nil
 }
 
@@ -298,7 +298,7 @@ func (co *Coordinator) Rollback(ctx context.Context, taskID, reviewer string) (*
 	}
 	co.sendRollbackToAgent(ctx, updated)
 	co.cancelTimer(taskID)
-	co.audit(ctx, reviewer, "task.manual_rollback", []*model.Task{updated}, nil)
+	co.audit(ctx, reviewer, "task.manual_rollback", model.AuditSceneNormal, model.AuditResultRolledBack, []*model.Task{updated}, nil)
 	return updated, nil
 }
 
@@ -336,7 +336,7 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 	if err != nil {
 		return err
 	}
-	co.audit(ctx, reviewer, "task.approve", []*model.Task{&task}, nil)
+	co.audit(ctx, reviewer, "task.approve", model.AuditSceneNormal, model.AuditResultPending, []*model.Task{&task}, nil)
 
 	// 2. Compile & send. compile errors mark the task FAILED.
 	rules, sets, customChains, err := co.Comp.CompileForNode(ctx, task.NodeID)
@@ -411,7 +411,7 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		t.Message = res.Message
 		t.ResultHash = res.ResultHash
 		_ = co.DB.WithContext(ctx).Save(&t).Error
-		co.audit(ctx, "agent", "task.apply_failed", []*model.Task{&t}, map[string]any{"msg": res.Message})
+		co.audit(ctx, "agent", "task.apply_failed", model.AuditSceneNormal, model.AuditResultFailed, []*model.Task{&t}, map[string]any{"msg": res.Message})
 		return
 	}
 	// apply 成功:进入保护期(confirm_wait),启动倒计时定时器,超时未确认则自动回滚。
@@ -424,12 +424,18 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 	}
 	co.armRollbackTimer(&t)
 	deadline := "-"
+	pw := 0
 	if t.ConfirmDeadline != nil {
 		deadline = t.ConfirmDeadline.Format(time.RFC3339)
+		pw = int(time.Until(*t.ConfirmDeadline).Seconds())
+		if pw < 0 {
+			pw = 0
+		}
 	}
-	co.audit(ctx, "agent", "task.applying_ok", []*model.Task{&t}, map[string]any{
-		"hash":             res.ResultHash,
-		"confirm_deadline": deadline,
+	co.audit(ctx, "agent", "task.applying_ok", model.AuditSceneNormal, model.AuditResultPending, []*model.Task{&t}, map[string]any{
+		"hash":              res.ResultHash,
+		"confirm_deadline":  deadline,
+		"protection_window": pw,
 	})
 }
 
@@ -478,7 +484,7 @@ func (co *Coordinator) autoRollback(taskID string) {
 	t.Status = model.TaskRolledBack
 	t.Message = "auto-rollback: confirm-wait deadline expired"
 	_ = co.DB.WithContext(ctx).Save(&t).Error
-	co.audit(ctx, "system", "task.auto_rollback", []*model.Task{&t}, nil)
+	co.audit(ctx, "system", "task.auto_rollback", model.AuditSceneAutoRollback, model.AuditResultRolledBack, []*model.Task{&t}, nil)
 
 	co.tmu.Lock()
 	delete(co.timers, taskID)
@@ -530,7 +536,7 @@ func (co *Coordinator) recoverOnStart(ctx context.Context) error {
 		stuck[i].Status = model.TaskFailed
 		stuck[i].Message = "controller restarted while task was in flight"
 		_ = co.DB.WithContext(ctx).Save(&stuck[i]).Error
-		co.audit(ctx, "system", "task.recover_failed", []*model.Task{&stuck[i]}, nil)
+		co.audit(ctx, "system", "task.recover_failed", model.AuditSceneRecovery, model.AuditResultFailed, []*model.Task{&stuck[i]}, nil)
 	}
 	return nil
 }
@@ -573,23 +579,56 @@ func (co *Coordinator) getByID(ctx context.Context, taskID string) (*model.Task,
 	return &t, nil
 }
 
-func (co *Coordinator) audit(ctx context.Context, actor, action string, tasks []*model.Task, detail map[string]any) {
+// audit 写审计流水。scene/result 为结构化索引列(便于聚合统计保护期变更仪表盘),
+// detail 为 Detail JSON 扩展字段,其中 protection_window(int) 会被提取到独立列。
+// tasks 为空时写单条(专家终端等无 task 场景)。
+func (co *Coordinator) audit(ctx context.Context, actor, action, scene, result string, tasks []*model.Task, detail map[string]any) {
 	if co.Audit == nil {
 		return
 	}
-	for _, t := range tasks {
-		d := map[string]any{"status": t.Status}
-		for k, v := range detail {
+	writeOne := func(nodeID, taskID string, base map[string]any) {
+		d := map[string]any{"scene": scene}
+		pw := 0
+		for k, v := range base {
+			if k == "protection_window" {
+				if n, ok := v.(int); ok {
+					pw = n
+				}
+				continue
+			}
 			d[k] = v
 		}
 		buf, _ := json.Marshal(d)
 		_ = co.Audit.Write(ctx, model.AuditLog{
-			Actor:  actor,
-			Action: action,
-			NodeID: t.NodeID,
-			TaskID: t.ID,
-			Detail: string(buf),
+			Actor:            actor,
+			Action:           action,
+			Scene:            scene,
+			Result:           result,
+			NodeID:           nodeID,
+			TaskID:           taskID,
+			Detail:           string(buf),
+			ProtectionWindow: pw,
 		})
+	}
+	if len(tasks) == 0 {
+		writeOne("", "", detail)
+		return
+	}
+	for _, t := range tasks {
+		d := map[string]any{"status": string(t.Status)}
+		if t.PolicyID > 0 {
+			d["policy_id"] = t.PolicyID
+		}
+		if t.PolicyName != "" {
+			d["policy_name"] = t.PolicyName
+		}
+		if t.ChangeType != "" {
+			d["change_type"] = t.ChangeType
+		}
+		for k, v := range detail {
+			d[k] = v
+		}
+		writeOne(t.NodeID, t.ID, d)
 	}
 }
 

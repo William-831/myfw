@@ -113,6 +113,11 @@ pending_approval -> dispatching -> applying -> confirm_wait -> confirmed(生效)
 - **回滚**：Agent 用变更前快照恢复 MYFW 命名空间
 - **单用户体系**：root 跳过审批（auto_approve），保留保护期
 - **禁用场景**：applied 语义（禁用已下发实例保留 applied=true），change_type=disable，-D 移除命令
+- **审计追踪**：审计中心作为保护期变更状态仪表盘，深度绑定保护期生命周期
+  - AuditLog 加 Scene/Result/ProtectionWindow 索引列：Scene 区分 normal(常规变更)/expert_bypass(专家绕过)/auto_rollback(超时回滚)/recovery(启动恢复)；Result 标记 success/failed/rolled_back/pending；ProtectionWindow 记录保护期剩余秒数
+  - 状态流转追踪：coordinator 在 task 9 个流转点(submit/approve/reject/applying_ok/confirm/manual_rollback/auto_rollback/apply_failed/recover_failed)写结构化审计,记录发起人/审批状态/保护期时长/状态切换时间戳/最终结果
+  - 专家终端绕过保护期：iptables.exec 审计 scene=expert_bypass,记录操作人/节点/命令/输出,确保绕过操作可追溯
+  - 仪表盘：`GET /api/v1/audit/dashboard` 聚合近 N 天统计(总变更/确认生效/回滚/专家绕过 + 终态分布 + 按天趋势),前端 Audit.vue 顶部展示,专家绕过操作红色标记
 
 ## 11. Watchdog 漂移检测
 

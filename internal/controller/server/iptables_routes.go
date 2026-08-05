@@ -157,9 +157,14 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 			c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
 			return
 		}
-		// 强审计:记录操作人/节点/命令/输出,便于事后追溯
+		// 强审计:专家终端绕过保护期,记录操作人/节点/命令/输出 + scene=expert_bypass,便于事后追溯
 		if auditSink != nil {
+			result := model.AuditResultSuccess
+			if !res.Ok {
+				result = model.AuditResultFailed
+			}
 			detail, _ := json.Marshal(map[string]any{
+				"scene":   model.AuditSceneExpertBypass,
 				"command": body.Command,
 				"ok":      res.Ok,
 				"output":  res.Message,
@@ -167,6 +172,8 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 			_ = auditSink.Write(c.Request.Context(), model.AuditLog{
 				Actor:  actor(c),
 				Action: "iptables.exec",
+				Scene:  model.AuditSceneExpertBypass,
+				Result: result,
 				NodeID: nodeID,
 				Detail: string(detail),
 			})

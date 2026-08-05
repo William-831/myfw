@@ -62,13 +62,30 @@ type Snapshot struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// AuditLog is the append-only record of every meaningful action (design.md § 11 / § 13.3.5).
+// AuditLog 审计流水,append-only。每条记录一个动作(状态流转/操作)。
+// Scene/Result/ProtectionWindow 为结构化索引列,便于聚合统计保护期变更仪表盘(design.md § 10)。
 type AuditLog struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Actor     string    `gorm:"size:128;index" json:"actor"`
-	Action    string    `gorm:"size:64;index" json:"action"`
-	NodeID    string    `gorm:"size:64;index" json:"node_id"`
-	TaskID    string    `gorm:"size:64;index" json:"task_id"`
-	Detail    string    `gorm:"type:text" json:"detail"`
-	CreatedAt time.Time `gorm:"index" json:"created_at"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Actor            string    `gorm:"size:128;index" json:"actor"`
+	Action           string    `gorm:"size:64;index" json:"action"`
+	Scene            string    `gorm:"size:24;index" json:"scene"`  // normal/expert_bypass/auto_rollback/recovery
+	Result           string    `gorm:"size:16;index" json:"result"` // success/failed/rolled_back/pending
+	NodeID           string    `gorm:"size:64;index" json:"node_id"`
+	TaskID           string    `gorm:"size:64;index" json:"task_id"`
+	Detail           string    `gorm:"type:text" json:"detail"`
+	ProtectionWindow int       `json:"protection_window,omitempty"` // 保护期剩余秒数(仅 applying_ok 填)
+	CreatedAt        time.Time `gorm:"index" json:"created_at"`
 }
+
+// 审计场景与结果常量
+const (
+	AuditSceneNormal       = "normal"        // 常规保护期变更
+	AuditSceneExpertBypass = "expert_bypass" // 专家终端绕过保护期
+	AuditSceneAutoRollback = "auto_rollback" // 超时自动回滚
+	AuditSceneRecovery     = "recovery"      // 启动恢复
+
+	AuditResultSuccess    = "success"
+	AuditResultFailed     = "failed"
+	AuditResultRolledBack = "rolled_back"
+	AuditResultPending    = "pending"
+)
