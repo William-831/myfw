@@ -143,34 +143,26 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		// (区分待下发与待禁用实例),见 fillNodeDispatchPreview。
 	}
 
+	// 批量创建 Task(一次性插入,避免循环 N 次 Create)
+	now := time.Now().Unix()
 	tasks := make([]*model.Task, 0, len(nodeIDs))
-	err := co.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, id := range nodeIDs {
-			t := &model.Task{
-				ID:         "t_" + uuid.NewString(),
-				NodeID:     id,
-				PolicyID:   policyID,
-				PolicyName: policyName,
-				Status:     model.TaskPendingApproval,
-				Version:    time.Now().Unix(),
-			}
-			if err := tx.Create(t).Error; err != nil {
-				return err
-			}
-			tasks = append(tasks, t)
-		}
-		return nil
-	})
-	if err != nil {
+	for _, id := range nodeIDs {
+		tasks = append(tasks, &model.Task{
+			ID:         "t_" + uuid.NewString(),
+			NodeID:     id,
+			PolicyID:   policyID,
+			PolicyName: policyName,
+			Status:     model.TaskPendingApproval,
+			Version:    now,
+		})
+	}
+	if err := co.DB.WithContext(ctx).Create(&tasks).Error; err != nil {
 		return nil, err
 	}
 
-	// 节点级 dispatch:按每个 task 填充 policy_name/diff_after/change_type,
-	// 区分待下发(enabled=true,applied=false)与待禁用(enabled=false,applied=true)实例。
+	// 节点级 dispatch:批量查实例后按节点分组填充,避免逐 task 查询(2N->1 次)
 	if policyID == 0 {
-		for _, t := range tasks {
-			co.fillNodeDispatchPreview(ctx, t)
-		}
+		co.fillNodeDispatchPreviewBatch(ctx, tasks)
 	}
 
 	detail := map[string]any{
@@ -646,13 +638,37 @@ func errNotFoundOr(err error) error {
 //   - 待禁用实例(enabled=false,applied=true)-> 生成 -D 移除命令,policy_name 标注"[禁用]"
 //
 // 让保护期面板能区分本次是下发新规则还是禁用旧规则,并显著标注禁用任务。
-func (co *Coordinator) fillNodeDispatchPreview(ctx context.Context, t *model.Task) {
-	var pending, disabling []model.NodePolicyInstance
-	co.DB.WithContext(ctx).Where("node_id = ? AND enabled = ? AND applied = ?", t.NodeID, true, false).
-		Order("priority ASC, id ASC").Find(&pending)
-	co.DB.WithContext(ctx).Where("node_id = ? AND enabled = ? AND applied = ?", t.NodeID, false, true).
-		Order("priority ASC, id ASC").Find(&disabling)
+// fillNodeDispatchPreviewBatch 批量查所有目标节点实例,按 nodeID 分组后填充每个 task 预览。
+// 避免逐 task 查询(2N 次 DB),改为 1 次批量查询 + Go 内分组。编译仍按节点单独执行(CPU 密集,不可跨节点合并)。
+func (co *Coordinator) fillNodeDispatchPreviewBatch(ctx context.Context, tasks []*model.Task) {
+	nodeIDs := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		nodeIDs = append(nodeIDs, t.NodeID)
+	}
+	// 一次查询所有待下发(enabled=true,applied=false)和待禁用(enabled=false,applied=true)实例
+	var instances []model.NodePolicyInstance
+	co.DB.WithContext(ctx).
+		Where("node_id IN ? AND ((enabled = ? AND applied = ?) OR (enabled = ? AND applied = ?))",
+			nodeIDs, true, false, false, true).
+		Order("node_id, priority ASC, id ASC").Find(&instances)
 
+	pendingByNode := map[string][]model.NodePolicyInstance{}
+	disablingByNode := map[string][]model.NodePolicyInstance{}
+	for i := range instances {
+		inst := instances[i]
+		if inst.Enabled && !inst.Applied {
+			pendingByNode[inst.NodeID] = append(pendingByNode[inst.NodeID], inst)
+		} else if !inst.Enabled && inst.Applied {
+			disablingByNode[inst.NodeID] = append(disablingByNode[inst.NodeID], inst)
+		}
+	}
+	for _, t := range tasks {
+		co.fillNodeDispatchPreviewFromCache(ctx, t, pendingByNode[t.NodeID], disablingByNode[t.NodeID])
+	}
+}
+
+// fillNodeDispatchPreviewFromCache 用预查的实例切片填充单个 task 预览(不再查 DB)。
+func (co *Coordinator) fillNodeDispatchPreviewFromCache(ctx context.Context, t *model.Task, pending, disabling []model.NodePolicyInstance) {
 	// policy_name:待下发实例名 + 待禁用实例名(前缀"[禁用]")
 	var names []string
 	for _, inst := range pending {

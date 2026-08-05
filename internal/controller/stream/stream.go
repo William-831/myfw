@@ -330,20 +330,25 @@ func (s *Service) onIptablesRules(ctx context.Context, nodeID string, msg *myfwv
 		s.Log.Warn("delete old iptables rules", "node_id", nodeID, "err", err)
 		return
 	}
+	// 批量收集规则,一次性插入避免逐条 N 次写入
+	rules := make([]model.IptablesRule, 0)
 	for _, chain := range msg.Chains {
 		for i, rule := range chain.Rules {
-			if err := tx.Create(&model.IptablesRule{
+			rules = append(rules, model.IptablesRule{
 				NodeID:    nodeID,
 				TableType: chain.Table,
 				Chain:     chain.Chain,
 				RuleLine:  rule,
 				Priority:  i,
 				IsMYFW:    isMYFWRules(rule),
-			}).Error; err != nil {
-				tx.Rollback()
-				s.Log.Warn("create iptables rule", "node_id", nodeID, "err", err)
-				return
-			}
+			})
+		}
+	}
+	if len(rules) > 0 {
+		if err := tx.Create(&rules).Error; err != nil {
+			tx.Rollback()
+			s.Log.Warn("batch create iptables rules", "node_id", nodeID, "err", err)
+			return
 		}
 	}
 	if err := tx.Commit().Error; err != nil {
