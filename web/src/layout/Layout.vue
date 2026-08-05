@@ -268,7 +268,9 @@ const handleCommand = (command) => {
   justify-content: space-between;
   align-items: center;
   padding: 0 24px;
-  background: var(--c-surface);
+  background: rgba(255, 255, 255, 0.025);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
   border-bottom: 1px solid var(--c-border);
 }
 

@@ -396,6 +396,14 @@ onMounted(() => { loadNodes(); loadDashboard(); loadConfidence(); loadLogs() })
 
 /* 顶部统计行 */
 .stats-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+.audit-dashboard .ring-card,
+.audit-dashboard .progress-card,
+.audit-dashboard .num-card,
+.audit-dashboard .chart-row,
+.audit-dashboard .tl-section {
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
 .ring-card, .progress-card, .num-card {
   background: var(--c-surface); border: 1px solid var(--c-border);
   border-radius: 12px; padding: 16px; display: flex; flex-direction: column;
