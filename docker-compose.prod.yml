@@ -11,4 +11,5 @@ services:
     volumes:
       - ./dev-ca:/etc/myfw/ca:ro                                              # CA 证书(运行时挂载,不打入镜像)
       - ./configs/controller.prod.example.yaml:/etc/myfw/config.yaml:ro       # 生产配置(连接池/TLS/审计)
+      - ./agent:/var/www/agent:ro                                            # Agent 二进制(节点安装脚本 curl 下载)
     restart: unless-stopped

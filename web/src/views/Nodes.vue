@@ -111,7 +111,8 @@
           <div>添加节点流程：</div>
           <ol style="margin: 5px 0 0 20px; padding: 0; font-size: 13px">
             <li>输入节点名称，点击"生成安装命令"</li>
-            <li>复制生成的命令到目标服务器执行</li>
+            <li>下载或复制安装脚本到目标 Linux 服务器</li>
+            <li>执行 bash install-myfw-agent.sh 完成 Agent 安装</li>
             <li>Agent 会自动注册到本系统</li>
             <li>在节点列表中审核通过后即可管理</li>
           </ol>
@@ -133,9 +134,10 @@
           复制以下命令到目标 Linux 服务器执行即可安装 Agent
         </el-alert>
         <el-input v-model="installScript" type="textarea" :rows="8" readonly style="font-family: monospace" />
-        <el-button type="primary" size="small" style="margin-top: 10px" @click="copyScript">
-          复制命令
-        </el-button>
+        <div style="margin-top: 10px; display: flex; gap: 8px">
+          <el-button type="primary" size="small" @click="copyScript">复制脚本</el-button>
+          <el-button size="small" @click="downloadScript">下载脚本</el-button>
+        </div>
       </div>
 
       <template #footer>
@@ -653,9 +655,32 @@ echo "请在 Web 控制台中审核通过后即可管理"`
   }
 }
 
-const copyScript = () => {
-  navigator.clipboard.writeText(installScript.value)
+const copyScript = async () => {
+  try {
+    await navigator.clipboard.writeText(installScript.value)
+  } catch {
+    // 非 HTTPS 环境 fallback: textarea + execCommand
+    const ta = document.createElement('textarea')
+    ta.value = installScript.value
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
   ElMessage.success('已复制到剪贴板')
+}
+
+const downloadScript = () => {
+  const blob = new Blob([installScript.value], { type: 'text/x-shellscript' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'install-myfw-agent.sh'
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success('脚本已下载,scp 到目标服务器执行 bash install-myfw-agent.sh')
 }
 
 // 编辑节点

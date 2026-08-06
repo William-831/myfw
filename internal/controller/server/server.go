@@ -353,6 +353,8 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerMarkRoutes(r, db, auditSink)
 	registerSystemRoutes(r, db)
 
+	// Agent 二进制下载(节点安装脚本 curl 拉取,二进制挂载到 /var/www/agent/)
+	r.StaticFile("/download/agent/linux-amd64", "/var/www/agent/myfw-agent-linux-amd64")
 	r.Static("/assets", "/var/www/myfw/assets")
 	r.NoRoute(func(c *gin.Context) {
 		c.File("/var/www/myfw/index.html")
