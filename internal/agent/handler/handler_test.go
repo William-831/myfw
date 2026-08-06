@@ -101,3 +101,28 @@ func TestOnApplyWithNilDriverGracefullyFails(t *testing.T) {
 		t.Fatal("nil driver: message should explain the situation")
 	}
 }
+
+// TestOnDecommissionInvokesFn 验证注销指令触发自毁回调并传递 reason。
+func TestOnDecommissionInvokesFn(t *testing.T) {
+	var gotReason string
+	called := false
+	h := New(nil, slog.Default())
+	h.DecommissionFn = func(ctx context.Context, reason string) error {
+		called = true
+		gotReason = reason
+		return nil
+	}
+	h.OnDecommission(context.Background(), &myfwv1.DecommissionCommand{Reason: "node deleted"})
+	if !called {
+		t.Fatal("DecommissionFn 未被调用")
+	}
+	if gotReason != "node deleted" {
+		t.Fatalf("reason 传递错误: got %q", gotReason)
+	}
+}
+
+// TestOnDecommissionNilFnNoPanic 验证未注入回调时不 panic（仅记日志）。
+func TestOnDecommissionNilFnNoPanic(t *testing.T) {
+	h := New(nil, slog.Default())
+	h.OnDecommission(context.Background(), &myfwv1.DecommissionCommand{Reason: "test"})
+}

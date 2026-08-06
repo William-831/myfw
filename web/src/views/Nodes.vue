@@ -65,6 +65,11 @@
             <span v-else class="muted">-</span>
           </template>
         </el-table-column>
+        <el-table-column label="创建时间" min-width="150">
+          <template #default="{ row }">
+            <span class="small">{{ formatDate(row.created_at) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column v-if="columnVisible.lastSeen" label="最后活跃" min-width="150">
           <template #default="{ row }">
             <span class="small">{{ formatDate(row.last_seen) }}</span>
@@ -128,6 +133,19 @@
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="addForm.description" type="textarea" :rows="2" placeholder="可选" />
+        </el-form-item>
+        <el-divider content-position="left">Controller 访问配置</el-divider>
+        <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+          <span style="font-size: 12px">脚本中的 Controller 地址与端口从此处读取，部署到任意服务器填对应值即可，不再绑定固定 IP。</span>
+        </el-alert>
+        <el-form-item label="访问地址">
+          <el-input v-model="addForm.controllerHost" placeholder="Controller 的 IP 或域名（Agent 通过此地址连接）" />
+        </el-form-item>
+        <el-form-item label="下载端口">
+          <el-input v-model="addForm.downloadPort" placeholder="Agent/CA 下载端口，默认 8080" />
+        </el-form-item>
+        <el-form-item label="gRPC端口">
+          <el-input v-model="addForm.grpcPort" placeholder="Agent 长连接端口，默认 9090" />
         </el-form-item>
       </el-form>
 
@@ -407,7 +425,7 @@ const toggleableCols = [
 
 // 添加节点表单
 const addFormRef = ref(null)
-const addForm = reactive({ name: '', description: '' })
+const addForm = reactive({ name: '', description: '', controllerHost: '', downloadPort: '', grpcPort: '' })
 const addRules = {
   name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }]
 }
@@ -605,6 +623,10 @@ const loadNodes = async () => {
 const handleAdd = () => {
   addForm.name = ''
   addForm.description = ''
+  // Controller 访问配置默认值：当前页面地址 + 标准端口，用户可改
+  addForm.controllerHost = window.location.hostname
+  addForm.downloadPort = window.location.port || '8080'
+  addForm.grpcPort = '9090'
   installScript.value = ''
   addDialogVisible.value = true
 }
@@ -617,7 +639,9 @@ const handleGenerateScript = async () => {
   try {
     const data = await createBootstrapToken({ note: addForm.name })
     const token = data.token
-    const host = window.location.hostname
+    const host = addForm.controllerHost || window.location.hostname
+    const dlPort = addForm.downloadPort || '8080'
+    const grpcPort = addForm.grpcPort || '9090'
     installScript.value = `#!/bin/bash
 # MYFW Agent 安装脚本
 # 节点名称: ${addForm.name}
@@ -632,17 +656,17 @@ mkdir -p /etc/myfw-agent /var/lib/myfw-agent
 
 # 2. 下载 Agent 二进制
 echo "下载 Agent..."
-curl -fsSL http://${host}:8080/download/agent/linux-amd64 -o /usr/local/bin/myfw-agent
+curl -fsSL http://${host}:${dlPort}/download/agent/linux-amd64 -o /usr/local/bin/myfw-agent
 chmod +x /usr/local/bin/myfw-agent
 
 # 3. 下载 CA 证书（mTLS 必需：Controller 用此 CA 签发 Agent 客户端证书）
 echo "下载 CA 证书..."
-curl -fsSL http://${host}:8080/download/ca.pem -o /etc/myfw-agent/ca.pem
+curl -fsSL http://${host}:${dlPort}/download/ca.pem -o /etc/myfw-agent/ca.pem
 
 # 4. 写入配置文件（启用 mTLS：bootstrap 阶段凭 token 换取客户端证书，写入 cert_file/key_file）
 cat > /etc/myfw-agent/agent.yaml << 'AGENTEOF'
 controller:
-  endpoint: ${host}:9090
+  endpoint: ${host}:${grpcPort}
   tls:
     ca_file: /etc/myfw-agent/ca.pem
     cert_file: /etc/myfw-agent/agent.crt

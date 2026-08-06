@@ -467,6 +467,17 @@ func (s *Service) SendRenewCert(ctx context.Context, nodeID string) error {
 	})
 }
 
+// SendDecommission 下发注销指令到 Agent。Agent 收到后自毁（停 systemd + 删本地文件 + 退出）。
+// 在线节点立即清理；离线节点返回 not connected 错误，调用方（DELETE 路由）忽略后删 DB，
+// Agent 重连被拒时由自毁兜底。reason 用于审计追溯。
+func (s *Service) SendDecommission(ctx context.Context, nodeID string, reason string) error {
+	return s.Reg.Send(nodeID, &myfwv1.ControllerToAgent{
+		Payload: &myfwv1.ControllerToAgent_Decommission{
+			Decommission: &myfwv1.DecommissionCommand{Reason: reason},
+		},
+	})
+}
+
 // isMYFWRules 判断规则是否属于 MYFW 命名空间（与 server 包判定保持一致）。
 func isMYFWRules(rule string) bool {
 	return strings.HasPrefix(rule, "-A MYFW-") || strings.Contains(rule, "-j MYFW-")

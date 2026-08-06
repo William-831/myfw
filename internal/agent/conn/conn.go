@@ -145,6 +145,8 @@ type Handler interface {
 	OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1.TaskResult
 	// OnRenewCert 触发证书续签，成功返回 nil（Agent 将重建连接加载新证书）。
 	OnRenewCert(ctx context.Context) error
+	// OnDecommission 处理注销指令：停 systemd + 删本地文件 + 退出进程。
+	OnDecommission(ctx context.Context, cmd *myfwv1.DecommissionCommand)
 }
 
 // Reporter is used by Watchdog to send drift reports and sync requests through the stream.
@@ -228,9 +230,29 @@ func (h NopHandler) OnExec(ctx context.Context, cmd *myfwv1.ExecCommand) *myfwv1
 	return &myfwv1.TaskResult{TaskId: cmd.TaskId, Ok: false, Message: "no handler wired", TsUnix: time.Now().Unix()}
 }
 func (h NopHandler) OnRenewCert(ctx context.Context) error { return nil }
+func (h NopHandler) OnDecommission(ctx context.Context, cmd *myfwv1.DecommissionCommand) {}
 
 // errRenewRequired 表示证书续签成功，需重建连接加载新证书。
 var errRenewRequired = errors.New("certificate renewed, reconnect required")
+
+// ErrSelfDestruct 表示 Controller 明确拒绝该节点（证书吊销/未知、节点归档/删除），
+// Agent 应自毁本地文件并退出，而非无限重试。Loop 返回此错误后由 main 触发清理。
+var ErrSelfDestruct = errors.New("controller rejected node; self-destruct required")
+
+// ShouldSelfDestruct 判断连接错误是否表示 Controller 明确拒绝该节点。
+// 仅 Unauthenticated（证书吊销/未知）与 PermissionDenied（节点归档/删除）触发自毁；
+// 网络错误、Unavailable、取消等照常退避重试。
+func ShouldSelfDestruct(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch status.Code(err) {
+	case codes.Unauthenticated, codes.PermissionDenied:
+		return true
+	default:
+		return false
+	}
+}
 
 // Loop opens an AgentStream and pushes a Heartbeat every Interval until ctx
 // is cancelled. Any RPC error causes a reconnect with exponential backoff.
@@ -259,6 +281,11 @@ func Loop(ctx context.Context, conn *grpc.ClientConn, log *slog.Logger, nodeID s
 		if errors.Is(err, errRenewRequired) {
 			log.Info("reconnecting after certificate renewal")
 			return nil
+		}
+		// 自毁：Decommission 指令（ErrSelfDestruct）或 Controller 拒绝（证书吊销/未知、节点删除）
+		if errors.Is(err, ErrSelfDestruct) || ShouldSelfDestruct(err) {
+			log.Error("controller rejected node, self-destructing", "err", err)
+			return ErrSelfDestruct
 		}
 		// Unimplemented is expected until M5 wires the server side — log at
 		// debug so we don't spam INFO with the same line.
@@ -370,6 +397,13 @@ func runStream(ctx context.Context, client myfwv1.AgentStreamClient, log *slog.L
 				} else {
 					select { case renewSig <- struct{}{}: default: }
 				}
+			case *myfwv1.ControllerToAgent_Decommission:
+				log.Info("decommission requested", "node_id", nodeID, "reason", p.Decommission.GetReason())
+				h.OnDecommission(ctx, p.Decommission)
+				// 自毁回调执行后进程应退出，关闭流并返回自毁错误让 Loop 退出
+				_ = stream.CloseSend()
+				select { case rxErr <- ErrSelfDestruct: default: }
+				return
 			case *myfwv1.ControllerToAgent_Ack:
 				// heartbeat ack — nothing to do beyond keepalive.
 			default:

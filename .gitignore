@@ -46,6 +46,11 @@ web/.vite/
 !.env.example
 # 测试部署记录(含服务器凭据,禁止提交)
 docs/test-deploy.md
+# 临时部署辅助脚本(含密码/token,禁止提交)
+askpass.sh
+myfw-src.tar.gz
+scripts/install-test.sh
+scripts/run-deploy-step.sh
 
 # Agent 本地联调配置(含一次性 bootstrap_token,勿提交)
 dev-agent.yaml

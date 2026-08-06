@@ -52,6 +52,10 @@ type Handler struct {
 	// trigger 参数区分来源: "auto"(自动轮换) / "manual"(管理员手动)。
 	RenewCertFn func(ctx context.Context, trigger string) error
 
+	// DecommissionFn 注销自毁回调，由 cmd/agent 注入（停 systemd + 删本地文件 + 退出）。
+	// reason 来自 Controller 删除节点时下发的 DecommissionCommand.reason。
+	DecommissionFn func(ctx context.Context, reason string) error
+
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
 	last map[string]string
@@ -75,6 +79,23 @@ func (h *Handler) OnRenewCert(ctx context.Context) error {
 		return errors.New("renew cert not supported")
 	}
 	return h.RenewCertFn(ctx, "manual")
+}
+
+// OnDecommission 处理 Controller 下发的注销指令：执行自毁回调（停服务+删文件+退出）。
+// 回调内部负责进程退出；若未注入回调则仅记日志，避免误触。
+func (h *Handler) OnDecommission(ctx context.Context, cmd *myfwv1.DecommissionCommand) {
+	if h.DecommissionFn == nil {
+		h.Log.Error("decommission requested but no fn wired")
+		return
+	}
+	reason := ""
+	if cmd != nil {
+		reason = cmd.Reason
+	}
+	h.Log.Info("decommissioning", "reason", reason)
+	if err := h.DecommissionFn(ctx, reason); err != nil {
+		h.Log.Error("decommission failed", "err", err)
+	}
 }
 
 // OnApply snapshots the current namespace, then applies the new RuleSet.

@@ -118,6 +118,7 @@ message ControllerToAgent {
     RuleOperation rule_operation = 7;
     ExecCommand exec_command = 8;   // 专家模式:裸 iptables 命令
     RenewCertCommand renew_cert = 9; // 触发 Agent 证书续签
+    DecommissionCommand decommission = 10; // 注销自毁:删节点时下发
   }
 }
 
@@ -165,6 +166,13 @@ message ExecCommand {
 // RenewCertCommand 触发 Agent 立即续签客户端证书。续签由 Agent 用旧证书
 // 发起 CSR（Controller 无法替 Agent 续签），成功后 Agent 重建连接加载新证书。
 message RenewCertCommand {
+}
+
+// DecommissionCommand 指示 Agent 自毁：停止并禁用 systemd 服务、删除所有本地
+// 文件（配置/证书/状态目录/二进制/unit），然后退出进程。Controller 删除节点时下发，
+// 确保节点彻底清理，可重新纳管。离线节点删除后，Agent 重连被拒时亦自毁兜底。
+message DecommissionCommand {
+  string reason = 1;  // 删除原因（审计追溯）
 }
 
 // ApplyTask instructs the Agent to snapshot, then converge its MYFW namespace

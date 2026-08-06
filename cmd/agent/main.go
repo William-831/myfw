@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -212,6 +213,11 @@ func run() error {
 			return requestCertRenewal(ctx, cfg, nodeID, rotator, cap, trigger)
 		}
 	}
+	// 注入注销自毁回调：Controller 下发 Decommission 指令时触发（删节点场景）
+	h.DecommissionFn = func(ctx context.Context, reason string) error {
+		selfDestruct(cfg, log, reason)
+		return nil // 不会执行到，selfDestruct 内部 os.Exit
+	}
 
 	// 8. 共享发送通道（漂移报告等跨重连消息）
 	sendCh := make(chan *myfwv1.AgentToController, 8)
@@ -255,6 +261,11 @@ func run() error {
 		err = conn.Loop(ctx, streamConn, log, nodeID, cap, h, conn.HeartbeatOptions{}, sendCh, renewCh)
 		streamConn.Close()
 		if ctx.Err() != nil {
+			return nil
+		}
+		// Controller 明确拒绝（证书吊销/未知、节点删除）或下发 Decommission：自毁
+		if errors.Is(err, conn.ErrSelfDestruct) {
+			selfDestruct(cfg, log, "controller rejected node")
 			return nil
 		}
 	}
@@ -310,6 +321,27 @@ func buildControllerWebURL(endpoint string) string {
 		return "http://" + endpoint[:idx] + ":8080"
 	}
 	return "http://" + endpoint
+}
+
+// selfDestruct 注销自毁：停止并禁用 systemd 服务 + 删除本地全部文件 + 退出进程。
+// 触发场景：
+//   - Controller 删除节点时下发 Decommission 指令（在线节点）
+//   - Agent 重连被 Controller 拒绝（证书吊销/未知、节点删除，离线节点兜底）
+//
+// 确保节点彻底清理，可重新纳管。所有清理操作尽力而为，失败仅记日志不阻塞退出。
+func selfDestruct(cfg agentcfg.Config, log *slog.Logger, reason string) {
+	log.Error("self-destructing", "reason", reason)
+	// 停止并禁用 systemd 服务
+	_ = exec.Command("systemctl", "stop", "myfw-agent").Run()
+	_ = exec.Command("systemctl", "disable", "myfw-agent").Run()
+	// 删除配置/证书目录、状态目录、二进制、unit 文件
+	_ = os.RemoveAll(filepath.Dir(cfg.Controller.TLS.CertFile))
+	_ = os.RemoveAll(cfg.Node.DataDir)
+	_ = os.Remove("/usr/local/bin/myfw-agent")
+	_ = os.Remove("/etc/systemd/system/myfw-agent.service")
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+	log.Error("self-destruct complete, exiting", "reason", reason)
+	os.Exit(0)
 }
 
 // selectDriver 根据探测结果选择防火墙驱动
