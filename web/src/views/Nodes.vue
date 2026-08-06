@@ -89,6 +89,9 @@
               </el-button>
               <template #dropdown>
                 <el-dropdown-menu>
+                  <el-dropdown-item v-if="row.status === 'PENDING'" command="approve" divided>
+                    <el-icon><CircleCheck /></el-icon>审批通过
+                  </el-dropdown-item>
                   <el-dropdown-item command="rules">
                     <el-icon><Connection /></el-icon>快速诊断
                   </el-dropdown-item>
@@ -367,8 +370,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks } from '@/api'
+import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom, CircleCheck } from '@element-plus/icons-vue'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks, approveNode } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const loading = ref(false)
@@ -557,7 +560,24 @@ const handleCommand = (cmd, row) => {
     case 'edit': handleEdit(row); break
     case 'rules': handleViewRules(row); break
     case 'renew': handleRenew(row); break
+    case 'approve': handleApprove(row); break
     case 'delete': handleDelete(row); break
+  }
+}
+
+// 审批通过 PENDING 节点
+const handleApprove = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认通过节点 ${row.hostname || row.id} 的注册申请?通过后即可管理该节点。`,
+      '审批确认',
+      { type: 'success', confirmButtonText: '通过', cancelButtonText: '取消' }
+    )
+    await approveNode(row.id)
+    ElMessage.success('已审批通过')
+    loadNodes()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.error || '审批失败')
   }
 }
 

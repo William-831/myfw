@@ -42,6 +42,8 @@ export const getNode = (id) => service.get(`/v1/nodes/${id}`)
 export const updateNode = (id, data) => service.put(`/v1/nodes/${id}`, data)
 export const deleteNode = (id) => service.delete(`/v1/nodes/${id}`)
 export const createBootstrapToken = (data) => service.post('/v1/nodes/bootstrap', data)
+export const approveNode = (id) => service.post(`/v1/nodes/${id}/approve`)
+export const rejectNode = (id) => service.post(`/v1/nodes/${id}/reject`)
 export const renewNodeCert = (id) => service.post(`/v1/nodes/${id}/renew-cert`)
 
 // 策略管理(C 档):见下方 templates/instances API。旧 Policy CRUD 已废弃。
