@@ -4,13 +4,15 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/glebarez/sqlite" // CGO-free SQLite driver for GORM
-	"gorm.io/driver/mysql"
+	gomysql "github.com/go-sql-driver/mysql"
+	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
@@ -65,14 +67,55 @@ func ConfigFromEnv() (Config, error) {
 	return c, nil
 }
 
+// ensureMySQLDatabase 在 mysql 驱动且 MYFW_DB_AUTOCREATE != false 时，
+// 自动 CREATE DATABASE IF NOT EXISTS，使 Controller 启动无需 DBA 事先建库。
+// 开关：环境变量 MYFW_DB_AUTOCREATE=false 关闭；SQLite 跳过。
+func ensureMySQLDatabase(cfg Config) error {
+	if cfg.Driver != DriverMySQL {
+		return nil
+	}
+	if os.Getenv("MYFW_DB_AUTOCREATE") == "false" {
+		return nil
+	}
+	parsed, err := gomysql.ParseDSN(cfg.DSN)
+	if err != nil {
+		return fmt.Errorf("db: parse dsn: %w", err)
+	}
+	if parsed.DBName == "" {
+		return nil
+	}
+	dbName := parsed.DBName
+	parsed.DBName = ""
+	noDBDSN := parsed.FormatDSN()
+
+	conn, err := sql.Open("mysql", noDBDSN)
+	if err != nil {
+		return fmt.Errorf("db: open temp connection: %w", err)
+	}
+	defer conn.Close()
+
+	if err := conn.Ping(); err != nil {
+		return fmt.Errorf("db: ping temp connection: %w", err)
+	}
+	query := "CREATE DATABASE IF NOT EXISTS `" + dbName + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+	if _, err := conn.Exec(query); err != nil {
+		return fmt.Errorf("db: create database %s: %w", dbName, err)
+	}
+	return nil
+}
+
 // Open connects to the database according to cfg and configures the pool.
 func Open(cfg Config) (*gorm.DB, error) {
+	if err := ensureMySQLDatabase(cfg); err != nil {
+		return nil, err
+	}
+
 	var dialector gorm.Dialector
 	switch cfg.Driver {
 	case DriverSQLite:
 		dialector = sqlite.Open(cfg.DSN)
 	case DriverMySQL:
-		dialector = mysql.Open(cfg.DSN)
+		dialector = gormmysql.Open(cfg.DSN)
 	default:
 		return nil, fmt.Errorf("db: unsupported driver %q", cfg.Driver)
 	}

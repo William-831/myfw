@@ -13,6 +13,9 @@
         <el-switch v-model="multiSelect" active-text="多选" inline-prompt />
         <el-button v-if="multiSelect && selected.length" type="warning" @click="openMultiInst">实例化到节点 ({{ selected.length }})</el-button>
         <el-button type="primary" @click="openAdd"><el-icon><Plus /></el-icon>新增模板</el-button>
+        <el-button @click="handleExport">导出</el-button>
+        <el-button @click="triggerImport">导入</el-button>
+        <input ref="fileInput" type="file" accept=".json" style="display:none" @change="handleImport" />
       </div>
     </div>
 
@@ -182,7 +185,8 @@ import { Plus, Expand, Fold } from '@element-plus/icons-vue'
 import {
   getTemplates, createTemplate, updateTemplate, deleteTemplate,
   getCustomChains, getAddressGroups, getNodes, createInstance,
-  getMarks, createMark, updateMark, deleteMark
+  getMarks, createMark, updateMark, deleteMark,
+  exportTemplates, importTemplates
 } from '@/api'
 
 const loading = ref(false)
@@ -350,6 +354,56 @@ const markDrawerVisible = ref(false)
 const markEditingId = ref(null)
 const markForm = reactive({ name: '', value: 0, description: '' })
 const openMarkManager = () => { markDrawerVisible.value = true }
+
+// 模板导出
+const handleExport = async () => {
+  try {
+    const res = await exportTemplates()
+    const blob = new Blob([JSON.stringify(res.data.bundle, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `templates-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (e) {
+    ElMessage.error('导出失败: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+// 模板导入：触发文件选择
+const fileInput = ref(null)
+const triggerImport = () => { fileInput.value?.click() }
+
+// 模板导入：读取文件并上传
+const handleImport = async (e) => {
+  const file = e.target.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    let bundle
+    try { bundle = JSON.parse(text) } catch { throw new Error('JSON 解析失败') }
+    // 选择策略
+    const { action } = await ElMessageBox({
+      title: '导入确认',
+      message: `将导入 ${bundle.marks?.length||0} 个标记、${bundle.custom_chains?.length||0} 个策略组、${bundle.templates?.length||0} 个模板。冲突策略？`,
+      confirmButtonText: '跳过已存在',
+      cancelButtonText: '覆盖已存在',
+      showCancelButton: true,
+      distinguishCancelAndClose: true,
+      type: 'info',
+    }).catch(act => ({ action: act }))
+    const policy = action === 'cancel' ? 'overwrite' : 'skip'
+    const res = await importTemplates({ policy, bundle })
+    ElMessage.success(`导入完成: ${res.data.marks_created||0} 标记, ${res.data.chains_created||0} 策略组, ${res.data.templates_created||0} 模板`)
+    await loadTemplates()
+  } catch (e) {
+    if (e === 'cancel' || e?.action === 'close') return
+    ElMessage.error('导入失败: ' + (e.response?.data?.error || e.message || '未知错误'))
+  }
+  e.target.value = ''
+}
 const editMark = (m) => {
   markEditingId.value = m.id
   Object.assign(markForm, { name: m.name, value: m.value, description: m.description || '' })

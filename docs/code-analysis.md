@@ -46,8 +46,9 @@
 │   │   ├── compiler/       # 规则编译（策略 -> iptables 规则）
 │   │   ├── policy/         # 策略服务
 │   │   ├── registration/   # gRPC 注册服务（首次注册 + 证书续签）
-│   │   ├── server/         # Gin 路由 + gRPC 服务器组装（12 个路由注册函数）
+│   │   ├── server/         # Gin 路由 + gRPC 服务器组装（14 个路由注册函数）
 │   │   ├── stream/         # gRPC 双向流连接管理（消息收发 + 心跳）
+│   │   ├── templateio/     # 模板库导入导出（Bundle/Export/Import）
 │   │   └── task/           # 任务协调器（Apply/Confirm/Rollback 状态机）
 │   ├── config/             # Controller 配置
 │   ├── db/                 # 数据库连接与迁移
@@ -123,7 +124,7 @@
 | registerTaskRoutes | task_routes.go:18 | 任务列表/详情 |
 | registerTaskLifecycleRoutes | task_lifecycle_routes.go:16 | 任务审批/确认/回滚 |
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
-| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD |
+| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
 | registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 |
 | registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查 |
@@ -259,6 +260,7 @@
 | internal/controller/server/server.go | 446 | 服务器组装 + 路由注册 + gRPC 拦截器 |
 | internal/controller/server/node_routes.go | 179 | 节点 CRUD REST API |
 | internal/controller/stream/stream.go | 629 | gRPC 双向流 + 心跳 + 消息转发 |
+| internal/controller/templateio/templateio.go | ~180 | 模板库导入导出（Bundle/Export/Import） |
 | internal/controller/registration/registration.go | 381 | 首次注册 + 证书续签 |
 | internal/controller/asset/asset.go | 167 | 节点管理 REST（token/审批/拒绝） |
 | internal/agent/conn/conn.go | ~250 | mTLS 连接 + Handler 接口 + Loop |

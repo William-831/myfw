@@ -12,6 +12,7 @@ import (
 	"iptables-tool/internal/controller/audit"
 	"iptables-tool/internal/controller/policy"
 	"iptables-tool/internal/controller/task"
+	"iptables-tool/internal/controller/templateio"
 	"iptables-tool/internal/model"
 )
 
@@ -82,6 +83,52 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		auditTpl(auditSink, c, "delete", id, "")
 		c.Status(http.StatusNoContent)
+	})
+
+	// --- 模板导入导出 ---
+	g.GET("/templates/export", func(c *gin.Context) {
+		bundle, err := templateio.Export(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"bundle": bundle})
+	})
+
+	g.POST("/templates/import", func(c *gin.Context) {
+		var body struct {
+			Policy templateio.ImportPolicy `json:"policy"`
+			Bundle *templateio.Bundle      `json:"bundle"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if body.Bundle == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bundle is required"})
+			return
+		}
+		if body.Policy == "" {
+			body.Policy = templateio.ImportSkip
+		}
+		result, err := templateio.Import(db, body.Bundle, body.Policy)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if auditSink != nil {
+			detail, _ := json.Marshal(map[string]any{
+				"op":     "import",
+				"policy": string(body.Policy),
+				"result": result,
+			})
+			_ = auditSink.Write(c.Request.Context(), model.AuditLog{
+				Actor:  actor(c),
+				Action: "template.import",
+				Detail: string(detail),
+			})
+		}
+		c.JSON(http.StatusOK, result)
 	})
 
 	// --- 节点实例 ---

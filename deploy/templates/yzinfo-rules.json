@@ -1,0 +1,98 @@
+{
+  "version": "1.0",
+  "marks": [
+    { "name": "ops", "value": 15, "description": "运维流量标记" },
+    { "name": "dev", "value": 255, "description": "开发流量标记" }
+  ],
+  "custom_chains": [],
+  "templates": [
+    {
+      "name": "ops-mark-input-62022",
+      "group_name": "business-input",
+      "action": "MARK",
+      "mark": 15,
+      "protocol": "tcp",
+      "port_range": "62022",
+      "priority": 100,
+      "enabled": true,
+      "description": "运维端口 62022 INPUT 打标"
+    },
+    {
+      "name": "ops-mark-input-8080",
+      "group_name": "business-input",
+      "action": "MARK",
+      "mark": 15,
+      "protocol": "tcp",
+      "port_range": "8080",
+      "priority": 100,
+      "enabled": true,
+      "description": "运维端口 8080 INPUT 打标"
+    },
+    {
+      "name": "dev-mark-input-62022",
+      "group_name": "business-input",
+      "action": "MARK",
+      "mark": 255,
+      "protocol": "tcp",
+      "port_range": "62022",
+      "priority": 100,
+      "enabled": true,
+      "description": "开发端口 62022 INPUT 打标"
+    },
+    {
+      "name": "dev-mark-input-8080",
+      "group_name": "business-input",
+      "action": "MARK",
+      "mark": 255,
+      "protocol": "tcp",
+      "port_range": "8080",
+      "priority": 100,
+      "enabled": true,
+      "description": "开发端口 8080 INPUT 打标"
+    },
+    {
+      "name": "ops-mark-mangle-62022",
+      "group_name": "mark-mangle",
+      "action": "MARK",
+      "mark": 15,
+      "protocol": "tcp",
+      "port_range": "62022",
+      "priority": 100,
+      "enabled": true,
+      "description": "运维端口 62022 mangle 打标"
+    },
+    {
+      "name": "ops-mark-mangle-8080",
+      "group_name": "mark-mangle",
+      "action": "MARK",
+      "mark": 15,
+      "protocol": "tcp",
+      "port_range": "8080",
+      "priority": 100,
+      "enabled": true,
+      "description": "运维端口 8080 mangle 打标"
+    },
+    {
+      "name": "dev-mark-mangle-62022",
+      "group_name": "mark-mangle",
+      "action": "MARK",
+      "mark": 255,
+      "protocol": "tcp",
+      "port_range": "62022",
+      "priority": 100,
+      "enabled": true,
+      "description": "开发端口 62022 mangle 打标"
+    },
+    {
+      "name": "dev-mark-mangle-8080",
+      "group_name": "mark-mangle",
+      "action": "MARK",
+      "mark": 255,
+      "protocol": "tcp",
+      "port_range": "8080",
+      "priority": 100,
+      "enabled": true,
+      "description": "开发端口 8080 mangle 打标"
+    }
+  ]
+}
