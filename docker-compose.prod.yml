@@ -1,0 +1,14 @@
+version: "3"
+services:
+  controller:
+    image: myfw-controller:v0.3.0
+    container_name: myfw-controller
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    env_file:
+      - .env                    # 敏感配置(DB DSN / HMAC 密钥)从 .env 加载,不入镜像
+    volumes:
+      - ./dev-ca:/etc/myfw/ca:ro                                              # CA 证书(运行时挂载,不打入镜像)
+      - ./configs/controller.prod.example.yaml:/etc/myfw/config.yaml:ro       # 生产配置(连接池/TLS/审计)
+    restart: unless-stopped
