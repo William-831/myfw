@@ -256,9 +256,6 @@ func run() error {
 			return nil
 		}
 	}
-
-	<-ctx.Done()
-	return nil
 }
 
 // reportIptablesRules 收集并上报 iptables 规则

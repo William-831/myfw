@@ -85,3 +85,6 @@ openssl.cnf
 
 # ---- 误建目录 ----
 /-p/
+
+# IDE workspace
+.vs/
