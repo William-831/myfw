@@ -49,7 +49,8 @@ type Handler struct {
 	ExecExecutor func(ctx context.Context, name string, args []string) (string, error)
 
 	// RenewCertFn 证书续签回调，由 cmd/agent 注入（调用 requestCertRenewal）。
-	RenewCertFn func(ctx context.Context) error
+	// trigger 参数区分来源: "auto"(自动轮换) / "manual"(管理员手动)。
+	RenewCertFn func(ctx context.Context, trigger string) error
 
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
@@ -68,12 +69,12 @@ func (h *Handler) SetHashNotifier(n HashNotifier) {
 	h.HashNotifier = n
 }
 
-// OnRenewCert 触发证书续签。
+// OnRenewCert 触发证书续签（Controller 下发 RenewCert 指令,手动触发 trigger="manual"）。
 func (h *Handler) OnRenewCert(ctx context.Context) error {
 	if h.RenewCertFn == nil {
 		return errors.New("renew cert not supported")
 	}
-	return h.RenewCertFn(ctx)
+	return h.RenewCertFn(ctx, "manual")
 }
 
 // OnApply snapshots the current namespace, then applies the new RuleSet.

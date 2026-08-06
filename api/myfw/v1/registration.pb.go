@@ -28,6 +28,7 @@ type RegisterRequest struct {
 	CsrPem         []byte                 `protobuf:"bytes,3,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"`                // PKCS#10 CSR; private key never leaves host
 	Fingerprint    *MachineFingerprint    `protobuf:"bytes,4,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
 	Capability     *Capability            `protobuf:"bytes,5,opt,name=capability,proto3" json:"capability,omitempty"`
+	Trigger        string                 `protobuf:"bytes,6,opt,name=trigger,proto3" json:"trigger,omitempty"` // 续签触发源: auto(自动轮换)/manual(管理员手动),仅续签分支使用
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -95,6 +96,13 @@ func (x *RegisterRequest) GetCapability() *Capability {
 		return x.Capability
 	}
 	return nil
+}
+
+func (x *RegisterRequest) GetTrigger() string {
+	if x != nil {
+		return x.Trigger
+	}
+	return ""
 }
 
 type RegisterResponse struct {
@@ -265,7 +273,7 @@ var File_myfw_v1_registration_proto protoreflect.FileDescriptor
 
 const file_myfw_v1_registration_proto_rawDesc = "" +
 	"\n" +
-	"\x1amyfw/v1/registration.proto\x12\amyfw.v1\x1a\x14myfw/v1/common.proto\"\xea\x01\n" +
+	"\x1amyfw/v1/registration.proto\x12\amyfw.v1\x1a\x14myfw/v1/common.proto\"\x84\x02\n" +
 	"\x0fRegisterRequest\x12'\n" +
 	"\x0fbootstrap_token\x18\x01 \x01(\tR\x0ebootstrapToken\x12!\n" +
 	"\fcandidate_id\x18\x02 \x01(\tR\vcandidateId\x12\x17\n" +
@@ -273,7 +281,8 @@ const file_myfw_v1_registration_proto_rawDesc = "" +
 	"\vfingerprint\x18\x04 \x01(\v2\x1b.myfw.v1.MachineFingerprintR\vfingerprint\x123\n" +
 	"\n" +
 	"capability\x18\x05 \x01(\v2\x13.myfw.v1.CapabilityR\n" +
-	"capability\"t\n" +
+	"capability\x12\x18\n" +
+	"\atrigger\x18\x06 \x01(\tR\atrigger\"t\n" +
 	"\x10RegisterResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12&\n" +
 	"\x0fclient_cert_pem\x18\x02 \x01(\fR\rclientCertPem\x12\x1f\n" +

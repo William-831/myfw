@@ -256,15 +256,20 @@ func (s *Service) renewCert(ctx context.Context, req *myfwv1.RegisterRequest) (*
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	trigger := req.Trigger
+	if trigger == "" {
+		trigger = "auto" // 向后兼容旧 Agent
+	}
 	if s.Audit != nil {
 		detail, _ := json.Marshal(map[string]any{
 			"node_id":         nodeID,
 			"old_fingerprint": oldFP,
 			"new_fingerprint": newFP,
 			"not_after":       notAfter,
+			"trigger":         trigger,
 		})
 		_ = s.Audit.Write(ctx, model.AuditLog{
-			Actor:  "agent",
+			Actor:  trigger, // "auto" / "manual"
 			Action: "node.cert_renew",
 			NodeID: nodeID,
 			Detail: string(detail),

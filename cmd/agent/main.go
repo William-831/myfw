@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -142,13 +143,13 @@ func run() error {
 		})
 		if err := rotator.LoadExisting(); err == nil && rotator.NeedsRotation() {
 			log.Info("certificate nearing expiry, requesting renewal")
-			if err := requestCertRenewal(ctx, cfg, nodeID, rotator, cap); err != nil {
+			if err := requestCertRenewal(ctx, cfg, nodeID, rotator, cap, "auto"); err != nil {
 				log.Warn("certificate renewal failed, will retry on next restart", "err", err)
 			}
 		}
 		// 启动后台轮换循环
 		rotator.StartRotationLoop(ctx, func(ctx context.Context) error {
-			err := requestCertRenewal(ctx, cfg, nodeID, rotator, cap)
+			err := requestCertRenewal(ctx, cfg, nodeID, rotator, cap, "auto")
 			if err == nil {
 				log.Info("certificate renewed, reconnecting with new cert")
 				select {
@@ -206,8 +207,8 @@ func run() error {
 
 	// 注入证书续签回调：Controller 下发 RenewCert 指令时触发
 	if rotator != nil {
-		h.RenewCertFn = func(ctx context.Context) error {
-			return requestCertRenewal(ctx, cfg, nodeID, rotator, cap)
+		h.RenewCertFn = func(ctx context.Context, trigger string) error {
+			return requestCertRenewal(ctx, cfg, nodeID, rotator, cap, trigger)
 		}
 	}
 
@@ -368,7 +369,13 @@ func clearBootstrapToken(path string) error {
 
 // requestCertRenewal 向Controller请求证书轮换。
 // 流程：生成新密钥对 → 发送CSR → 获取新证书 → 原子写入磁盘。
-func requestCertRenewal(ctx context.Context, cfg agentcfg.Config, nodeID string, rotator *security.CertRotation, cap *myfwv1.Capability) error {
+var renewMu sync.Mutex
+
+func requestCertRenewal(ctx context.Context, cfg agentcfg.Config, nodeID string, rotator *security.CertRotation, cap *myfwv1.Capability, trigger string) error {
+	if !renewMu.TryLock() {
+		return fmt.Errorf("renewal already in progress (trigger=%s)", trigger)
+	}
+	defer renewMu.Unlock()
 	// 连接到Controller（使用旧证书）
 	conn, err := conn.Dial(ctx, cfg.Controller.Endpoint, conn.TLSMaterial{
 		Disable:    cfg.Controller.TLS.Disable,
@@ -399,6 +406,7 @@ func requestCertRenewal(ctx context.Context, cfg agentcfg.Config, nodeID string,
 		CsrPem:         csrPEM,
 		Fingerprint:    bootstrap.MachineFingerprint(),
 		Capability:     cap,
+		Trigger:        trigger, // auto / manual,Controller 审计区分来源
 	})
 	if err != nil {
 		return fmt.Errorf("renewal RPC: %w", err)

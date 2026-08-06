@@ -25,6 +25,7 @@ message RegisterRequest {
   bytes csr_pem = 3;                   // PKCS#10 CSR; private key never leaves host
   MachineFingerprint fingerprint = 4;
   Capability capability = 5;
+  string trigger = 6;                  // 续签触发源: auto(自动轮换)/manual(管理员手动),仅续签分支使用
 }
 
 message RegisterResponse {
