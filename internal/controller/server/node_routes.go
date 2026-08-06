@@ -133,7 +133,25 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 
 	g.DELETE("/:id", func(c *gin.Context) {
 		id := c.Param("id")
-		if err := db.Model(&model.Node{}).Where("id = ?", id).Update("status", model.NodeStatusArchived).Error; err != nil {
+		err := db.Transaction(func(tx *gorm.DB) error {
+			// 级联清理节点关联数据（AuditLog 保留用于审计追溯）
+			for _, m := range []any{
+				&model.NodeCapability{},
+				&model.Certificate{},
+				&model.NodePolicyInstance{},
+				&model.Rule{},
+				&model.Task{},
+				&model.Snapshot{},
+				&model.IptablesRule{},
+			} {
+				if err := tx.Where("node_id = ?", id).Delete(m).Error; err != nil {
+					return err
+				}
+			}
+			// 物理删除节点本身
+			return tx.Where("id = ?", id).Delete(&model.Node{}).Error
+		})
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
