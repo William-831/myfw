@@ -25,8 +25,12 @@
         </div>
       </template>
       <el-table :data="nodes" style="width: 100%" v-loading="loading" size="default">
-        <el-table-column prop="hostname" label="主机名" min-width="140" show-overflow-tooltip />
-        <el-table-column label="IP 地址" min-width="130">
+        <el-table-column label="节点名称" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.name || row.hostname || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="IP 地址" min-width="150">
           <template #default="{ row }">
             <span v-if="row.ip" class="mono">{{ row.ip }}</span>
             <span v-else class="muted">-</span>
@@ -179,8 +183,8 @@
         <el-form-item label="IP 地址">
           <el-input :model-value="editForm.ip" disabled />
         </el-form-item>
-        <el-form-item label="主机名" prop="hostname">
-          <el-input v-model="editForm.hostname" placeholder="例如：prod-server-01" />
+        <el-form-item label="节点名称" prop="name">
+          <el-input v-model="editForm.name" placeholder="例如：生产服务器-01" />
         </el-form-item>
         <el-form-item label="标签">
           <el-input v-model="editLabelsStr" placeholder="标签用逗号分隔，例如：prod,web" />
@@ -198,7 +202,7 @@
         <el-descriptions-item label="节点ID" :span="2">
           <code class="node-id">{{ detailNode.id }}</code>
         </el-descriptions-item>
-        <el-descriptions-item label="主机名">{{ detailNode.hostname || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="节点名称">{{ detailNode.name || detailNode.hostname || '-' }}</el-descriptions-item>
         <el-descriptions-item label="IP 地址">
           <span v-if="detailNode.ip" class="mono">{{ detailNode.ip }}</span>
           <span v-else>-</span>
@@ -257,7 +261,7 @@
     </el-dialog>
 
     <!-- 快速诊断对话框（只读：健康状态 + 链统计 + 规则概览） -->
-    <el-dialog v-model="rulesDialogVisible" :title="`快速诊断 - ${rulesNode.ip || rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
+    <el-dialog v-model="rulesDialogVisible" :title="`快速诊断 - ${rulesNode.name || rulesNode.ip || rulesNode.hostname || rulesNode.id}`" width="1080px" top="3vh">
       <div v-loading="rulesLoading">
         <div v-if="!rulesLoading && Object.keys(iptablesRules).length === 0" class="empty-state">
           暂无规则数据。Agent 启动后会自动上报当前 iptables 规则。
@@ -415,7 +419,7 @@ const saving = ref(false)
 const rulesLoading = ref(false)
 
 // 列显隐：常用列（主机名/IP/后端/状态/操作）始终显示，非常用列可收纳
-const columnVisible = reactive({ system: true, labels: true, lastSeen: true, certExpiry: true })
+const columnVisible = reactive({ system: true, labels: true, lastSeen: false, certExpiry: true })
 const toggleableCols = [
   { key: 'system', label: '系统' },
   { key: 'labels', label: '标签' },
@@ -438,20 +442,20 @@ const installCommand = computed(() => {
 
 // 编辑节点表单
 const editFormRef = ref(null)
-const editForm = reactive({ id: '', hostname: '', ip: '', labels: '' })
+const editForm = reactive({ id: '', name: '', ip: '', labels: '' })
 const editLabelsStr = ref('')
 const editRules = {
-  hostname: [{ required: true, message: '请输入主机名', trigger: 'blur' }]
+  name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }]
 }
 
 // 节点详情
 const detailNode = reactive({
-  id: '', hostname: '', ip: '', status: '', capability: null,
+  id: '', name: '', hostname: '', ip: '', status: '', capability: null,
   labels: '', last_seen: '', created_at: '', cert_not_after: ''
 })
 
 // iptables 规则
-const rulesNode = reactive({ id: '', hostname: '', ip: '', capability: null })
+const rulesNode = reactive({ id: '', name: '', hostname: '', ip: '', capability: null })
 const iptablesRules = ref({})
 const activeTable = ref('filter')
 const ruleSearch = ref('')
@@ -593,7 +597,7 @@ const handleCommand = (cmd, row) => {
 const handleApprove = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确认通过节点 ${row.hostname || row.id} 的注册申请?通过后即可管理该节点。`,
+      `确认通过节点 ${row.name || row.hostname || row.id} 的注册申请?通过后即可管理该节点。`,
       '审批确认',
       { type: 'success', confirmButtonText: '通过', cancelButtonText: '取消' }
     )
@@ -743,7 +747,7 @@ const downloadScript = () => {
 // 编辑节点
 const handleEdit = (row) => {
   editForm.id = row.id
-  editForm.hostname = row.hostname || ''
+  editForm.name = row.name || row.hostname || ''
   editForm.ip = row.ip || ''
   editForm.labels = row.labels || ''
   editLabelsStr.value = parseLabels(row.labels).join(', ')
@@ -758,7 +762,7 @@ const handleSaveEdit = async () => {
   try {
     const labels = editLabelsStr.value.split(',').map(s => s.trim()).filter(Boolean)
     await updateNode(editForm.id, {
-      hostname: editForm.hostname,
+      name: editForm.name,
       labels
     })
     ElMessage.success('更新成功')
@@ -785,6 +789,7 @@ const handleView = async (row) => {
 // 查看 iptables 规则
 const handleViewRules = async (row) => {
   rulesNode.id = row.id
+  rulesNode.name = row.name || ''
   rulesNode.hostname = row.hostname
   rulesNode.ip = row.ip
   rulesNode.capability = row.capability || null
@@ -903,7 +908,7 @@ const handleCheckDrift = async () => {
 const handleRenew = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确定续签节点 ${row.hostname || row.id} 的证书？续签后节点将短暂重连。`,
+      `确定续签节点 ${row.name || row.hostname || row.id} 的证书？续签后节点将短暂重连。`,
       '续签证书',
       { type: 'warning', confirmButtonText: '续签', cancelButtonText: '取消' }
     )
@@ -919,7 +924,7 @@ const handleRenew = async (row) => {
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确定要删除节点 ${row.hostname || row.id} 吗？此操作不可恢复。`,
+      `确定要删除节点 ${row.name || row.hostname || row.id} 吗？此操作不可恢复。`,
       '确认删除',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
     )
@@ -940,7 +945,7 @@ onMounted(loadNodes)
 .title { font-weight: 600; }
 .col-settings { display: flex; flex-direction: column; gap: 6px; }
 .col-settings-title { font-size: 12px; color: #909399; margin-bottom: 4px; }
-.mono { font-family: 'Courier New', Courier, monospace; }
+.mono { font-family: 'Courier New', Courier, monospace; white-space: nowrap; }
 .guard-tag { margin-left: 4px; cursor: pointer; }
 .node-id { font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #1f2937; word-break: break-all; }
 .backend-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

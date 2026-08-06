@@ -117,6 +117,7 @@ func (s *Service) Register(ctx context.Context, req *myfwv1.RegisterRequest) (*m
 		node := model.Node{
 			ID:        id,
 			Status:    model.NodeStatusPending,
+			Name:      tok.Note, // 添加节点时填写的名称（bootstrap token note）
 			Hostname:  fingerprintHostname(req),
 			IP:        nodeIPFromRequest(req, ctx),
 			MachineID: fingerprintMachineID(req),

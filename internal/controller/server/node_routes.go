@@ -100,6 +100,7 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 		id := c.Param("id")
 		var body struct {
 			Hostname string   `json:"hostname"`
+			Name     string   `json:"name"`
 			Labels   []string `json:"labels"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
@@ -110,6 +111,9 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 		updates := map[string]any{}
 		if body.Hostname != "" {
 			updates["hostname"] = body.Hostname
+		}
+		if body.Name != "" {
+			updates["name"] = body.Name
 		}
 		if body.Labels != nil {
 			labelsJSON, _ := json.Marshal(body.Labels)

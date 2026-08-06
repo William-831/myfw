@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,5 +65,43 @@ func TestDeleteNodeRevokesCertificate(t *testing.T) {
 	}
 	if !cert.Revoked {
 		t.Fatal("Certificate 应标记 revoked")
+	}
+}
+
+// TestUpdateNodeName 验证编辑节点名称：PUT /api/v1/nodes/:id body={name} 更新 Node.Name。
+func TestUpdateNodeName(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver:       db.DriverSQLite,
+		DSN:          "file::memory:?cache=shared",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+		LogLevel:     gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb.Create(&model.Node{ID: "n_upd", Name: "旧名称", Status: model.NodeStatusActive})
+
+	streamSvc := stream.New(gdb, slog.Default(), nil)
+	h := BuildWebHandlerWithStream(gdb, time.Minute, streamSvc)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/nodes/n_upd", strings.NewReader(`{"name":"新名称"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码: got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	var node model.Node
+	if err := gdb.Where("id = ?", "n_upd").First(&node).Error; err != nil {
+		t.Fatalf("查询节点: %v", err)
+	}
+	if node.Name != "新名称" {
+		t.Fatalf("Node.Name: got %q, want %q", node.Name, "新名称")
 	}
 }
