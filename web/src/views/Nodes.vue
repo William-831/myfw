@@ -635,18 +635,24 @@ echo "下载 Agent..."
 curl -fsSL http://${host}:8080/download/agent/linux-amd64 -o /usr/local/bin/myfw-agent
 chmod +x /usr/local/bin/myfw-agent
 
-# 3. 写入配置文件
+# 3. 下载 CA 证书（mTLS 必需：Controller 用此 CA 签发 Agent 客户端证书）
+echo "下载 CA 证书..."
+curl -fsSL http://${host}:8080/download/ca.pem -o /etc/myfw-agent/ca.pem
+
+# 4. 写入配置文件（启用 mTLS：bootstrap 阶段凭 token 换取客户端证书，写入 cert_file/key_file）
 cat > /etc/myfw-agent/agent.yaml << 'AGENTEOF'
 controller:
   endpoint: ${host}:9090
   tls:
-    disable: true
+    ca_file: /etc/myfw-agent/ca.pem
+    cert_file: /etc/myfw-agent/agent.crt
+    key_file: /etc/myfw-agent/agent.key
   bootstrap_token: "${token}"
 node:
   labels: []
 AGENTEOF
 
-# 4. 写入 systemd unit
+# 5. 写入 systemd unit
 cat > /etc/systemd/system/myfw-agent.service << 'SERVICEEOF'
 [Unit]
 Description=MYFW Agent - 防火墙管理代理
@@ -665,7 +671,7 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 WantedBy=multi-user.target
 SERVICEEOF
 
-# 5. 启动服务
+# 6. 启动服务
 systemctl daemon-reload
 systemctl enable --now myfw-agent
 

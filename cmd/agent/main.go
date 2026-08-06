@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -138,7 +139,7 @@ func run() error {
 		rotator = security.NewCertRotation(security.RotationConfig{
 			CertTTL:     24 * time.Hour,
 			RenewBefore: 5 * time.Hour,
-			KeyDir:      cfg.Node.DataDir,
+			KeyDir:      filepath.Dir(cfg.Controller.TLS.CertFile), // 与 conn.Dial 证书路径一致,避免续签后仍用旧证书
 			Logger:      log,
 		})
 		if err := rotator.LoadExisting(); err == nil && rotator.NeedsRotation() {

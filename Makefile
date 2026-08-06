@@ -35,6 +35,12 @@ build-agent-linux: ## Cross-compile the agent for linux/amd64 and linux/arm64 (s
 	$(AGENT_ENV) GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(DIST)/myfw-agent-linux-amd64 ./cmd/agent
 	$(AGENT_ENV) GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(DIST)/myfw-agent-linux-arm64 ./cmd/agent
 
+.PHONY: deploy-agent
+deploy-agent: build-agent-linux ## 交叉编译 Agent 并部署到 ./agent/（供节点安装脚本 curl 下载）
+	@mkdir -p agent
+	cp $(DIST)/myfw-agent-linux-amd64 agent/myfw-agent-linux-amd64
+	@echo "deploy-agent: ./agent/ 已就位，容器挂载后经 /download/agent/linux-amd64 提供"
+
 # ---- Dev run ----
 .PHONY: dev-controller
 dev-controller: ## Run the controller locally against SQLite
@@ -66,9 +72,9 @@ vet: ## Run go vet
 proto: ## Regenerate protobuf/gRPC code
 	./scripts/proto-gen.sh
 
-# ---- CA (dev only) ----
+# ---- CA (生产 mTLS) ----
 .PHONY: gen-ca
-gen-ca: ## Generate a dev-only self-signed CA and server cert
+gen-ca: ## 生成生产级 CA 与 server 证书（SAN="域名或IP" ./scripts/gen-ca.sh）
 	./scripts/gen-ca.sh
 
 # ---- Cleanup ----

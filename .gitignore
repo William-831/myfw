@@ -32,6 +32,8 @@ web/.vite/
 
 # Dev CA & certificates (self-signed dev only)
 /dev-ca/
+# Agent 二进制（make deploy-agent 产物，运行时挂载到容器 /var/www/agent/）
+/agent/
 /certs/
 *.pem
 *.crt
@@ -42,6 +44,8 @@ web/.vite/
 .env
 .env.*
 !.env.example
+# 测试部署记录(含服务器凭据,禁止提交)
+docs/test-deploy.md
 
 # Agent 本地联调配置(含一次性 bootstrap_token,勿提交)
 dev-agent.yaml

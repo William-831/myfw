@@ -1,6 +1,9 @@
 version: "3"
 services:
   controller:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.compose
     image: myfw-controller:v0.3.0
     container_name: myfw-controller
     ports:
@@ -12,4 +15,5 @@ services:
       - ./dev-ca:/etc/myfw/ca:ro                                              # CA 证书(运行时挂载,不打入镜像)
       - ./configs/controller.prod.example.yaml:/etc/myfw/config.yaml:ro       # 生产配置(连接池/TLS/审计)
       - ./agent:/var/www/agent:ro                                            # Agent 二进制(节点安装脚本 curl 下载)
+      - ./data:/data                                                         # SQLite 数据持久化(生产用 MySQL 时不影响)
     restart: unless-stopped

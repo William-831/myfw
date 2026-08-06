@@ -353,8 +353,10 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerMarkRoutes(r, db, auditSink)
 	registerSystemRoutes(r, db)
 
-	// Agent 二进制下载(节点安装脚本 curl 拉取,二进制挂载到 /var/www/agent/)
+	// Agent 二进制与 CA 证书下载(节点安装脚本 curl 拉取)
+	// 二进制挂载到 /var/www/agent/,CA 挂载到 /etc/myfw/ca/(与 controller.prod.example.yaml 的 ca.cert_file 一致)
 	r.StaticFile("/download/agent/linux-amd64", "/var/www/agent/myfw-agent-linux-amd64")
+	r.StaticFile("/download/ca.pem", "/etc/myfw/ca/ca.pem")
 	r.Static("/assets", "/var/www/myfw/assets")
 	r.NoRoute(func(c *gin.Context) {
 		c.File("/var/www/myfw/index.html")
