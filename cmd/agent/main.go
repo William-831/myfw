@@ -323,16 +323,17 @@ func buildControllerWebURL(endpoint string) string {
 	return "http://" + endpoint
 }
 
-// selfDestruct 注销自毁：停止并禁用 systemd 服务 + 删除本地全部文件 + 退出进程。
+// selfDestruct 注销自毁：禁用 systemd 服务 + 删除本地全部文件 + 退出进程。
 // 触发场景：
 //   - Controller 删除节点时下发 Decommission 指令（在线节点）
 //   - Agent 重连被 Controller 拒绝（证书吊销/未知、节点删除，离线节点兜底）
 //
-// 确保节点彻底清理，可重新纳管。所有清理操作尽力而为，失败仅记日志不阻塞退出。
+// 注意：不能 systemctl stop —— 当前进程就是 myfw-agent，stop 会杀掉自身导致后续删文件
+// 不执行。先 disable（防机器重启后自动拉起），再删文件，最后 os.Exit 让进程正常退出
+// （exit 0，systemd Restart=on-failure 不会重启）。所有清理操作尽力而为。
 func selfDestruct(cfg agentcfg.Config, log *slog.Logger, reason string) {
 	log.Error("self-destructing", "reason", reason)
-	// 停止并禁用 systemd 服务
-	_ = exec.Command("systemctl", "stop", "myfw-agent").Run()
+	// 禁用 systemd 服务（unit 文件需存在，故在删 unit 之前）
 	_ = exec.Command("systemctl", "disable", "myfw-agent").Run()
 	// 删除配置/证书目录、状态目录、二进制、unit 文件
 	_ = os.RemoveAll(filepath.Dir(cfg.Controller.TLS.CertFile))

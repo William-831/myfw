@@ -48,6 +48,7 @@ web/.vite/
 docs/test-deploy.md
 # 临时部署辅助脚本(含密码/token,禁止提交)
 askpass.sh
+ssh_exec.py
 myfw-src.tar.gz
 scripts/install-test.sh
 scripts/run-deploy-step.sh
