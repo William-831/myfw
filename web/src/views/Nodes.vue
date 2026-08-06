@@ -136,10 +136,11 @@
         <el-alert type="success" :closable="false" style="margin-bottom: 10px">
           复制以下命令到目标 Linux 服务器执行即可安装 Agent
         </el-alert>
-        <el-input v-model="installScript" type="textarea" :rows="8" readonly style="font-family: monospace" />
-        <div style="margin-top: 10px; display: flex; gap: 8px">
-          <el-button type="primary" size="small" @click="copyScript">复制脚本</el-button>
-          <el-button size="small" @click="downloadScript">下载脚本</el-button>
+        <el-input :model-value="installCommand" type="textarea" :rows="3" readonly style="font-family: monospace; word-break: break-all" />
+        <div style="margin-top: 10px; display: flex; gap: 8px; align-items: center">
+          <el-button type="primary" size="small" @click="copyScript">复制命令</el-button>
+          <el-button size="small" @click="downloadScript">下载完整脚本</el-button>
+          <span style="font-size: 12px; color: #909399">粘贴到目标服务器终端直接执行</span>
         </div>
       </div>
 
@@ -411,6 +412,16 @@ const addRules = {
   name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }]
 }
 const installScript = ref('')
+// 单行安装命令: base64 编码完整脚本,用户复制粘贴到终端直接执行
+const installCommand = computed(() => {
+  if (!installScript.value) return ''
+  try {
+    const b64 = btoa(unescape(encodeURIComponent(installScript.value)))
+    return `echo '${b64}' | base64 -d > install-myfw-agent.sh && bash install-myfw-agent.sh`
+  } catch {
+    return installScript.value
+  }
+})
 
 // 编辑节点表单
 const editFormRef = ref(null)
@@ -676,12 +687,13 @@ echo "请在 Web 控制台中审核通过后即可管理"`
 }
 
 const copyScript = async () => {
+  const cmd = installCommand.value
   try {
-    await navigator.clipboard.writeText(installScript.value)
+    await navigator.clipboard.writeText(cmd)
   } catch {
     // 非 HTTPS 环境 fallback: textarea + execCommand
     const ta = document.createElement('textarea')
-    ta.value = installScript.value
+    ta.value = cmd
     ta.style.position = 'fixed'
     ta.style.opacity = '0'
     document.body.appendChild(ta)
@@ -689,7 +701,7 @@ const copyScript = async () => {
     document.execCommand('copy')
     document.body.removeChild(ta)
   }
-  ElMessage.success('已复制到剪贴板')
+  ElMessage.success('已复制单行安装命令,粘贴到终端直接执行')
 }
 
 const downloadScript = () => {
