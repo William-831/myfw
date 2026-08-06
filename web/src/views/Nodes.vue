@@ -136,7 +136,7 @@
         <el-alert type="success" :closable="false" style="margin-bottom: 10px">
           复制以下命令到目标 Linux 服务器执行即可安装 Agent
         </el-alert>
-        <el-input :model-value="installCommand" type="textarea" :rows="3" readonly style="font-family: monospace; word-break: break-all" />
+        <el-input :model-value="installCommand" type="textarea" :rows="12" readonly style="font-family: monospace; word-break: break-all" />
         <div style="margin-top: 10px; display: flex; gap: 8px; align-items: center">
           <el-button type="primary" size="small" @click="copyScript">复制命令</el-button>
           <el-button size="small" @click="downloadScript">下载完整脚本</el-button>
@@ -412,15 +412,10 @@ const addRules = {
   name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }]
 }
 const installScript = ref('')
-// 单行安装命令: base64 编码完整脚本,用户复制粘贴到终端直接执行
+// 单行安装命令: cat heredoc 把完整脚本写入文件再执行,复制粘贴到终端即可
 const installCommand = computed(() => {
   if (!installScript.value) return ''
-  try {
-    const b64 = btoa(unescape(encodeURIComponent(installScript.value)))
-    return `echo '${b64}' | base64 -d > install-myfw-agent.sh && bash install-myfw-agent.sh`
-  } catch {
-    return installScript.value
-  }
+  return `cat << 'MYFWEOF' > install-myfw-agent.sh\n${installScript.value}\nMYFWEOF\nbash install-myfw-agent.sh`
 })
 
 // 编辑节点表单
