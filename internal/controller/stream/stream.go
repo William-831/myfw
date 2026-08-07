@@ -51,6 +51,11 @@ type Service struct {
 	// Agent 上报 IptablesRules 时被唤醒。
 	rulesMu      sync.Mutex
 	rulesWaiters map[string]chan struct{}
+
+	// OnSync 在 Agent 请求 sync(drift 恢复)时被调用,触发 Controller 重新下发期望态。
+	// 由 server.go 注入(避免 stream 直接依赖 task 包造成循环导入)。nil 时仅记日志。
+	// 回调内部应异步执行(Apply 不阻塞 stream 处理)。
+	OnSync func(nodeID string)
 }
 
 // New builds a Service with an empty registry.
@@ -181,6 +186,11 @@ func (s *Service) handleUpstream(ctx context.Context, nodeID string, msg *myfwv1
 		s.auditDrift(ctx, nodeID, p.Drift)
 	case *myfwv1.AgentToController_Sync:
 		s.Log.Info("sync requested", "node_id", nodeID, "reason", p.Sync.Reason)
+		// 触发重新下发期望态(drift 恢复):回调由 server.go 注入,异步 Apply 不阻塞 stream。
+		// 修复 drift 死循环:原仅记日志不 Apply,导致 expected 永不更新、30s 后又 drift。
+		if s.OnSync != nil {
+			s.OnSync(nodeID)
+		}
 	case *myfwv1.AgentToController_State:
 		// M10 will wire this; drop with a debug log for now.
 		s.Log.Debug("state report", "node_id", nodeID)

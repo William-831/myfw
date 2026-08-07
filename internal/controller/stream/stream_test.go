@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 
 	gormlogger "gorm.io/gorm/logger"
@@ -51,5 +52,29 @@ func TestSendDecommissionOffline(t *testing.T) {
 	svc := newTestService(t)
 	if err := svc.SendDecommission(context.Background(), "n_offline", "node deleted"); err == nil {
 		t.Fatal("离线节点应返回 not connected 错误")
+	}
+}
+
+// TestSyncTriggersOnSyncCallback 验证 Agent 请求 sync(drift 恢复)时,Controller
+// 调用 OnSync 回调触发重新下发。修复 drift 死循环:原 Sync case 只记日志不 Apply。
+func TestSyncTriggersOnSyncCallback(t *testing.T) {
+	svc := newTestService(t)
+	var called atomic.Bool
+	var gotNode string
+	svc.OnSync = func(nodeID string) {
+		gotNode = nodeID
+		called.Store(true)
+	}
+	msg := &myfwv1.AgentToController{
+		Payload: &myfwv1.AgentToController_Sync{
+			Sync: &myfwv1.SyncRequest{Reason: "drift detected: expected X, got Y"},
+		},
+	}
+	svc.handleUpstream(context.Background(), "n_drift", msg)
+	if !called.Load() {
+		t.Fatal("OnSync 回调应被调用(drift 恢复触发重新下发)")
+	}
+	if gotNode != "n_drift" {
+		t.Fatalf("OnSync nodeID = %q, want n_drift", gotNode)
 	}
 }

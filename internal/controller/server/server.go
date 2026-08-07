@@ -126,6 +126,31 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 	comp := compiler.New(db)
 	co := task.NewCoordinator(db, streamSvc, comp, auditSink, log)
 
+	// 注入 drift 恢复回调:Agent 检测到 drift 请求 sync 时,Controller 重新下发期望态。
+	// 仅在线节点触发(避免离线节点堆积 FAILED task);Apply 幂等,成功后 expected 更新,
+	// 下次 watchdog 不再 drift,不会风暴。异步执行不阻塞 stream 处理。
+	streamSvc.OnSync = func(nodeID string) {
+		online := false
+		for _, id := range streamSvc.Reg.Connected() {
+			if id == nodeID {
+				online = true
+				break
+			}
+		}
+		if !online {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := co.Submit(ctx, 0, []string{nodeID}, task.SubmitOpts{
+				Author: "system", AutoApprove: true,
+			}); err != nil {
+				log.Warn("sync-triggered submit failed", "node_id", nodeID, "err", err)
+			}
+		}()
+	}
+
 	// Web (Gin) REST 路由
 	assetH := asset.New(db, auditSink, cfg.Bootstrap.TokenTTL)
 	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink)
