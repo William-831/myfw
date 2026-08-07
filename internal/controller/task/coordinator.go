@@ -178,9 +178,13 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 	co.audit(ctx, opts.Author, "task.submit", model.AuditSceneNormal, model.AuditResultPending, tasks, detail)
 
 	if opts.AutoApprove {
+		var dispatchErr error
 		for _, t := range tasks {
 			if err := co.approveAndDispatch(ctx, t.ID, opts.Author, opts.ConfirmDeadline); err != nil {
 				co.Log.Warn("auto-approve dispatch failed", "task_id", t.ID, "err", err)
+				if dispatchErr == nil {
+					dispatchErr = fmt.Errorf("task %s: %w", t.ID, err)
+				}
 			}
 		}
 		// Re-read so callers see the newer state.
@@ -189,6 +193,9 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 			if err := co.DB.WithContext(ctx).First(&fresh, "id = ?", t.ID).Error; err == nil {
 				tasks[i] = &fresh
 			}
+		}
+		if dispatchErr != nil {
+			return tasks, dispatchErr
 		}
 	}
 	return tasks, nil
@@ -251,6 +258,10 @@ func (co *Coordinator) Confirm(ctx context.Context, taskID, reviewer string) (*m
 		if err := tx.Save(&t).Error; err != nil {
 			return err
 		}
+		// 用户确认移除:清理本次 task 关联的待删除实例(移除进保护期后由 Confirm 落槽数据库删除)
+		if err := co.purgePendingDelete(tx, taskID); err != nil {
+			return err
+		}
 		updated = &t
 		return nil
 	})
@@ -282,6 +293,8 @@ func (co *Coordinator) Rollback(ctx context.Context, taskID, reviewer string) (*
 		if err := tx.Save(&t).Error; err != nil {
 			return err
 		}
+		// 误删回滚:恢复本次 task 关联的待删除实例(Agent 恢复快照,节点规则回来)
+		co.restorePendingDelete(tx, taskID)
 		updated = &t
 		return nil
 	})
@@ -403,6 +416,9 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		t.Message = res.Message
 		t.ResultHash = res.ResultHash
 		_ = co.DB.WithContext(ctx).Save(&t).Error
+		// Agent 应用失败:将节点实例的 applied 回退,避免状态显示"已下发"但实际未生效。
+		co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+			Where("node_id = ?", t.NodeID).Update("applied", false)
 		co.audit(ctx, "agent", "task.apply_failed", model.AuditSceneNormal, model.AuditResultFailed, []*model.Task{&t}, map[string]any{"msg": res.Message})
 		return
 	}
@@ -414,6 +430,9 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		co.Log.Warn("save confirm_wait", "task_id", t.ID, "err", err)
 		return
 	}
+	// Agent 确认应用成功,将 enabled 实例的 applied 置 true,disabled 实例的 applied 置 false。
+	co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+		Where("node_id = ?", t.NodeID).Update("applied", gorm.Expr("enabled"))
 	co.armRollbackTimer(&t)
 	deadline := "-"
 	pw := 0
@@ -476,6 +495,8 @@ func (co *Coordinator) autoRollback(taskID string) {
 	t.Status = model.TaskRolledBack
 	t.Message = "auto-rollback: confirm-wait deadline expired"
 	_ = co.DB.WithContext(ctx).Save(&t).Error
+	// 超时自动回滚同手动回滚:恢复待删除实例(Agent 恢复快照,规则回来)
+	co.restorePendingDelete(co.DB.WithContext(ctx), taskID)
 	co.audit(ctx, "system", "task.auto_rollback", model.AuditSceneAutoRollback, model.AuditResultRolledBack, []*model.Task{&t}, nil)
 
 	co.tmu.Lock()
@@ -552,6 +573,26 @@ func (co *Coordinator) sendRollbackToAgent(ctx context.Context, t *model.Task) {
 			Rollback: &myfwv1.RollbackTask{TaskId: t.ID},
 		},
 	})
+}
+
+// purgePendingDelete 物理删除与 taskID 关联的待删除实例:Confirm 时调用。
+// 用户确认移除,节点规则已不在(apply 时已 -D),数据库记录随之清除。
+func (co *Coordinator) purgePendingDelete(tx *gorm.DB, taskID string) error {
+	return tx.Where("pending_delete = ? AND pending_delete_task_id = ?", true, taskID).
+		Delete(&model.NodePolicyInstance{}).Error
+}
+
+// restorePendingDelete 恢复与 taskID 关联的待删除实例:Rollback(手动/自动)时调用。
+// Agent 已恢复变更前快照,节点规则回来,实例随之恢复启用并清除待删除标记。
+func (co *Coordinator) restorePendingDelete(tx *gorm.DB, taskID string) {
+	tx.Model(&model.NodePolicyInstance{}).
+		Where("pending_delete = ? AND pending_delete_task_id = ?", true, taskID).
+		Updates(map[string]any{
+			"enabled":                true,
+			"pending_delete":         false,
+			"applied":                true,
+			"pending_delete_task_id": "",
+		})
 }
 
 func (co *Coordinator) markFailed(ctx context.Context, taskID, msg string) {

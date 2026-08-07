@@ -77,7 +77,15 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 				}
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{"nodes": nodes})
+			// 查询 Registry 实时连接状态,populate online 字段。
+			connected := make(map[string]struct{}, 16)
+			for _, id := range streamSvc.Reg.Connected() {
+				connected[id] = struct{}{}
+			}
+			for i := range nodes {
+				_, nodes[i].Online = connected[nodes[i].ID]
+			}
+			c.JSON(http.StatusOK, gin.H{"nodes": nodes})
 	})
 
 	g.GET("/:id", func(c *gin.Context) {

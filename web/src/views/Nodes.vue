@@ -43,7 +43,13 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" min-width="110">
+        <el-table-column label="连接状态" min-width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.online" type="success" size="small" effect="dark">在线</el-tag>
+            <el-tag v-else type="danger" size="small" effect="dark">离线</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="审批状态" min-width="110">
           <template #default="{ row }">
             <el-tooltip
               v-if="row.status === 'ABNORMAL' && row.capability?.backend_reason"
@@ -451,7 +457,7 @@ const editRules = {
 // 节点详情
 const detailNode = reactive({
   id: '', name: '', hostname: '', ip: '', status: '', capability: null,
-  labels: '', last_seen: '', created_at: '', cert_not_after: ''
+  labels: '', last_seen: '', created_at: '', cert_not_after: '', online: false, online: false
 })
 
 // iptables 规则
@@ -490,7 +496,7 @@ const getBackendType = (backend) => {
 }
 
 const getStatusLabel = (status) => {
-  const map = { 'ACTIVE': '在线', 'PENDING': '待审核', 'OFFLINE': '离线', 'ARCHIVED': '已归档', 'ABNORMAL': '异常' }
+  const map = { 'ACTIVE': '已激活', 'PENDING': '待审核', 'OFFLINE': '离线', 'ARCHIVED': '已归档', 'ABNORMAL': '异常' }
   return map[status] || status || '未知'
 }
 

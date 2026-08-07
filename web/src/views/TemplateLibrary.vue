@@ -359,7 +359,7 @@ const openMarkManager = () => { markDrawerVisible.value = true }
 const handleExport = async () => {
   try {
     const res = await exportTemplates()
-    const blob = new Blob([JSON.stringify(res.data.bundle, null, 2)], { type: 'application/json' })
+    const blob = new Blob([JSON.stringify(res.bundle, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -396,7 +396,7 @@ const handleImport = async (e) => {
     }).catch(act => ({ action: act }))
     const policy = action === 'cancel' ? 'overwrite' : 'skip'
     const res = await importTemplates({ policy, bundle })
-    ElMessage.success(`导入完成: ${res.data.marks_created||0} 标记, ${res.data.chains_created||0} 策略组, ${res.data.templates_created||0} 模板`)
+    ElMessage.success(`导入完成: ${res.marks_created||0} 标记, ${res.chains_created||0} 策略组, ${res.templates_created||0} 模板`)
     await loadTemplates()
   } catch (e) {
     if (e === 'cancel' || e?.action === 'close') return

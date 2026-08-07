@@ -41,6 +41,9 @@ type Node struct {
 	// CertNotAfter 当前有效证书(revoked=false 中 not_after 最大者)过期时间,非持久化,
 	// 由节点列表/详情接口聚合返回,供前端展示与临期预警。
 	CertNotAfter *time.Time `gorm:"-" json:"cert_not_after,omitempty"`
+
+	// Online 标记节点当前是否建立 gRPC 流连接,非持久化,由节点列表接口从 Registry 查询。
+	Online bool `gorm:"-" json:"online"`
 }
 
 // NodeCapability is the latest probe result reported by a node's Agent.

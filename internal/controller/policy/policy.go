@@ -12,6 +12,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"iptables-tool/internal/controller/rulespec"
 	"iptables-tool/internal/model"
 )
 
@@ -216,12 +217,6 @@ var (
 	validDirections = map[string]bool{
 		"INBOUND": true, "OUTBOUND": true, "FORWARD": true, "": true,
 	}
-	validProtocols = map[string]bool{
-		"": true, "ANY": true, "TCP": true, "UDP": true, "ICMP": true,
-	}
-	validActions = map[string]bool{
-		"ACCEPT": true, "DROP": true, "REJECT": true, "MARK": true, "DNAT": true, "SNAT": true,
-	}
 )
 
 func validate(in PolicyInput) error {
@@ -264,42 +259,15 @@ type Fields struct {
 	SourceGroup string
 }
 
-// ValidateFields 校验规则字段约束(action/protocol 合法、mark 取值、端口需协议、
-// NAT 需 nat_to、MARK 联动白名单完整性),供 Policy/Template/Instance 三处复用。
+// ValidateFields 校验规则字段约束,委托 rulespec.Validate 统一校验。
+// 供 Policy/Template/Instance 三处复用。
 func ValidateFields(f Fields) error {
-	if !validProtocols[f.Protocol] {
-		return fmt.Errorf("policy: bad protocol %q", f.Protocol)
+	spec := rulespec.Spec{
+		Action: f.Action, Direction: f.Direction, Mark: f.Mark, MatchMark: f.MatchMark,
+		NatTo: f.NatTo, Protocol: f.Protocol, PortRange: f.PortRange,
+		Source: f.Source, SourceGroup: f.SourceGroup,
 	}
-	if !validActions[f.Action] {
-		return fmt.Errorf("policy: bad action %q", f.Action)
-	}
-	if f.Action == "DNAT" || f.Action == "SNAT" {
-		if f.NatTo == "" {
-			return fmt.Errorf("policy: %s requires nat_to", f.Action)
-		}
-	}
-	// mark 值限定为 dev(15)/ops(255) 两种权限标记
-	if f.Action == "MARK" && f.Mark != 15 && f.Mark != 255 {
-		return fmt.Errorf("policy: mark must be 15(dev) or 255(ops)")
-	}
-	if f.MatchMark != 0 && f.MatchMark != 15 && f.MatchMark != 255 {
-		return fmt.Errorf("policy: match_mark must be 0/15(dev)/255(ops)")
-	}
-	if f.PortRange != "" && f.Protocol == "" {
-		return errors.New("policy: port_range requires a protocol")
-	}
-	// MARK 白名单拦截:填了源(地址或地址组)则必须指定端口--打标按端口识别业务流量,编译器自动
-	// 生成 mangle 打标 + filter 白名单放行 + 兜底 DROP(落内置链,无需放行组)。
-	if f.Action == "MARK" && (f.Source != "" || f.SourceGroup != "") && f.PortRange == "" {
-		return errors.New("policy: MARK 白名单拦截需指定端口(port_range)")
-	}
-	// MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站),空默认 FORWARD
-	if f.Action == "MARK" && (f.Source != "" || f.SourceGroup != "") && f.PortRange != "" && f.Direction != "" {
-		if f.Direction != "FORWARD" && f.Direction != "INPUT" {
-			return fmt.Errorf("policy: MARK 白名单方向须为 FORWARD 或 INPUT")
-		}
-	}
-	return nil
+	return spec.Validate()
 }
 
 // checkGroupExists 校验策略组(CustomChain)存在,条目必须归属有效组。

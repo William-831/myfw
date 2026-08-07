@@ -54,9 +54,10 @@
                 <span class="inst-name">{{ inst.name }}</span>
                 <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
                 <el-tag v-if="inst.drift" size="small" type="warning" effect="dark">⚠ 模板已更新</el-tag>
-                <el-tag v-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
+                <el-tag v-if="inst.pending_delete" size="small" type="warning" effect="dark">待确认移除</el-tag>
+                <el-tag v-else-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
                 <el-tag v-else-if="inst.enabled && inst.applied" size="small" type="success" effect="plain">已下发</el-tag>
-                <el-tag v-if="!inst.enabled && inst.applied" size="small" type="danger" effect="dark">待移除</el-tag>
+                <el-tag v-else-if="!inst.enabled && inst.applied" size="small" type="danger" effect="dark">待移除</el-tag>
                 <el-tag :type="inst.enabled ? 'success' : 'info'" size="small">{{ inst.enabled ? '启用' : '禁用' }}</el-tag>
               </div>
               <div class="inst-rule">
@@ -76,7 +77,7 @@
                 <div class="actions">
                   <el-button size="small" text type="warning" @click="openEditInst(inst)">编辑参数</el-button>
                   <el-button v-if="inst.drift" size="small" text type="primary" @click="handleSync(inst)">同步模板</el-button>
-                  <el-button size="small" text type="danger" @click="handleDeleteInst(inst)">移除</el-button>
+                  <el-button size="small" text type="danger" :disabled="inst.pending_delete" @click="handleDeleteInst(inst)">移除</el-button>
                 </div>
               </div>
             </div>
@@ -173,7 +174,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
-import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks } from '@/api'
+import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const route = useRoute()
@@ -251,13 +252,35 @@ const previewCommand = computed(() => {
   return [{ text: parts.join(' '), type: 'default' }]
 })
 
-// 一键启停:切换实例 enabled(需重新下发节点才生效)
+// 轮询 task 直到终态(confirm_wait/confirmed/failed/rolled_back)或超时(15s)。
+// 后端 dispatch 异步:Send 后 task 处于 applying,Agent 回 TaskResult 后才更新 applied。
+// 不轮询会因 applied 延迟导致前端显示"未下发"而规则实际已生效。
+const pollTaskDone = async (taskID) => {
+  const terminal = new Set(['confirm_wait', 'confirmed', 'failed', 'rolled_back'])
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    try {
+      const t = await getTask(taskID)
+      if (terminal.has(t.status)) return t
+    } catch {}
+  }
+  return null
+}
+
+// 一键启停:切换实例 enabled 后自动下发,轮询终态再刷新
 const toggleEnabled = async (inst, v) => {
   try {
     await updateInstance(inst.id, { ...inst, enabled: v })
-    // 自动下发节点,使禁用/启用立即生效(进保护期,顶部确认)
-    await dispatchNode(selectedNodeId.value, { auto_approve: true })
-    ElMessage.success(v ? '已启用并下发,请到顶部确认' : '已禁用并下发,请到顶部确认')
+    const d = await dispatchNode(selectedNodeId.value, { auto_approve: true })
+    const taskID = d.tasks?.[0]?.id
+    if (!taskID) { ElMessage.success(v ? '已启用' : '已禁用'); loadInstances(); return }
+    const t = await pollTaskDone(taskID)
+    if (!t) { ElMessage.warning(v ? '已启用,下发超时,请稍后查看' : '已禁用,下发超时,请稍后查看'); loadInstances(); guard.refresh(); return }
+    if (t.status === 'confirm_wait' || t.status === 'confirmed') {
+      ElMessage.success(v ? '已启用并下发,请到顶部确认' : '已禁用并下发,请到顶部确认')
+    } else {
+      ElMessage.error((v ? '启用' : '禁用') + '下发失败: ' + (t.message || t.status))
+    }
     loadInstances()
     guard.refresh()
   } catch (e) {
@@ -397,12 +420,24 @@ const handleSync = async (inst) => {
 
 const handleDeleteInst = async (inst) => {
   try {
-    await ElMessageBox.confirm(`移除实例「${inst.name}」?节点规则需重新下发才生效.`, '确认移除', { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' })
-    await deleteInstance(inst.id)
-    ElMessage.success('已移除')
-    loadInstances()
+    await ElMessageBox.confirm(`移除实例「${inst.name}」?若已下发将进入保护期,可回滚.`, '确认移除', { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' })
+    const data = await deleteInstance(inst.id)
+    if (data && data.task_id) {
+      // 202:节点有规则,已下发移除并进保护期,轮询终态
+      ElMessage.info('已移除并进入保护期,可在保护期面板确认或回滚')
+      const t = await pollTaskDone(data.task_id)
+      if (t && t.status === 'failed') {
+        ElMessage.error('移除下发失败,实例已恢复')
+      }
+      loadInstances()
+      guard.refresh()
+    } else {
+      // 204:节点无规则,直接删除
+      ElMessage.success('已移除')
+      loadInstances()
+    }
   } catch (e) {
-    if (e !== 'cancel') ElMessage.error('移除失败')
+    if (e !== 'cancel') ElMessage.error(e?.response?.data?.error || '移除失败')
   }
 }
 
@@ -414,8 +449,16 @@ const handleDispatch = async () => {
   }
   dispatching.value = true
   try {
-    await dispatchNode(selectedNodeId.value, { auto_approve: true })
-    ElMessage.success('已下发,进入保护期,请到顶部确认')
+    const d = await dispatchNode(selectedNodeId.value, { auto_approve: true })
+    const taskID = d.tasks?.[0]?.id
+    if (!taskID) { ElMessage.warning('未创建任务'); return }
+    const t = await pollTaskDone(taskID)
+    if (!t) { ElMessage.warning('下发超时,请稍后查看'); loadInstances(); guard.refresh(); return }
+    if (t.status === 'confirm_wait' || t.status === 'confirmed') {
+      ElMessage.success('已下发,进入保护期,请到顶部确认')
+    } else {
+      ElMessage.error('下发失败: ' + (t.message || t.status))
+    }
     loadInstances()
     guard.refresh()
   } catch (e) {

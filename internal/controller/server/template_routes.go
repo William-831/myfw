@@ -11,6 +11,7 @@ import (
 
 	"iptables-tool/internal/controller/audit"
 	"iptables-tool/internal/controller/policy"
+	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/controller/task"
 	"iptables-tool/internal/controller/templateio"
 	"iptables-tool/internal/model"
@@ -18,7 +19,7 @@ import (
 
 // registerTemplateRoutes 挂载 C 档策略模板库 + 节点策略实例 API。
 // 模板库只维护规则骨架(无节点);节点实例从模板全量复制参数,编译只读实例。
-func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, auditSink *audit.Sink) {
+func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, auditSink *audit.Sink, streamSvc *stream.Service) {
 	g := r.Group("/api/v1")
 
 	// --- 模板 CRUD ---
@@ -307,13 +308,60 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			return
 		}
 		var inst model.NodePolicyInstance
-		db.First(&inst, id)
-		if err := db.Delete(&model.NodePolicyInstance{}, id).Error; err != nil {
+		if err := db.First(&inst, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
+			return
+		}
+		// 节点上无规则(applied=false):直接删 DB 记录,无需下发移除
+		if !inst.Applied {
+			if err := db.Delete(&model.NodePolicyInstance{}, id).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			auditInst(auditSink, c, "delete", id, inst.Name, inst.NodeID)
+			c.Status(http.StatusNoContent)
+			return
+		}
+		// 节点上有规则(applied=true):走 dispatch 移除 + 进保护期,误删可回滚
+		// 连接预检:节点未连接无法下发移除指令
+		connected := false
+		for _, nid := range streamSvc.Reg.Connected() {
+			if nid == inst.NodeID {
+				connected = true
+				break
+			}
+		}
+		if !connected {
+			c.JSON(http.StatusConflict, gin.H{"error": "节点未连接,无法移除规则"})
+			return
+		}
+		// 置 enabled=false + pending_delete=true,保留 applied=true 供 Submit 识别"待禁用"生成 -D 移除
+		if err := db.Model(&model.NodePolicyInstance{}).Where("id = ?", id).
+			Updates(map[string]any{"enabled": false, "pending_delete": true}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// 触发移除下发(进保护期)
+		tasks, err := co.Submit(c.Request.Context(), 0, []string{inst.NodeID}, task.SubmitOpts{
+			Author:      actor(c),
+			AutoApprove: true,
+		})
+		if err != nil || len(tasks) == 0 {
+			// Submit 失败:回滚标记,恢复实例原状态(启用、非待删)
+			db.Model(&model.NodePolicyInstance{}).Where("id = ?", id).
+				Updates(map[string]any{"enabled": true, "pending_delete": false})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "移除下发失败: " + err.Error()})
+			return
+		}
+		taskID := tasks[0].ID
+		// 关联本次移除的 task_id,Confirm/Rollback 据此精确清理或恢复
+		db.Model(&model.NodePolicyInstance{}).Where("id = ?", id).
+			Update("pending_delete_task_id", taskID)
 		auditInst(auditSink, c, "delete", id, inst.Name, inst.NodeID)
-		c.Status(http.StatusNoContent)
+		c.JSON(http.StatusAccepted, gin.H{
+			"task_id": taskID,
+			"message": "已进入保护期,可在保护期面板确认或回滚",
+		})
 	})
 
 	// drift 同步:用模板最新参数覆盖实例(实例名/启用/节点保留)
@@ -365,7 +413,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		if tpl.DestinationGroup != "" {
 			inst.DestinationGroup = tpl.DestinationGroup
 		}
-		inst.Applied = false // 同步后参数变更,需重新下发
+		inst.Applied = false                         // 同步后参数变更,需重新下发
 		inst.SyncedTemplateUpdatedAt = tpl.UpdatedAt // 同步完成,记录模板当前版本
 		if err := db.Save(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -384,6 +432,18 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			ConfirmDeadlineSeconds int64 `json:"confirm_deadline_seconds"`
 		}
 		_ = c.ShouldBindJSON(&body)
+		// 下发前连接预检:节点未连接时直接返回,不创建 task。
+		connected := false
+		for _, id := range streamSvc.Reg.Connected() {
+			if id == nodeID {
+				connected = true
+				break
+			}
+		}
+		if !connected {
+			c.JSON(http.StatusConflict, gin.H{"error": "节点未连接,无法下发"})
+			return
+		}
 		tasks, err := co.Submit(c.Request.Context(), 0, []string{nodeID}, task.SubmitOpts{
 			Author:          actor(c),
 			AutoApprove:     body.AutoApprove,
@@ -393,9 +453,9 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// 下发后 applied 反映节点实际状态 = enabled:启用实例已下发(applied=true),
-		// 禁用实例规则已移除(applied=false)。乐观标记--apply 失败时由保护期回滚兜底。
-		db.Model(&model.NodePolicyInstance{}).Where("node_id = ?", nodeID).Update("applied", gorm.Expr("enabled"))
+		// applied 标记由 Coordinator.handleResult 在 Agent 确认结果后更新:
+		// 成功时 enabled→true,失败时全部回退 false。
+		// 不在此处提前写入,避免节点离线时误显示"已下发"。
 		c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 	})
 }

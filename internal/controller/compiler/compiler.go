@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
+	"iptables-tool/internal/controller/rulespec"
 	"iptables-tool/internal/controller/policy"
 	"iptables-tool/internal/model"
 )
@@ -311,6 +312,14 @@ func parseLabels(s string) []string {
 // 放行/兜底规则)。方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名);
 // MARK 白名单拦截实例无组(group_id=0),规则落平台内置链。rule id 用 "i<实例ID>"。
 func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent string) ([]*myfwv1.CompiledRule, error) {
+	// 编译前 rulespec 校验:确保规则可执行,防旧脏数据绕过入口校验。
+	if err := (rulespec.Spec{
+		Action: inst.Action, Direction: inst.Direction, Mark: inst.Mark,
+		MatchMark: inst.MatchMark, NatTo: inst.NatTo, Protocol: inst.Protocol,
+		PortRange: inst.PortRange, Source: inst.Source, SourceGroup: inst.SourceGroup,
+	}).Validate(); err != nil {
+		return nil, fmt.Errorf("instance %d: %w", inst.ID, err)
+	}
 	dir, err := parseDirection(parentToDirection(groupParent))
 	if err != nil {
 		return nil, err

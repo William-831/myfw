@@ -79,9 +79,12 @@ coverage.html
 tmp/
 .tmp/
 
-# ---- 部署打包产物（含无后缀 Linux 二进制，重点防误提交）----
 /deploy-package/
 /deploy-cert/
+# 交叉编译二进制与前端打包产物(部署用,勿提交)
+/myfw-controller-linux
+/myfw-agent-linux
+/dist.tar.gz
 
 # ---- CA 工件补充 ----
 *.srl

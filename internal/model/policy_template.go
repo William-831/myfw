@@ -52,6 +52,12 @@ type NodePolicyInstance struct {
 	Description      string    `gorm:"size:512" json:"description"`
 	Enabled          bool      `gorm:"index" json:"enabled"`
 	Applied          bool      `gorm:"index;default:false" json:"applied"`
+	// PendingDelete 标记实例待删除:用户点"移除"且节点上有规则(applied=true)时置 true,
+	// 走 dispatch 移除下发并进入保护期。Confirm 时物理删除,Rollback 时恢复。
+	PendingDelete bool `gorm:"index;default:false" json:"pending_delete"`
+	// PendingDeleteTaskID 关联本次移除操作的 task_id,Confirm/Rollback 据此精确清理或恢复
+	// 对应实例,避免同节点多个保护期 task 互相误伤。
+	PendingDeleteTaskID string `gorm:"size:64;index" json:"pending_delete_task_id"`
 	// SyncedTemplateUpdatedAt 上次同步/实例化时模板的 UpdatedAt。drift 据此判断
 	// 模板是否在实例之后更新过--实例自身编辑不视为 drift(用户主动偏离模板)。
 	SyncedTemplateUpdatedAt time.Time `gorm:"column:synced_template_at;index" json:"synced_template_at"`
