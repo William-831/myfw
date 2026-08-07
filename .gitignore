@@ -84,6 +84,7 @@ tmp/
 # 交叉编译二进制与前端打包产物(部署用,勿提交)
 /myfw-controller-linux
 /myfw-agent-linux
+/myfw-agent
 /dist.tar.gz
 
 # ---- CA 工件补充 ----
