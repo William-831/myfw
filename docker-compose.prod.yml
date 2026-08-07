@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile.compose
-    image: myfw-controller:v0.3.0
+    image: myfw-controller:v1.1
     container_name: myfw-controller
     ports:
       - "8080:8080"
