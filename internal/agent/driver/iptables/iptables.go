@@ -305,10 +305,12 @@ func (d *Driver) pruneCustomChains(ctx context.Context, current []*myfwv1.Custom
 	return nil
 }
 
-// Snapshot dumps every managed chain via `-S` and joins the output into a
-// single deterministic payload. Format: for each chain in managedChains, a
-// header line "# table/chain" followed by the -S output. MYFW-* ipset 内容一并
-// 纳入,使 drift/Hash 覆盖地址组成员变化。
+// Snapshot dumps every managed chain AND every MYFW-* custom sub-chain via
+// `-S` and joins the output into a single deterministic payload. Format: for
+// each chain a header line "# table/chain" followed by the -S output.
+// 两级模型下业务规则全在自定义子链(组链),仅 dump managedChains 会让保护期回滚
+// (Restore)丢失组链规则,故此处必须覆盖全部 MYFW-* 链。子链按 table/name 排序
+// 保证 hash 稳定。MYFW-* ipset 内容一并纳入,使 drift/Hash 覆盖地址组成员变化。
 func (d *Driver) Snapshot(ctx context.Context) (string, string, error) {
 	var b strings.Builder
 	for _, mc := range managedChains {
@@ -322,6 +324,50 @@ func (d *Driver) Snapshot(ctx context.Context) (string, string, error) {
 			return "", "", fmt.Errorf("snapshot %s/%s: %w", mc.table, mc.chain, err)
 		}
 		fmt.Fprintf(&b, "# %s/%s\n%s", mc.table, mc.chain, out)
+		if !strings.HasSuffix(out, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	// 自定义子链:列出所有 MYFW-* 链(排除 managedChains),逐个 -S dump。
+	// 排序保证同输入产生同 payload(hash 稳定)。
+	seen := make(map[string]struct{}, len(managedChains))
+	for _, mc := range managedChains {
+		seen[mc.table+"/"+mc.chain] = struct{}{}
+	}
+	var custom []string // "table/name"
+	for _, tbl := range []string{tableFilter, tableNat, tableMangle} {
+		out, err := d.Exec.Run(ctx, "-t", tbl, "-L", "-n")
+		if err != nil {
+			continue // 表不存在或无权限,跳过
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "Chain ") {
+				continue
+			}
+			fields := strings.Fields(strings.TrimPrefix(line, "Chain "))
+			if len(fields) == 0 {
+				continue
+			}
+			name := fields[0]
+			if !strings.HasPrefix(name, "MYFW-") {
+				continue
+			}
+			key := tbl + "/" + name
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			custom = append(custom, key)
+		}
+	}
+	sort.Strings(custom)
+	for _, key := range custom {
+		tbl, name, _ := strings.Cut(key, "/")
+		out, err := d.Exec.Run(ctx, "-t", tbl, "-S", name)
+		if err != nil {
+			continue // 链已被并发删除,跳过
+		}
+		fmt.Fprintf(&b, "# %s/%s\n%s", tbl, name, out)
 		if !strings.HasSuffix(out, "\n") {
 			b.WriteByte('\n')
 		}
@@ -363,20 +409,70 @@ func (d *Driver) ipsetListNames(ctx context.Context) ([]string, error) {
 }
 
 // Restore re-applies a Snapshot payload. It flushes every managed chain and
-// re-issues each rule line captured in the snapshot.
+// re-issues each rule line captured in the snapshot. 两级模型下 payload 含自定义
+// 子链(-N 声明 + 规则),必须先在父链 jump 落地前创建子链(否则 -A 父链 -j 子链
+// 报链不存在),故分两遍:第一遍创建 -N 声明的链,第二遍 flush 后重建规则。
 func (d *Driver) Restore(ctx context.Context, payload string) error {
 	if err := d.Init(ctx); err != nil {
 		return err
 	}
-	// Flush every managed chain first.
+	// 第一遍:扫描 payload 中所有 -N 声明,先创建自定义子链(幂等,已存在忽略),
+	// 保证后续父链 jump 目标存在。
+	var curTable, curChain string
+	declared := make(map[string]struct{})
+	for _, line := range strings.Split(payload, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# ") {
+			if strings.HasPrefix(line, "# ipset/") {
+				curTable, curChain = "ipset", ""
+				continue
+			}
+			parts := strings.SplitN(strings.TrimPrefix(line, "# "), "/", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("restore: malformed header %q", line)
+			}
+			curTable, curChain = parts[0], parts[1]
+			continue
+		}
+		if curTable == "ipset" {
+			continue
+		}
+		if curTable == "" || curChain == "" {
+			return fmt.Errorf("restore: rule outside a chain block: %q", line)
+		}
+		if strings.HasPrefix(line, "-N ") {
+			name := strings.TrimPrefix(line, "-N ")
+			key := curTable + "/" + name
+			if _, ok := declared[key]; ok {
+				continue
+			}
+			declared[key] = struct{}{}
+			if _, err := d.Exec.Run(ctx, "-t", curTable, "-N", name); err != nil {
+				if !isChainExists(err) {
+					return fmt.Errorf("restore: create chain %s/%s: %w", curTable, name, err)
+				}
+			}
+		}
+	}
+
+	// 第二遍:flush managedChains + 声明的子链(避免旧规则残留),再按 payload 重建。
 	for _, mc := range managedChains {
 		if _, err := d.Exec.Run(ctx, "-t", mc.table, "-F", mc.chain); err != nil {
 			return err
 		}
 	}
+	for key := range declared {
+		tbl, name, _ := strings.Cut(key, "/")
+		if _, err := d.Exec.Run(ctx, "-t", tbl, "-F", name); err != nil {
+			return fmt.Errorf("restore: flush %s/%s: %w", tbl, name, err)
+		}
+	}
 	// Walk the payload; each `# table/chain` header switches the target,
 	// each other non-empty line is fed back to iptables verbatim.
-	var curTable, curChain string
+	curTable, curChain = "", ""
 	for _, line := range strings.Split(payload, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -402,8 +498,8 @@ func (d *Driver) Restore(ctx context.Context, payload string) error {
 		if curTable == "" || curChain == "" {
 			return fmt.Errorf("restore: rule outside a chain block: %q", line)
 		}
-		// -S prints chain-declaration lines like "-N MYFW-INPUT" which we
-		// skip (Init already created the chain).
+		// -S prints chain-declaration lines like "-N MYFW-acl-in" which we
+		// created in the first pass; skip them here.
 		if strings.HasPrefix(line, "-N ") {
 			continue
 		}

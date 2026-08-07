@@ -190,6 +190,49 @@ func TestSnapshotAndRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSnapshotRestoreCoversCustomChains 验证两级模型下 Snapshot 包含自定义组链,
+// Restore 能完整重建组链业务规则(保护期回滚完整性)。
+func TestSnapshotRestoreCoversCustomChains(t *testing.T) {
+	d1, _ := newDriver(t)
+	ctx := context.Background()
+
+	cc := []*myfwv1.CustomChainDef{{Name: "acl-in", Parent: "MYFW-INPUT", Table: "filter"}}
+	rules := []*myfwv1.CompiledRule{
+		{Id: "a", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "5.6.7.8", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "b", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "9.10.11.12", Action: myfwv1.Action_ACTION_DROP},
+	}
+	if _, err := d1.Apply(ctx, &myfwv1.RuleSet{Rules: rules, CustomChains: cc}); err != nil {
+		t.Fatal(err)
+	}
+	payload, h1, err := d1.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// payload 必须包含组链声明与规则
+	if !strings.Contains(payload, "# filter/MYFW-acl-in") {
+		t.Fatalf("snapshot should include custom chain MYFW-acl-in:\n%s", payload)
+	}
+	if !strings.Contains(payload, "-A MYFW-acl-in -s 5.6.7.8") {
+		t.Fatalf("snapshot should include group chain rule:\n%s", payload)
+	}
+
+	// 新 driver 直接 Restore(模拟保护期回滚):组链应完整重建
+	d2, fake2 := newDriver(t)
+	if err := d2.Restore(ctx, payload); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := len(fake2.Tables["filter"]["MYFW-acl-in"]); got != 2 {
+		t.Fatalf("restore: want 2 rules in MYFW-acl-in, got %d: %v", got, fake2.Tables["filter"]["MYFW-acl-in"])
+	}
+	h2, err := d2.Hash(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1 != h2 {
+		t.Fatalf("hash after restore differs: %s vs %s", h1, h2)
+	}
+}
+
 func TestHashIsDeterministicAcrossRuleOrder(t *testing.T) {
 	d1, _ := newDriver(t)
 	d2, _ := newDriver(t)
