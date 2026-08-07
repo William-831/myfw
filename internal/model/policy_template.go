@@ -18,8 +18,7 @@ type PolicyTemplate struct {
 	NatTo            string    `gorm:"size:128" json:"nat_to"`
 	SourceGroup      string    `gorm:"size:64" json:"source_group"`
 	DestinationGroup string    `gorm:"size:64" json:"destination_group"`
-	MatchMark        uint32    `json:"match_mark"`
-	MarkACLGroupID   uint      `gorm:"index" json:"mark_acl_group_id"`
+	MatchMark        uint32    `json:"match_mark"` // 仅供 MARK 白名单编译内部使用(匹配已打标流量),非用户输入,前端已移除入口
 	Priority         int       `gorm:"index" json:"priority"`
 	Description      string    `gorm:"size:512" json:"description"`
 	Enabled          bool      `gorm:"index" json:"enabled"`
@@ -46,8 +45,7 @@ type NodePolicyInstance struct {
 	NatTo            string    `gorm:"size:128" json:"nat_to"`
 	SourceGroup      string    `gorm:"size:64" json:"source_group"`
 	DestinationGroup string    `gorm:"size:64" json:"destination_group"`
-	MatchMark        uint32    `json:"match_mark"`
-	MarkACLGroupID   uint      `gorm:"index" json:"mark_acl_group_id"`
+	MatchMark        uint32    `json:"match_mark"` // 仅供 MARK 白名单编译内部使用(匹配已打标流量),非用户输入,前端已移除入口
 	Priority         int       `gorm:"index" json:"priority"`
 	Description      string    `gorm:"size:512" json:"description"`
 	Enabled          bool      `gorm:"index" json:"enabled"`

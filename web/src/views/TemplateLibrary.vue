@@ -113,11 +113,6 @@
             <el-option v-for="m in marks" :key="m.id" :label="`${m.name} (${m.value})`" :value="m.value" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="form.action === 'MARK' && form.source_group" label="放行组">
-          <el-select v-model="form.mark_acl_group_id" clearable placeholder="filter 组(联动放行+兜底)" style="width: 100%">
-            <el-option v-for="cc in aclGroupOptions" :key="cc.id" :label="`MYFW-${cc.name} (${cc.parent})`" :value="cc.id" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="优先级"><el-input-number v-model="form.priority" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
@@ -197,9 +192,6 @@ const addressGroups = ref([])
 const marks = ref([])
 const nodes = ref([])
 
-// MARK 联动放行组候选:仅 filter 表的组
-const aclGroupOptions = computed(() => (customChains.value || []).filter((c) => ['MYFW-INPUT', 'MYFW-OUTPUT', 'MYFW-FORWARD'].includes(c.parent)))
-
 // 多选
 const multiSelect = ref(false)
 const selected = ref([])
@@ -213,7 +205,7 @@ const editingId = ref(null)
 const form = reactive(emptyForm())
 
 function emptyForm() {
-  return { name: '', group_id: null, source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, mark_acl_group_id: null, priority: 10, description: '', enabled: true }
+  return { name: '', group_id: null, source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
 }
 
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')

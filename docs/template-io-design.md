@@ -69,7 +69,6 @@ DB 用户需 `CREATE` 权限。`deploy/docker/.env.example` 与 `docs/deployment
 | `PolicyTemplate.GroupID` | uint（CustomChain.ID） | `group_name` string | 导出查 CustomChain.Name；导入按 name 查 ID |
 | `Mark` / `MatchMark` | uint32 数值 | 数值 | 不转换（模板存的是 Mark.Value，非 ID） |
 | `SourceGroup` / `DestinationGroup` | string（地址组名） | string | 不转换（已是 name） |
-| `MarkACLGroupID` | uint（AddressGroup.ID） | 第一版保留 0 | YZINFO 不用 MARK 白名单联动；非 0 时导入报错提示 |
 
 ### 3.3 导出 `Export(db) -> *Bundle`
 

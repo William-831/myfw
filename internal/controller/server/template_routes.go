@@ -11,6 +11,7 @@ import (
 
 	"iptables-tool/internal/controller/audit"
 	"iptables-tool/internal/controller/policy"
+	"iptables-tool/internal/controller/rulespec"
 	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/controller/task"
 	"iptables-tool/internal/controller/templateio"
@@ -193,7 +194,6 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			SourceGroup      string `json:"source_group"`
 			DestinationGroup string `json:"destination_group"`
 			MatchMark        uint32 `json:"match_mark"`
-			MarkACLGroupID   uint   `json:"mark_acl_group_id"`
 			Priority         int    `json:"priority"`
 			Description      string `json:"description"`
 		}
@@ -219,7 +219,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				Protocol: tpl.Protocol, PortRange: tpl.PortRange, Action: tpl.Action,
 				Mark: tpl.Mark, NatTo: tpl.NatTo, SourceGroup: tpl.SourceGroup,
 				DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
-				MarkACLGroupID: tpl.MarkACLGroupID, Priority: tpl.Priority,
+				Priority: tpl.Priority,
 				Description: tpl.Description, Enabled: true,
 				SyncedTemplateUpdatedAt: tpl.UpdatedAt,
 			}
@@ -230,20 +230,24 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				return
 			}
 			// MARK 白名单拦截:group_id 可空(规则落内置链);其他场景 group_id 必填
-			isMarkACL := body.Action == "MARK" && (body.Source != "" || body.SourceGroup != "") && body.PortRange != ""
+			isMarkACL := rulespec.IsMarkWhitelist(body.Action, body.Source, body.SourceGroup, body.PortRange)
 			if body.GroupID == 0 && !isMarkACL {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 				return
 			}
 			inst = model.NodePolicyInstance{
 				TemplateID: 0, NodeID: nodeID, Name: body.Name,
-				GroupID: body.GroupID, Direction: body.Direction, Source: body.Source, Destination: body.Destination,
+				GroupID: body.GroupID, Source: body.Source, Destination: body.Destination,
 				Protocol: body.Protocol, PortRange: body.PortRange, Action: body.Action,
 				Mark: body.Mark, NatTo: body.NatTo, SourceGroup: body.SourceGroup,
 				DestinationGroup: body.DestinationGroup, MatchMark: body.MatchMark,
-				MarkACLGroupID: body.MarkACLGroupID, Priority: body.Priority,
+				Priority: body.Priority,
 				Description: body.Description, Enabled: true,
 			}
+		}
+		// 非 MARK 动作 Direction 字段无意义,统一强制清空(覆盖模板实例化/直接新建两条路径)
+		if inst.Action != "MARK" {
+			inst.Direction = ""
 		}
 		if err := policy.ValidateFields(fieldsFromInstance(&inst)); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -273,6 +277,10 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			return
 		}
 		body.ID = id
+		// 非 MARK 动作 Direction 字段无意义,强制清空(防客户端误传方向值)
+		if body.Action != "MARK" {
+			body.Direction = ""
+		}
 		// applied 语义 = "节点上是否有该实例的规则":
 		//   禁用已下发实例 -> 节点规则仍在(待下次 dispatch 移除),保留 applied=true,
 		//     供 Submit 识别"待禁用"实例(enabled=false AND applied=true)生成 -D 移除预览;
@@ -289,7 +297,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			return
 		}
 		// MARK 白名单拦截:group_id 可空;其他场景 group_id 必填
-		isMarkACL := body.Action == "MARK" && (body.Source != "" || body.SourceGroup != "") && body.PortRange != ""
+		isMarkACL := rulespec.IsMarkWhitelist(body.Action, body.Source, body.SourceGroup, body.PortRange)
 		if body.GroupID == 0 && !isMarkACL {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 			return
@@ -385,7 +393,6 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		inst.Direction = tpl.Direction
 		inst.Mark = tpl.Mark
 		inst.MatchMark = tpl.MatchMark
-		inst.MarkACLGroupID = tpl.MarkACLGroupID
 		inst.Priority = tpl.Priority
 		// 字符串字段:仅当模板有值时才覆盖。模板为空 = 该字段是节点特有参数
 		// (由实例自定义,如节点 IP),同步时保留实例原值,避免清空实例配置。
@@ -479,16 +486,24 @@ func parseTplID(c *gin.Context) (uint, bool) {
 // fieldsFromTemplate / fieldsFromInstance 从模板/实例抽取规则字段子集,供
 // ValidateFields 统一校验(MARK 取值、白名单需端口等),杜绝误配静默落库。
 func fieldsFromTemplate(t *model.PolicyTemplate) policy.Fields {
+	dir := t.Direction
+	if t.Action != "MARK" {
+		dir = "" // 非 MARK 动作方向字段无意义,校验时传空
+	}
 	return policy.Fields{
-		Action: t.Action, Direction: t.Direction, Mark: t.Mark, MatchMark: t.MatchMark, NatTo: t.NatTo,
+		Action: t.Action, Direction: dir, Mark: t.Mark, MatchMark: t.MatchMark, NatTo: t.NatTo,
 		Protocol: t.Protocol, PortRange: t.PortRange, Source: t.Source,
 		SourceGroup: t.SourceGroup,
 	}
 }
 
 func fieldsFromInstance(i *model.NodePolicyInstance) policy.Fields {
+	dir := i.Direction
+	if i.Action != "MARK" {
+		dir = "" // 非 MARK 动作方向字段无意义,校验时传空
+	}
 	return policy.Fields{
-		Action: i.Action, Direction: i.Direction, Mark: i.Mark, MatchMark: i.MatchMark, NatTo: i.NatTo,
+		Action: i.Action, Direction: dir, Mark: i.Mark, MatchMark: i.MatchMark, NatTo: i.NatTo,
 		Protocol: i.Protocol, PortRange: i.PortRange, Source: i.Source,
 		SourceGroup: i.SourceGroup,
 	}

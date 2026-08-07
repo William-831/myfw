@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"iptables-tool/internal/db"
+	"iptables-tool/internal/model"
 )
 
 func openTestDB(t *testing.T) *Service {
@@ -27,16 +28,32 @@ func openTestDB(t *testing.T) *Service {
 	if err := db.Migrate(gdb); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { // 关闭 db 句柄,避免 Windows 下 TempDir 清理时文件占用
+		if sqlDB, err := gdb.DB(); err == nil {
+			sqlDB.Close()
+		}
+	})
 	return New(gdb)
+}
+
+// mustCreateChain 建一个测试策略组并返回 ID。
+func mustCreateChain(t *testing.T, s *Service) uint {
+	t.Helper()
+	ch := model.CustomChain{Name: "acl-fwd", Parent: "MYFW-FORWARD", Table: "filter", Priority: 1, Enabled: true}
+	if err := s.DB.Create(&ch).Error; err != nil {
+		t.Fatal(err)
+	}
+	return ch.ID
 }
 
 func TestCreateAndListAndUpdate(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
+	gid := mustCreateChain(t, s)
 
 	p, err := s.Create(ctx, PolicyInput{
-		Name: "allow-ssh", Direction: "INBOUND",
-		Source: "10.0.0.0/24", Protocol: "TCP", PortRange: "22",
+		Name: "allow-ssh",
+		GroupID: gid, Source: "10.0.0.0/24", Protocol: "TCP", PortRange: "22",
 		Action: "ACCEPT", Priority: 10,
 		Targets: TargetsSpec{NodeIDs: []string{"n_a"}},
 		Enabled: true,
@@ -50,8 +67,8 @@ func TestCreateAndListAndUpdate(t *testing.T) {
 
 	// Update.
 	up, err := s.Update(ctx, p.ID, PolicyInput{
-		Name: "allow-ssh", Direction: "INBOUND",
-		Source: "10.0.1.0/24", Protocol: "TCP", PortRange: "22",
+		Name: "allow-ssh",
+		GroupID: gid, Source: "10.0.1.0/24", Protocol: "TCP", PortRange: "22",
 		Action: "ACCEPT", Priority: 10,
 		Targets: TargetsSpec{NodeIDs: []string{"n_a", "n_b"}},
 		Enabled: true,
@@ -76,7 +93,7 @@ func TestCreateAndListAndUpdate(t *testing.T) {
 func TestValidationRejectsMissingTargets(t *testing.T) {
 	s := openTestDB(t)
 	_, err := s.Create(context.Background(), PolicyInput{
-		Name: "bad", Action: "ACCEPT",
+		Name: "bad", GroupID: mustCreateChain(t, s), Action: "ACCEPT",
 	}, "tester")
 	if err == nil {
 		t.Fatal("expected validation error on empty targets")
@@ -86,7 +103,7 @@ func TestValidationRejectsMissingTargets(t *testing.T) {
 func TestValidationRejectsBadAction(t *testing.T) {
 	s := openTestDB(t)
 	_, err := s.Create(context.Background(), PolicyInput{
-		Name: "bad", Action: "OPEN_SESAME",
+		Name: "bad", GroupID: mustCreateChain(t, s), Action: "OPEN_SESAME",
 		Targets: TargetsSpec{NodeIDs: []string{"n"}},
 	}, "tester")
 	if err == nil {
@@ -97,7 +114,7 @@ func TestValidationRejectsBadAction(t *testing.T) {
 func TestUpdateNotFound(t *testing.T) {
 	s := openTestDB(t)
 	_, err := s.Update(context.Background(), 9999, PolicyInput{
-		Name: "x", Action: "ACCEPT",
+		Name: "x", GroupID: mustCreateChain(t, s), Action: "ACCEPT",
 		Targets: TargetsSpec{NodeIDs: []string{"n"}},
 	}, "tester")
 	if !errors.Is(err, ErrNotFound) {

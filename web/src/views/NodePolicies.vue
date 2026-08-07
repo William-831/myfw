@@ -42,7 +42,7 @@
               <div class="inst-actions">
                 <el-button size="small" type="primary" @click="openCreate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>新建策略</el-button>
                 <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
-                <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点</el-button>
+                <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点(全量对齐)</el-button>
               </div>
             </div>
           </template>
@@ -210,18 +210,18 @@ const currentNodeLabel = computed(() => {
 
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
 
-// MARK 联动放行组:仅列 FORWARD 父链的策略组(Docker 端口映射流量走 FORWARD)
-const forwardGroups = computed(() => customChains.value.filter((c) => c.parent === 'MYFW-FORWARD'))
-
 // 命令预览:根据实例表单拼接底层 iptables 命令,无感教学
 const previewCommand = computed(() => {
   const f = instForm
-  // MARK 白名单拦截:预览 3 条规则链(打标 + 白名单放行 + 兜底丢弃),落平台内置链
-  if (f.action === 'MARK' && (f.source || f.source_group) && f.port_range) {
+  // MARK 动作统一走白名单拦截骨架(3条规则),参数未填处用占位符提示
+  if (f.action === 'MARK') {
     const acl = f.direction === 'INPUT' ? 'MYFW-MARKACL-IN' : 'MYFW-MARKACL-FWD'
-    const pp = f.protocol && f.protocol !== 'ANY' ? `-p ${f.protocol.toLowerCase()} --dport ${f.port_range}` : `--dport ${f.port_range}`
-    const m = String(f.mark || 0)
-    const src = f.source ? `-s ${f.source}` : `-m set --match-set ${f.source_group} src`
+    const pp = f.port_range
+      ? (f.protocol && f.protocol !== 'ANY' ? `-p ${f.protocol.toLowerCase()} --dport ${f.port_range}` : `--dport ${f.port_range}`)
+      : '<请填端口>'
+    const m = f.mark ? String(f.mark) : '<选标记值>'
+    const src = f.source ? `-s ${f.source}`
+      : (f.source_group ? `-m set --match-set MYFW-${f.source_group} src` : '<请填源地址/组>')
     return [
       { text: `iptables -t mangle -A MYFW-MARKMANGLE ${pp} -j MARK --set-mark ${m}`, type: 'mark' },
       { text: `iptables -t filter -A ${acl} ${src} -m mark --mark ${m} -j ACCEPT`, type: 'accept' },
@@ -234,7 +234,7 @@ const previewCommand = computed(() => {
   const parts = ['iptables', '-t', table, '-A', chain]
   if (f.source) parts.push('-s', f.source)
   if (f.destination) parts.push('-d', f.destination)
-  if (f.source_group) parts.push('-m', 'set', '--match-set', f.source_group, 'src')
+  if (f.source_group) parts.push('-m', 'set', '--match-set', 'MYFW-' + f.source_group, 'src')
   if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
   if (f.protocol && f.protocol !== 'ANY') {
     parts.push('-p', f.protocol.toLowerCase())
@@ -364,12 +364,22 @@ const defaultForm = () => ({
   template_id: 0, name: '', group_id: 0, direction: 'FORWARD', source: '', destination: '',
   source_group: '', destination_group: '', protocol: 'ANY',
   port_range: '', action: 'ACCEPT', mark: 0, nat_to: '',
-  match_mark: 0, mark_acl_group_id: 0, priority: 50, description: '', enabled: true, apply: false
+  match_mark: 0, priority: 50, description: '', enabled: true, apply: false
 })
 const instForm = reactive(defaultForm())
+// 动作切换时清理关联字段:MARK 不需要组,非 MARK 不需要方向
+watch(() => instForm.action, (action) => {
+  if (action === 'MARK') {
+    instForm.group_id = 0
+    if (!instForm.direction) instForm.direction = 'FORWARD'
+  } else {
+    instForm.direction = ''
+  }
+})
 const openCreate = () => {
   isCreate.value = true
   Object.assign(instForm, defaultForm())
+  instForm.direction = instForm.action === 'MARK' ? 'FORWARD' : ''
   formVisible.value = true
 }
 const openEditInst = (inst) => {
@@ -442,9 +452,12 @@ const handleDeleteInst = async (inst) => {
 }
 
 const handleDispatch = async () => {
+  // 后端 dispatch 为全量同步语义(编译节点所有 enabled 实例,Agent 全量重建链)。
+  // 无待变更时跳过,避免无意义的全量重建;有变更时提示全量对齐。
   const pending = instances.value.filter(i => i.enabled && !i.applied)
-  if (!pending.length) {
-    ElMessage.info('没有未下发的策略实例,无需下发')
+  const disabling = instances.value.filter(i => !i.enabled && i.applied)
+  if (!pending.length && !disabling.length) {
+    ElMessage.info('没有待下发的策略变更,节点已与配置对齐,无需下发')
     return
   }
   dispatching.value = true

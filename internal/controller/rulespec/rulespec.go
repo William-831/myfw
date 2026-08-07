@@ -63,18 +63,33 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("match_mark 必须是 0/15/255")
 	}
 
-	// MARK 白名单拦截:有源地址/地址组时必须指定端口。
-	// 打标按端口识别业务流量,编译器自动生成 mangle 打标 + filter 白名单放行 + 兜底 DROP。
-	if s.Action == "MARK" && (s.Source != "" || s.SourceGroup != "") && s.PortRange == "" {
+	// MARK 动作只做白名单拦截:必须有源(地址或组)+端口,不存在"单纯打标"。
+	// 编译器自动生成 mangle 打标 + filter 白名单放行 + 兜底 DROP。
+	if s.Action == "MARK" && (s.Source == "" && s.SourceGroup == "") {
+		return fmt.Errorf("MARK 动作需指定源地址或源地址组(白名单拦截)")
+	}
+	if s.Action == "MARK" && s.PortRange == "" {
 		return fmt.Errorf("MARK 白名单拦截需指定端口(port_range)")
 	}
 
 	// MARK 白名单流量方向:FORWARD(容器转发)/INPUT(主机入站),空默认 FORWARD
-	if s.Action == "MARK" && (s.Source != "" || s.SourceGroup != "") && s.PortRange != "" && s.Direction != "" {
+	if s.Action == "MARK" && s.Direction != "" {
 		if s.Direction != "FORWARD" && s.Direction != "INPUT" {
 			return fmt.Errorf("MARK 白名单方向须为 FORWARD 或 INPUT")
 		}
 	}
 
+	// 非 MARK 动作 Direction 字段无意义,必须为空(仅 MARK 白名单使用方向字段)
+	if s.Action != "MARK" && s.Direction != "" {
+		return fmt.Errorf("非 MARK 动作不支持方向字段(仅 MARK 白名单使用)")
+	}
+
 	return nil
+}
+
+// IsMarkWhitelist 判断是否为 MARK 白名单拦截实例。
+// 编译器自动生成打标+放行+兜底 DROP 三条规则,规则落平台内置链(MARKMANGLE+MARKACL-FWD/IN)。
+// 与 rulespec.Validate 的 MARK 校验一致(MARK 必有源+端口),作为单一真相源供多处复用。
+func IsMarkWhitelist(action, source, sourceGroup, portRange string) bool {
+	return action == "MARK" && portRange != "" && (source != "" || sourceGroup != "")
 }

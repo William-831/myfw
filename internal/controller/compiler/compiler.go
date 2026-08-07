@@ -106,7 +106,7 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 	for i := range instances {
 		inst := &instances[i]
 		// MARK 白名单拦截:填了源地址组+端口,group_id=0 也生效(落内置链)
-		isMarkACL := inst.Action == "MARK" && (inst.Source != "" || inst.SourceGroup != "") && inst.PortRange != ""
+		isMarkACL := rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange)
 		var groupChain, groupParent string
 		if inst.GroupID != 0 {
 			g, ok := groupByID[inst.GroupID]
@@ -312,6 +312,10 @@ func parseLabels(s string) []string {
 // 放行/兜底规则)。方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名);
 // MARK 白名单拦截实例无组(group_id=0),规则落平台内置链。rule id 用 "i<实例ID>"。
 func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent string) ([]*myfwv1.CompiledRule, error) {
+	// 非 MARK 动作 Direction 字段无意义,兼容旧数据强制清空
+	if inst.Action != "MARK" {
+		inst.Direction = ""
+	}
 	// 编译前 rulespec 校验:确保规则可执行,防旧脏数据绕过入口校验。
 	if err := (rulespec.Spec{
 		Action: inst.Action, Direction: inst.Direction, Mark: inst.Mark,
@@ -359,7 +363,7 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent str
 	//   2. 白名单+标 -> ACCEPT(内置 filter 链,优先级 P):源地址组控制放行,实现"源IP管控"。
 	//   3. 标 -> DROP 兜底(优先级 P+1,白名单先匹配,其余带标包拒绝)。
 	// 流量方向决定过滤链落点:FORWARD(容器转发)->MARKACL-FWD,INPUT(主机入站)->MARKACL-IN。
-	if inst.Action == "MARK" && (inst.Source != "" || inst.SourceGroup != "") && inst.PortRange != "" {
+	if rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange) {
 		// 打标只匹配目的端口:清空 source/source_group/destination/match_mark,
 		// 否则旧数据残留(如 destination/match_mark)会让打标规则带额外条件,
 		// 非白名单不打标,兜底 DROP 匹配不到,拦截失效。

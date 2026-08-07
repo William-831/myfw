@@ -81,7 +81,7 @@ func MigratePolicyToTemplate(db *gorm.DB) error {
 				Name: p.Name, GroupID: p.GroupID, Source: p.Source, Destination: p.Destination,
 				Protocol: p.Protocol, PortRange: p.PortRange, Action: p.Action, Mark: p.Mark,
 				NatTo: p.NatTo, SourceGroup: p.SourceGroup, DestinationGroup: p.DestinationGroup,
-				MatchMark: p.MatchMark, MarkACLGroupID: p.MarkACLGroupID, Priority: p.Priority,
+				MatchMark: p.MatchMark, Priority: p.Priority,
 				Description: p.Description, Enabled: p.Enabled,
 			}
 			if err := tx.Create(&tpl).Error; err != nil {
@@ -97,7 +97,7 @@ func MigratePolicyToTemplate(db *gorm.DB) error {
 					Source: p.Source, Destination: p.Destination, Protocol: p.Protocol,
 					PortRange: p.PortRange, Action: p.Action, Mark: p.Mark, NatTo: p.NatTo,
 					SourceGroup: p.SourceGroup, DestinationGroup: p.DestinationGroup,
-					MatchMark: p.MatchMark, MarkACLGroupID: p.MarkACLGroupID, Priority: p.Priority,
+					MatchMark: p.MatchMark, Priority: p.Priority,
 					Description: p.Description, Enabled: p.Enabled,
 				}
 				if err := tx.Create(&inst).Error; err != nil {

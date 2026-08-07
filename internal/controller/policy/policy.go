@@ -44,8 +44,7 @@ type PolicyInput struct {
 	NatTo            string      `json:"nat_to"`
 	SourceGroup      string      `json:"source_group"`
 	DestinationGroup string      `json:"destination_group"`
-	MatchMark        uint32      `json:"match_mark"`
-	MarkACLGroupID   uint        `json:"mark_acl_group_id"`  // MARK 联动放行组(filter 组)
+	MatchMark        uint32      `json:"match_mark"` // 仅供 MARK 白名单编译内部使用,非用户输入(前端已移除入口)
 	Group            string      `json:"group"`
 	Chain            string      `json:"chain"`
 	Priority         int         `json:"priority"`
@@ -82,7 +81,6 @@ func (s *Service) Create(ctx context.Context, in PolicyInput, author string) (*m
 		SourceGroup:      in.SourceGroup,
 		DestinationGroup: in.DestinationGroup,
 		MatchMark:        in.MatchMark,
-		MarkACLGroupID:   in.MarkACLGroupID,
 		Group:            in.Group,
 		Chain:            in.Chain,
 		Priority:         in.Priority,
@@ -139,7 +137,6 @@ func (s *Service) Update(ctx context.Context, id uint, in PolicyInput, author st
 		p.SourceGroup = in.SourceGroup
 		p.DestinationGroup = in.DestinationGroup
 		p.MatchMark = in.MatchMark
-		p.MarkACLGroupID = in.MarkACLGroupID
 		p.Group = in.Group
 		p.Chain = in.Chain
 		p.Priority = in.Priority
@@ -331,7 +328,6 @@ func (s *Service) SubmitChange(ctx context.Context, id uint, in PolicyInput, aut
 		SourceGroup:      in.SourceGroup,
 		DestinationGroup: in.DestinationGroup,
 		MatchMark:        in.MatchMark,
-		MarkACLGroupID:   in.MarkACLGroupID,
 		Group:            in.Group,
 		Chain:            in.Chain,
 		Priority:         in.Priority,

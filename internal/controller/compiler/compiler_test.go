@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"gorm.io/gorm/logger"
 
@@ -52,24 +51,38 @@ func mustCreateNode(t *testing.T, c *Compiler, id string, labels ...string) {
 	}
 }
 
+// mustCreateChain 建一个测试策略组并返回 ID(实例/策略必须归属有效组)。
+func mustCreateChain(t *testing.T, c *Compiler) uint {
+	t.Helper()
+	ch := model.CustomChain{Name: "acl-fwd", Parent: "MYFW-FORWARD", Table: "filter", Priority: 1, Enabled: true}
+	if err := c.DB.Create(&ch).Error; err != nil {
+		t.Fatal(err)
+	}
+	return ch.ID
+}
+
+// mustCreateInstance 直接建一条节点策略实例(新模型:编译读 NodePolicyInstance,不读 Policy)。
+func mustCreateInstance(t *testing.T, c *Compiler, inst model.NodePolicyInstance) {
+	t.Helper()
+	if err := c.DB.Create(&inst).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCompileForNodePicksExplicitTargets(t *testing.T) {
-	c, ps := newTestCompiler(t)
+	c, _ := newTestCompiler(t)
 	ctx := context.Background()
 
 	mustCreateNode(t, c, "n_a")
 	mustCreateNode(t, c, "n_b")
+	gid := mustCreateChain(t, c)
 
-	// Policy on n_a only.
-	_, err := ps.Create(ctx, policy.PolicyInput{
-		Name: "allow-ssh", Direction: "INBOUND",
+	// 实例只绑 n_a,编译按 node_id 查实例。
+	mustCreateInstance(t, c, model.NodePolicyInstance{
+		NodeID: "n_a", Name: "allow-ssh", GroupID: gid,
 		Source: "10.0.0.0/24", Protocol: "TCP", PortRange: "22",
-		Action: "ACCEPT", Priority: 10,
-		Targets: policy.TargetsSpec{NodeIDs: []string{"n_a"}},
-		Enabled: true,
-	}, "t")
-	if err != nil {
-		t.Fatal(err)
-	}
+		Action: "ACCEPT", Priority: 10, Enabled: true,
+	})
 
 	// n_a should see it, n_b should not.
 	got, _, _, err := c.CompileForNode(ctx, "n_a")
@@ -89,47 +102,38 @@ func TestCompileForNodePicksExplicitTargets(t *testing.T) {
 }
 
 func TestCompileForNodeSkipsDisabled(t *testing.T) {
-	c, ps := newTestCompiler(t)
+	c, _ := newTestCompiler(t)
 	ctx := context.Background()
 	mustCreateNode(t, c, "n_a")
+	gid := mustCreateChain(t, c)
 
-	_, err := ps.Create(ctx, policy.PolicyInput{
-		Name: "off", Direction: "INBOUND", Action: "DROP",
-		Targets: policy.TargetsSpec{NodeIDs: []string{"n_a"}},
+	mustCreateInstance(t, c, model.NodePolicyInstance{
+		NodeID: "n_a", Name: "off", GroupID: gid, Action: "DROP",
 		Enabled: false,
-	}, "t")
-	if err != nil {
-		t.Fatal(err)
-	}
+	})
 
 	got, _, _, err := c.CompileForNode(ctx, "n_a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("expected 0 rules for a disabled policy, got %+v", got)
+		t.Fatalf("expected 0 rules for a disabled instance, got %+v", got)
 	}
 }
 
 func TestCompileForNodeStableOrder(t *testing.T) {
-	c, ps := newTestCompiler(t)
+	c, _ := newTestCompiler(t)
 	ctx := context.Background()
 	mustCreateNode(t, c, "n_a")
+	gid := mustCreateChain(t, c)
 
 	// Insert with priorities out of order; expect ascending order in output.
-	mkOne := func(name string, prio int) {
-		_, err := ps.Create(ctx, policy.PolicyInput{
-			Name: name, Direction: "INBOUND", Action: "ACCEPT", Priority: prio,
-			Targets: policy.TargetsSpec{NodeIDs: []string{"n_a"}},
-			Enabled: true,
-		}, "t")
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, prio := range []int{20, 10, 30} {
+		mustCreateInstance(t, c, model.NodePolicyInstance{
+			NodeID: "n_a", Name: "r", GroupID: gid, Action: "ACCEPT",
+			Priority: prio, Enabled: true,
+		})
 	}
-	mkOne("second", 20)
-	mkOne("first", 10)
-	mkOne("third", 30)
 
 	got, _, _, err := c.CompileForNode(ctx, "n_a")
 	if err != nil {
@@ -150,9 +154,11 @@ func TestLabelSelectorMatchesIntersection(t *testing.T) {
 	mustCreateNode(t, c, "n_prod_edge", "prod", "edge")
 	mustCreateNode(t, c, "n_prod", "prod")
 	mustCreateNode(t, c, "n_edge", "edge")
+	gid := mustCreateChain(t, c)
 
-	_, err := ps.Create(ctx, policy.PolicyInput{
-		Name: "prod-edge-only", Direction: "INBOUND", Action: "ACCEPT",
+	// 标签选择属于 Policy 层(TargetNodes):创建带标签目标的 Policy 验证交集匹配。
+	p, err := ps.Create(ctx, policy.PolicyInput{
+		Name: "prod-edge-only", GroupID: gid, Action: "ACCEPT",
 		Targets: policy.TargetsSpec{Labels: []string{"prod", "edge"}},
 		Enabled: true,
 	}, "t")
@@ -160,52 +166,39 @@ func TestLabelSelectorMatchesIntersection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only n_prod_edge has BOTH labels.
-	cases := map[string]int{
-		"n_prod_edge": 1,
-		"n_prod":      0,
-		"n_edge":      0,
+	ids, err := c.TargetNodes(ctx, p)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for id, want := range cases {
-		got, _, _, err := c.CompileForNode(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != want {
-			t.Fatalf("%s: want %d rules, got %d", id, want, len(got))
-		}
+	if len(ids) != 1 || ids[0] != "n_prod_edge" {
+		t.Fatalf("want only n_prod_edge, got %v", ids)
 	}
 }
 
 func TestCompileActionsMapCorrectly(t *testing.T) {
-	c, ps := newTestCompiler(t)
+	c, _ := newTestCompiler(t)
 	ctx := context.Background()
 	mustCreateNode(t, c, "n_a")
+	gid := mustCreateChain(t, c)
 
 	cases := []struct {
 		action string
 		want   myfwv1.Action
-		extra  policy.PolicyInput
+		natTo  string
 	}{
-		{"ACCEPT", myfwv1.Action_ACTION_ACCEPT, policy.PolicyInput{}},
-		{"DROP", myfwv1.Action_ACTION_DROP, policy.PolicyInput{}},
-		{"REJECT", myfwv1.Action_ACTION_REJECT, policy.PolicyInput{}},
-		{"DNAT", myfwv1.Action_ACTION_DNAT, policy.PolicyInput{NatTo: "10.0.0.5:8080"}},
-		{"SNAT", myfwv1.Action_ACTION_SNAT, policy.PolicyInput{NatTo: "203.0.113.1"}},
+		{"ACCEPT", myfwv1.Action_ACTION_ACCEPT, ""},
+		{"DROP", myfwv1.Action_ACTION_DROP, ""},
+		{"REJECT", myfwv1.Action_ACTION_REJECT, ""},
+		{"DNAT", myfwv1.Action_ACTION_DNAT, "10.0.0.5:8080"},
+		{"SNAT", myfwv1.Action_ACTION_SNAT, "203.0.113.1"},
 	}
 	prio := 0
 	for _, tc := range cases {
-		in := policy.PolicyInput{
-			Name: tc.action + "-test", Direction: "INBOUND",
-			Action: tc.action, Priority: prio,
-			NatTo:   tc.extra.NatTo,
-			Targets: policy.TargetsSpec{NodeIDs: []string{"n_a"}},
-			Enabled: true,
-		}
+		mustCreateInstance(t, c, model.NodePolicyInstance{
+			NodeID: "n_a", Name: tc.action + "-test", GroupID: gid,
+			Action: tc.action, NatTo: tc.natTo, Priority: prio, Enabled: true,
+		})
 		prio++
-		if _, err := ps.Create(ctx, in, "t"); err != nil {
-			t.Fatalf("create %s: %v", tc.action, err)
-		}
 	}
 
 	got, _, _, err := c.CompileForNode(ctx, "n_a")
@@ -220,5 +213,4 @@ func TestCompileActionsMapCorrectly(t *testing.T) {
 			t.Errorf("case %d (%s): want %v, got %v", i, tc.action, tc.want, got[i].Action)
 		}
 	}
-	_ = time.Now // silence unused if we ever remove time
 }
