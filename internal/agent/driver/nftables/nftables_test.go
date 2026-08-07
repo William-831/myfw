@@ -57,8 +57,9 @@ func TestApply(t *testing.T) {
 	if hash == "" {
 		t.Fatal("Apply returned empty hash")
 	}
-	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 1 {
-		t.Fatalf("expected 1 rule in INPUT, got %d", len(fake.Tables["inet"].Chains["INPUT"].Rules))
+	// 1 条 ESTABLISHED 放行 + 1 条业务规则
+	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 2 {
+		t.Fatalf("expected 2 rules in INPUT (established+rule), got %d", len(fake.Tables["inet"].Chains["INPUT"].Rules))
 	}
 }
 
@@ -132,8 +133,8 @@ func TestRestore(t *testing.T) {
 	if err := d2.Restore(context.Background(), payload); err != nil {
 		t.Fatalf("Restore failed: %v", err)
 	}
-	if len(fake2.Tables["inet"].Chains["INPUT"].Rules) != 1 {
-		t.Fatalf("expected 1 rule after restore, got %d", len(fake2.Tables["inet"].Chains["INPUT"].Rules))
+	if len(fake2.Tables["inet"].Chains["INPUT"].Rules) != 2 {
+		t.Fatalf("expected 2 rules after restore (established+rule), got %d", len(fake2.Tables["inet"].Chains["INPUT"].Rules))
 	}
 }
 
@@ -208,11 +209,12 @@ func TestApplyTwoRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
-	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 1 {
-		t.Fatalf("expected 1 rule in INPUT, got %d", len(fake.Tables["inet"].Chains["INPUT"].Rules))
+	// 各链 = ESTABLISHED 放行 + 业务规则
+	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 2 {
+		t.Fatalf("expected 2 rules in INPUT (established+rule), got %d", len(fake.Tables["inet"].Chains["INPUT"].Rules))
 	}
-	if len(fake.Tables["inet"].Chains["OUTPUT"].Rules) != 1 {
-		t.Fatalf("expected 1 rule in OUTPUT, got %d", len(fake.Tables["inet"].Chains["OUTPUT"].Rules))
+	if len(fake.Tables["inet"].Chains["OUTPUT"].Rules) != 2 {
+		t.Fatalf("expected 2 rules in OUTPUT (established+rule), got %d", len(fake.Tables["inet"].Chains["OUTPUT"].Rules))
 	}
 }
 
@@ -247,8 +249,9 @@ func TestFlushBeforeFill(t *testing.T) {
 	if _, err := d.Apply(context.Background(), &myfwv1.RuleSet{Rules: rules2}); err != nil {
 		t.Fatalf("second Apply failed: %v", err)
 	}
-	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 1 {
-		t.Fatalf("expected 1 rule after second Apply, got %d", len(fake.Tables["inet"].Chains["INPUT"].Rules))
+	// ESTABLISHED 放行 + 新业务规则
+	if len(fake.Tables["inet"].Chains["INPUT"].Rules) != 2 {
+		t.Fatalf("expected 2 rules after second Apply (established+rule), got %d", len(fake.Tables["inet"].Chains["INPUT"].Rules))
 	}
 	if !containsRule(fake.Tables["inet"].Chains["INPUT"].Rules, "172.16.0.0/12") {
 		t.Fatal("second rule not found")

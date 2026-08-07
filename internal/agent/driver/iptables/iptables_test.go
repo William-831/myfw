@@ -61,32 +61,40 @@ func TestApplyPlacesRulesInRightChains(t *testing.T) {
 	d, fake := newDriver(t)
 	ctx := context.Background()
 
+	// 两级模型:业务规则归属策略组(自定义子链),driver 落 MYFW-<组名> 链。
+	cc := []*myfwv1.CustomChainDef{
+		{Name: "acl-in", Parent: "MYFW-INPUT", Table: "filter"},
+		{Name: "acl-out", Parent: "MYFW-OUTPUT", Table: "filter"},
+		{Name: "acl-fwd", Parent: "MYFW-FORWARD", Table: "filter"},
+		{Name: "nat-pre", Parent: "MYFW-PREROUTING", Table: "nat"},
+		{Name: "mark-mg", Parent: "MYFW-MANGLE", Table: "mangle"},
+	}
 	rules := []*myfwv1.CompiledRule{
 		{
-			Id: "r-in", Direction: myfwv1.Direction_DIRECTION_INBOUND,
+			Id: "r-in", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND,
 			Source: "10.0.0.0/24", Protocol: myfwv1.Protocol_PROTOCOL_TCP,
 			PortRange: "22", Action: myfwv1.Action_ACTION_ACCEPT, Priority: 10,
 		},
 		{
-			Id: "r-out", Direction: myfwv1.Direction_DIRECTION_OUTBOUND,
+			Id: "r-out", Chain: "acl-out", Direction: myfwv1.Direction_DIRECTION_OUTBOUND,
 			Destination: "0.0.0.0/0", Action: myfwv1.Action_ACTION_ACCEPT, Priority: 20,
 		},
 		{
-			Id: "r-fwd", Direction: myfwv1.Direction_DIRECTION_FORWARD,
+			Id: "r-fwd", Chain: "acl-fwd", Direction: myfwv1.Direction_DIRECTION_FORWARD,
 			Source: "192.168.0.0/16", Action: myfwv1.Action_ACTION_DROP, Priority: 5,
 		},
 		{
-			Id: "r-dnat", Action: myfwv1.Action_ACTION_DNAT,
+			Id: "r-dnat", Chain: "nat-pre", Action: myfwv1.Action_ACTION_DNAT,
 			Protocol: myfwv1.Protocol_PROTOCOL_TCP, PortRange: "80",
 			NatTo: "10.0.0.5:8080", Priority: 30,
 		},
 		{
-			Id: "r-mark", Action: myfwv1.Action_ACTION_MARK, Mark: 42,
+			Id: "r-mark", Chain: "mark-mg", Action: myfwv1.Action_ACTION_MARK, Mark: 42,
 			Protocol: myfwv1.Protocol_PROTOCOL_TCP, PortRange: "443", Priority: 40,
 		},
 	}
 
-	hash, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules})
+	hash, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules, CustomChains: cc})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -94,7 +102,7 @@ func TestApplyPlacesRulesInRightChains(t *testing.T) {
 		t.Fatalf("bad hash prefix: %s", hash)
 	}
 
-	// Check placement.
+	// Check placement:规则落组链(带 MYFW- 前缀),表取自组定义。
 	assertHas := func(t *testing.T, table, chain, needle string) {
 		t.Helper()
 		for _, r := range fake.Tables[table][chain] {
@@ -104,43 +112,45 @@ func TestApplyPlacesRulesInRightChains(t *testing.T) {
 		}
 		t.Fatalf("expected %q in %s/%s, chain contents: %v", needle, table, chain, fake.Tables[table][chain])
 	}
-	assertHas(t, tableFilter, chainInput, "-s 10.0.0.0/24")
-	assertHas(t, tableFilter, chainOutput, "-d 0.0.0.0/0")
-	assertHas(t, tableFilter, chainForward, "-j DROP")
-	assertHas(t, tableNat, chainNatPre, "-j DNAT")
-	assertHas(t, tableMangle, chainMangle, "-j MARK")
+	assertHas(t, tableFilter, "MYFW-acl-in", "-s 10.0.0.0/24")
+	assertHas(t, tableFilter, "MYFW-acl-out", "-d 0.0.0.0/0")
+	assertHas(t, tableFilter, "MYFW-acl-fwd", "-j DROP")
+	assertHas(t, tableNat, "MYFW-nat-pre", "-j DNAT")
+	assertHas(t, tableMangle, "MYFW-mark-mg", "-j MARK")
 }
 
 func TestApplyFlushesBeforeRefilling(t *testing.T) {
 	d, fake := newDriver(t)
 	ctx := context.Background()
 
+	// 业务规则落组链 MYFW-acl-in,断言针对组链而非系统链。
+	cc := []*myfwv1.CustomChainDef{{Name: "acl-in", Parent: "MYFW-INPUT", Table: "filter"}}
 	first := []*myfwv1.CompiledRule{
-		{Id: "a", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "1.1.1.1", Action: myfwv1.Action_ACTION_ACCEPT},
-		{Id: "b", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "2.2.2.2", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "a", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "1.1.1.1", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "b", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "2.2.2.2", Action: myfwv1.Action_ACTION_ACCEPT},
 	}
-	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: first}); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: first, CustomChains: cc}); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(fake.Tables[tableFilter][chainInput]); got != 2 {
-		t.Fatalf("first apply: want 2 rules in MYFW-INPUT, got %d", got)
+	if got := len(fake.Tables[tableFilter]["MYFW-acl-in"]); got != 2 {
+		t.Fatalf("first apply: want 2 rules in MYFW-acl-in, got %d", got)
 	}
 
 	// Apply a smaller ruleset — the old rules must NOT survive.
 	second := []*myfwv1.CompiledRule{
-		{Id: "c", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "3.3.3.3", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "c", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "3.3.3.3", Action: myfwv1.Action_ACTION_ACCEPT},
 	}
 
-	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: second}); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: second, CustomChains: cc}); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(fake.Tables[tableFilter][chainInput]); got != 1 {
-		t.Fatalf("second apply: want 1 rule in MYFW-INPUT, got %d: %v",
-			got, fake.Tables[tableFilter][chainInput])
+	if got := len(fake.Tables[tableFilter]["MYFW-acl-in"]); got != 1 {
+		t.Fatalf("second apply: want 1 rule in MYFW-acl-in, got %d: %v",
+			got, fake.Tables[tableFilter]["MYFW-acl-in"])
 	}
-	if !strings.Contains(fake.Tables[tableFilter][chainInput][0], "3.3.3.3") {
-		t.Fatalf("second apply: MYFW-INPUT should hold the new rule, got %v",
-			fake.Tables[tableFilter][chainInput])
+	if !strings.Contains(fake.Tables[tableFilter]["MYFW-acl-in"][0], "3.3.3.3") {
+		t.Fatalf("second apply: MYFW-acl-in should hold the new rule, got %v",
+			fake.Tables[tableFilter]["MYFW-acl-in"])
 	}
 }
 
@@ -148,11 +158,14 @@ func TestSnapshotAndRestoreRoundTrip(t *testing.T) {
 	d, _ := newDriver(t)
 	ctx := context.Background()
 
+	// Snapshot/Restore 覆盖 managedChains(系统 MYFW-* 链);业务规则落组链不参与
+	// snapshot,故 round-trip 验证的是系统链层(ESTABLISHED+jump)恢复后 hash 一致。
+	cc := []*myfwv1.CustomChainDef{{Name: "acl-in", Parent: "MYFW-INPUT", Table: "filter"}}
 	rules := []*myfwv1.CompiledRule{
-		{Id: "a", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "5.6.7.8", Action: myfwv1.Action_ACTION_ACCEPT},
-		{Id: "b", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "9.10.11.12", Action: myfwv1.Action_ACTION_DROP},
+		{Id: "a", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "5.6.7.8", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "b", Chain: "acl-in", Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "9.10.11.12", Action: myfwv1.Action_ACTION_DROP},
 	}
-	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules}); err != nil {
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules, CustomChains: cc}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,17 +195,18 @@ func TestHashIsDeterministicAcrossRuleOrder(t *testing.T) {
 	d2, _ := newDriver(t)
 	ctx := context.Background()
 
+	cc := []*myfwv1.CustomChainDef{{Name: "acl-in", Parent: "MYFW-INPUT", Table: "filter"}}
 	base := []*myfwv1.CompiledRule{
-		{Id: "a", Priority: 1, Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "1.1.1.1", Action: myfwv1.Action_ACTION_ACCEPT},
-		{Id: "b", Priority: 2, Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "2.2.2.2", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "a", Chain: "acl-in", Priority: 1, Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "1.1.1.1", Action: myfwv1.Action_ACTION_ACCEPT},
+		{Id: "b", Chain: "acl-in", Priority: 2, Direction: myfwv1.Direction_DIRECTION_INBOUND, Source: "2.2.2.2", Action: myfwv1.Action_ACTION_ACCEPT},
 	}
 	reversed := []*myfwv1.CompiledRule{base[1], base[0]}
 
-	h1, err := d1.Apply(ctx, &myfwv1.RuleSet{Rules: base})
+	h1, err := d1.Apply(ctx, &myfwv1.RuleSet{Rules: base, CustomChains: cc})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := d2.Apply(ctx, &myfwv1.RuleSet{Rules: reversed})
+	h2, err := d2.Apply(ctx, &myfwv1.RuleSet{Rules: reversed, CustomChains: cc})
 	if err != nil {
 		t.Fatal(err)
 	}
