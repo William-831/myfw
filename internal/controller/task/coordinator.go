@@ -116,7 +116,9 @@ func (co *Coordinator) Stop() {
 type SubmitOpts struct {
 	Author          string
 	AutoApprove     bool          // if true, dispatch immediately without waiting for a reviewer
+	AutoConfirm     bool          // 自愈任务:apply 成功后直接 confirmed,跳过 confirm_wait 保护期
 	ConfirmDeadline time.Duration // overrides DefaultConfirmDeadline when >0
+	Scene           string        // 审计场景,默认 AuditSceneNormal;drift 自愈传 AuditSceneSelfHeal
 }
 
 // Submit creates one Task per target node in PENDING_APPROVAL state. It does
@@ -127,6 +129,9 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 	}
 	if opts.ConfirmDeadline <= 0 {
 		opts.ConfirmDeadline = co.DefaultConfirmDeadline
+	}
+	if opts.Scene == "" {
+		opts.Scene = model.AuditSceneNormal
 	}
 
 	// 查策略名(快照存入 Task,审批展示用,避免 policy 改/删后丢失)。
@@ -148,12 +153,13 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 	tasks := make([]*model.Task, 0, len(nodeIDs))
 	for _, id := range nodeIDs {
 		tasks = append(tasks, &model.Task{
-			ID:         "t_" + uuid.NewString(),
-			NodeID:     id,
-			PolicyID:   policyID,
-			PolicyName: policyName,
-			Status:     model.TaskPendingApproval,
-			Version:    now,
+			ID:           "t_" + uuid.NewString(),
+			NodeID:       id,
+			PolicyID:     policyID,
+			PolicyName:   policyName,
+			Status:       model.TaskPendingApproval,
+			Version:      now,
+			AutoConfirm:  opts.AutoConfirm,
 		})
 	}
 	if err := co.DB.WithContext(ctx).Create(&tasks).Error; err != nil {
@@ -168,6 +174,7 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 	detail := map[string]any{
 		"policy_id":        policyID,
 		"auto_approve":     opts.AutoApprove,
+		"auto_confirm":     opts.AutoConfirm,
 		"confirm_deadline": opts.ConfirmDeadline.String(),
 	}
 	// 单用户体系下 admin 视为 root:AutoApprove 即跳过审批(保留保护期),审计留痕以便追溯
@@ -175,7 +182,11 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		detail["skip_approval"] = true
 		detail["reason"] = "root auto-approve (单用户体系,跳过审批,保留保护期)"
 	}
-	co.audit(ctx, opts.Author, "task.submit", model.AuditSceneNormal, model.AuditResultPending, tasks, detail)
+	// 自愈任务(scene=self_heal)标记:与人工操作区分,且不产生保护期(apply 成功即确认)
+	if opts.Scene == model.AuditSceneSelfHeal {
+		detail["reason"] = "system self-heal (drift 恢复,自动确认,无保护期)"
+	}
+	co.audit(ctx, opts.Author, "task.submit", opts.Scene, model.AuditResultPending, tasks, detail)
 
 	if opts.AutoApprove {
 		var dispatchErr error
@@ -199,6 +210,62 @@ func (co *Coordinator) Submit(ctx context.Context, policyID uint, nodeIDs []stri
 		}
 	}
 	return tasks, nil
+}
+
+// SubmitRemoval 为移除单条实例创建保护期任务并原子标记实例(漏洞 G 修复)。
+// 事务内:创建 task(pending_approval) + 实例置 enabled=false、pending_delete=true、
+// pending_delete_task_id=taskID——崩溃时不再出现"待删除但无关联 task"的孤儿标记。
+// 事务外:AutoApprove 时 dispatch;dispatch 失败恢复实例原状, task 留 failed(可审计重试)。
+func (co *Coordinator) SubmitRemoval(ctx context.Context, instanceID uint, opts SubmitOpts) (*model.Task, error) {
+	if opts.ConfirmDeadline <= 0 {
+		opts.ConfirmDeadline = co.DefaultConfirmDeadline
+	}
+	if opts.Scene == "" {
+		opts.Scene = model.AuditSceneNormal
+	}
+	var inst model.NodePolicyInstance
+	if err := co.DB.WithContext(ctx).First(&inst, instanceID).Error; err != nil {
+		return nil, errNotFoundOr(err)
+	}
+
+	taskID := "t_" + uuid.NewString()
+	t := &model.Task{
+		ID: taskID, NodeID: inst.NodeID, PolicyID: 0,
+		PolicyName:  "节点策略移除",
+		Status:      model.TaskPendingApproval,
+		Version:     time.Now().Unix(),
+		AutoConfirm: opts.AutoConfirm,
+	}
+	if err := co.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(t).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.NodePolicyInstance{}).Where("id = ?", inst.ID).Updates(map[string]any{
+			"enabled": false, "pending_delete": true, "pending_delete_task_id": taskID,
+		}).Error
+	}); err != nil {
+		return nil, err
+	}
+
+	co.audit(ctx, opts.Author, "task.submit", opts.Scene, model.AuditResultPending, []*model.Task{t}, map[string]any{
+		"policy_id": 0, "auto_approve": opts.AutoApprove, "auto_confirm": opts.AutoConfirm,
+		"confirm_deadline": opts.ConfirmDeadline.String(), "change_type": "disable",
+	})
+
+	if opts.AutoApprove {
+		if err := co.approveAndDispatch(ctx, t.ID, opts.Author, opts.ConfirmDeadline); err != nil {
+			// dispatch 失败:恢复实例原状(task 已由 approveAndDispatch 标记 failed)
+			co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).Where("id = ?", inst.ID).Updates(map[string]any{
+				"enabled": true, "pending_delete": false, "pending_delete_task_id": "",
+			})
+			var fresh model.Task
+			if rerr := co.DB.WithContext(ctx).First(&fresh, "id = ?", t.ID).Error; rerr == nil {
+				t = &fresh
+			}
+			return t, err
+		}
+	}
+	return t, nil
 }
 
 // Approve moves a task from PENDING_APPROVAL to APPROVED and immediately
@@ -312,6 +379,17 @@ func (co *Coordinator) Get(ctx context.Context, taskID string) (*model.Task, err
 	return co.getByID(ctx, taskID)
 }
 
+// HasInFlight 报告节点是否有未终态(在途)任务:pending_approval/dispatching/applying/confirm_wait。
+// OnSync 去重用——节点已有任务(含待审批人工任务)时跳过自愈 Submit,避免叠加下发(漏洞 I 修复)。
+func (co *Coordinator) HasInFlight(nodeID string) bool {
+	var cnt int64
+	co.DB.Model(&model.Task{}).
+		Where("node_id = ? AND status IN ?", nodeID,
+			[]string{string(model.TaskPendingApproval), string(model.TaskDispatching), string(model.TaskApplying), string(model.TaskConfirmWait)}).
+		Count(&cnt)
+	return cnt > 0
+}
+
 func (co *Coordinator) List(ctx context.Context, statusFilter string) ([]model.Task, error) {
 	q := co.DB.WithContext(ctx).Order("created_at DESC")
 	if statusFilter != "" {
@@ -341,9 +419,19 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 	if err != nil {
 		return err
 	}
-	co.audit(ctx, reviewer, "task.approve", model.AuditSceneNormal, model.AuditResultPending, []*model.Task{&task}, nil)
+	// 自愈任务(AutoConfirm)的审批审计用 self_heal 场景,与人工审批区分
+	apprScene := model.AuditSceneNormal
+	if task.AutoConfirm {
+		apprScene = model.AuditSceneSelfHeal
+	}
+	co.audit(ctx, reviewer, "task.approve", apprScene, model.AuditResultPending, []*model.Task{&task}, nil)
 
-	// 2. Compile & send. compile errors mark the task FAILED.
+	// 2. 编译前刷新预览:审批时可能已与 Submit 时刻不同,保证展示与实际下发一致(漏洞 F' 修复)。
+	if task.PolicyID == 0 {
+		co.refreshNodePreview(ctx, &task)
+	}
+
+	// 3. Compile & send. compile errors mark the task FAILED.
 	rules, sets, customChains, err := co.Comp.CompileForNode(ctx, task.NodeID)
 	if err != nil {
 		co.markFailed(ctx, task.ID, "compile: "+err.Error())
@@ -370,7 +458,7 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 		return err
 	}
 
-	// 3. Move to APPLYING and stamp confirm_deadline. When the TaskResult
+	// 4. Move to APPLYING and stamp confirm_deadline. When the TaskResult
 	//    arrives resultLoop will bump us to CONFIRM_WAIT and arm the timer.
 	return co.DB.WithContext(ctx).Model(&model.Task{}).
 		Where("id = ?", task.ID).
@@ -416,13 +504,40 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		t.Message = res.Message
 		t.ResultHash = res.ResultHash
 		_ = co.DB.WithContext(ctx).Save(&t).Error
-		// Agent 应用失败:将节点实例的 applied 回退,避免状态显示"已下发"但实际未生效。
+		// Agent 应用失败:仅回退本次 task 涉及的 enabled 实例的 applied,
+		// 不动同节点 enabled=false 的稳定/待删实例(它们在别的 task 的保护期内,漏洞 J 修复)。
 		co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
-			Where("node_id = ?", t.NodeID).Update("applied", false)
+			Where("node_id = ? AND enabled = ?", t.NodeID, true).Update("applied", false)
 		co.audit(ctx, "agent", "task.apply_failed", model.AuditSceneNormal, model.AuditResultFailed, []*model.Task{&t}, map[string]any{"msg": res.Message})
 		return
 	}
-	// apply 成功:进入保护期(confirm_wait),启动倒计时定时器,超时未确认则自动回滚。
+	// Agent 确认应用成功:enabled 实例 applied 置 true(本次下发生效);
+	// 手动禁用(非待删)实例 applied 置 false(节点上已被 desired-state 移除);
+	// pending_delete 实例保持不动(在它自己的移除保护期内,等 Confirm 清理或 Rollback 恢复,
+	// 漏洞 S 修复——全量 expr(enabled) 会把待删实例的 applied 误清零)。
+	co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+		Where("node_id = ? AND enabled = ?", t.NodeID, true).Update("applied", true)
+	co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+		Where("node_id = ? AND enabled = ? AND pending_delete = ?", t.NodeID, false, false).Update("applied", false)
+
+	// 自愈任务(AutoConfirm):apply 成功即确认,跳过 confirm_wait 保护期。
+	// 这是修复 drift 自愈死循环的核心——自愈是系统行为,无人工确认,若走保护期
+	// 必然超时回滚,回滚恢复快照≠expected 又触发再漂移,形成死循环。
+	if t.AutoConfirm {
+		t.Status = model.TaskConfirmed
+		t.ResultHash = res.ResultHash
+		if err := co.DB.WithContext(ctx).Save(&t).Error; err != nil {
+			co.Log.Warn("save auto-confirmed", "task_id", t.ID, "err", err)
+			return
+		}
+		// 通知 Agent 释放快照(与人工 Confirm 语义一致)
+		co.sendConfirmToAgent(ctx, &t)
+		co.audit(ctx, "system", "task.applying_ok", model.AuditSceneSelfHeal, model.AuditResultSuccess,
+			[]*model.Task{&t}, map[string]any{"hash": res.ResultHash, "auto_confirm": true})
+		return
+	}
+
+	// 人工任务:进入保护期(confirm_wait),启动倒计时定时器,超时未确认则自动回滚。
 	// Agent 保留变更前快照,等待用户 Confirm(释放快照) 或 Rollback(恢复快照)。
 	t.Status = model.TaskConfirmWait
 	t.ResultHash = res.ResultHash
@@ -430,9 +545,6 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		co.Log.Warn("save confirm_wait", "task_id", t.ID, "err", err)
 		return
 	}
-	// Agent 确认应用成功,将 enabled 实例的 applied 置 true,disabled 实例的 applied 置 false。
-	co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
-		Where("node_id = ?", t.NodeID).Update("applied", gorm.Expr("enabled"))
 	co.armRollbackTimer(&t)
 	deadline := "-"
 	pw := 0
@@ -686,11 +798,13 @@ func (co *Coordinator) fillNodeDispatchPreviewBatch(ctx context.Context, tasks [
 	for _, t := range tasks {
 		nodeIDs = append(nodeIDs, t.NodeID)
 	}
-	// 一次查询所有待下发(enabled=true,applied=false)和待禁用(enabled=false,applied=true)实例
+	// 一次查询所有待下发(enabled=true,applied=false)和待禁用(enabled=false,applied=true)实例。
+	// 待禁用排除 pending_delete 实例:它们的移除由各自保护期 task 展示,
+	// 不混入其他 dispatch 预览(漏洞 S/F' 修复)。
 	var instances []model.NodePolicyInstance
 	co.DB.WithContext(ctx).
-		Where("node_id IN ? AND ((enabled = ? AND applied = ?) OR (enabled = ? AND applied = ?))",
-			nodeIDs, true, false, false, true).
+		Where("node_id IN ? AND ((enabled = ? AND applied = ?) OR (enabled = ? AND applied = ? AND pending_delete = ?))",
+			nodeIDs, true, false, false, true, false).
 		Order("node_id, priority ASC, id ASC").Find(&instances)
 
 	pendingByNode := map[string][]model.NodePolicyInstance{}
@@ -706,6 +820,19 @@ func (co *Coordinator) fillNodeDispatchPreviewBatch(ctx context.Context, tasks [
 	for _, t := range tasks {
 		co.fillNodeDispatchPreviewFromCache(ctx, t, pendingByNode[t.NodeID], disablingByNode[t.NodeID])
 	}
+}
+
+// refreshNodePreview 用节点最新实例状态重算单 task 的 policy_name/change_type/diff_after。
+// Submit 时生成的预览可能因审批期间实例被编辑而过时;审批(dispatch)时刷新为下发真值,
+// 保证保护期面板展示与实际下发一致(漏洞 F' 修复)。
+func (co *Coordinator) refreshNodePreview(ctx context.Context, t *model.Task) {
+	var pending, disabling []model.NodePolicyInstance
+	co.DB.WithContext(ctx).
+		Where("node_id = ? AND enabled = ? AND applied = ?", t.NodeID, true, false).Find(&pending)
+	co.DB.WithContext(ctx).
+		Where("node_id = ? AND enabled = ? AND applied = ? AND pending_delete = ?",
+			t.NodeID, false, true, false).Find(&disabling)
+	co.fillNodeDispatchPreviewFromCache(ctx, t, pending, disabling)
 }
 
 // fillNodeDispatchPreviewFromCache 用预查的实例切片填充单个 task 预览(不再查 DB)。

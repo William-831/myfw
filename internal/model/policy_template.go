@@ -4,6 +4,8 @@ import "time"
 
 // PolicyTemplate 是可复用的规则骨架:归属策略组(CustomChain),定义动作/协议/端口等
 // 默认参数,不绑定任何节点。节点策略实例从模板实例化并独立保存参数快照。
+// SpecVersion 是规则字段的单调递增版本号,实例据此判 drift——比 UpdatedAt 更精确:
+// 改名称/描述等非规则字段不递增,不会误触发节点实例 drift(漏洞 A 修复)。
 type PolicyTemplate struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	Name             string    `gorm:"size:255" json:"name"`
@@ -22,6 +24,7 @@ type PolicyTemplate struct {
 	Priority         int       `gorm:"index" json:"priority"`
 	Description      string    `gorm:"size:512" json:"description"`
 	Enabled          bool      `gorm:"index" json:"enabled"`
+	SpecVersion      int64     `json:"spec_version"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -56,8 +59,12 @@ type NodePolicyInstance struct {
 	// PendingDeleteTaskID 关联本次移除操作的 task_id,Confirm/Rollback 据此精确清理或恢复
 	// 对应实例,避免同节点多个保护期 task 互相误伤。
 	PendingDeleteTaskID string `gorm:"size:64;index" json:"pending_delete_task_id"`
-	// SyncedTemplateUpdatedAt 上次同步/实例化时模板的 UpdatedAt。drift 据此判断
-	// 模板是否在实例之后更新过--实例自身编辑不视为 drift(用户主动偏离模板)。
+	// SyncedSpecVersion 上次同步/实例化时模板的 SpecVersion。drift 据此判断模板
+	// 规则字段是否在实例之后更新过--实例自身编辑不视为 drift(用户主动偏离模板)。
+	// 相比旧的 SyncedTemplateUpdatedAt 时间戳判据,SpecVersion 不受 DB 时间精度影响,
+	// 且改模板名称/描述不会误报 drift(漏洞 A 修复)。
+	SyncedSpecVersion int64 `gorm:"index" json:"synced_spec_version"`
+	// SyncedTemplateUpdatedAt 保留兼容旧数据的时间戳判据;新数据统一用 SyncedSpecVersion。
 	SyncedTemplateUpdatedAt time.Time `gorm:"column:synced_template_at;index" json:"synced_template_at"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`

@@ -46,6 +46,7 @@ web/.vite/
 !.env.example
 # 测试部署记录(含服务器凭据,禁止提交)
 docs/test-deploy.md
+Claudemissing/test-deploy.md
 # 临时部署辅助脚本(含密码/token,禁止提交)
 askpass.sh
 ssh_exec.py
@@ -83,6 +84,7 @@ tmp/
 /deploy-cert/
 # 交叉编译二进制与前端打包产物(部署用,勿提交)
 /myfw-controller-linux
+/myfw-controller-linux-amd64
 /myfw-agent-linux
 /myfw-agent
 /dist.tar.gz

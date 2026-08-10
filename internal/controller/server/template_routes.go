@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -43,6 +44,21 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if tpl.Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
+			return
+		}
+		if !checkTemplateNameUnique(db, c, tpl.Name, 0) {
+			return
+		}
+		if !checkTemplateGroup(db, c, tpl.GroupID) {
+			return
+		}
+		if !checkMarkExists(db, c, tpl.Action, tpl.Mark) {
+			return
+		}
+		// 新模板 spec 从 1 开始(漏洞 A:drift 判据改用 SpecVersion)
+		tpl.SpecVersion = 1
 		if err := db.Create(&tpl).Error; err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -65,7 +81,29 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if !checkTemplateGroup(db, c, body.GroupID) {
+			return
+		}
+		if !checkMarkExists(db, c, body.Action, body.Mark) {
+			return
+		}
+		// 规则字段脏检查:仅规则字段变更才递增 SpecVersion(漏洞 A 修复),
+		// 改 Name/Description 等非规则字段不触发实例 drift。
+		var orig model.PolicyTemplate
+		if err := db.First(&orig, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
+			return
+		}
+		if !checkTemplateNameUnique(db, c, body.Name, id) {
+			return
+		}
+		if templateSpecChanged(&orig, &body) {
+			body.SpecVersion = orig.SpecVersion + 1
+		} else {
+			body.SpecVersion = orig.SpecVersion
+		}
 		body.ID = id
+		body.CreatedAt = orig.CreatedAt // 保留创建时间,防前端未回传导致清零
 		if err := db.Save(&body).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -77,6 +115,16 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 	g.DELETE("/templates/:id", func(c *gin.Context) {
 		id, ok := parseTplID(c)
 		if !ok {
+			return
+		}
+		// 引用检查:模板被节点实例引用时拒绝删除,避免产生孤儿实例
+		// (无法 sync、drift 不再提示但规则仍在节点生效,漏洞 B 修复)。
+		var refCount int64
+		db.Model(&model.NodePolicyInstance{}).Where("template_id = ?", id).Count(&refCount)
+		if refCount > 0 {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": fmt.Sprintf("该模板仍被 %d 个节点实例引用,请先移除实例后再删除", refCount),
+			})
 			return
 		}
 		if err := db.Delete(&model.PolicyTemplate{}, id).Error; err != nil {
@@ -160,8 +208,11 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		type instView struct {
 			model.NodePolicyInstance
-			TemplateName string `json:"template_name"`
-			Drift        bool   `json:"drift"`
+			TemplateName string   `json:"template_name"`
+			Drift        bool     `json:"drift"`          // 模板 SpecVersion 领先实例快照(模板更新过)
+			DriftFields  []string `json:"drift_fields"`   // 实例与模板当前参数不一致的规则字段
+			Deviated     bool     `json:"deviated"`       // 实例参数 ≠ 模板当前参数(无论谁改的,含手动偏离)
+			DeviatedFields []string `json:"deviated_fields"` // 同 drift_fields,实例侧偏离视角
 		}
 		out := make([]instView, len(instances))
 		for i := range instances {
@@ -169,6 +220,9 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			if tpl, ok := templates[instances[i].TemplateID]; ok {
 				out[i].TemplateName = tpl.Name
 				out[i].Drift = instanceDrift(&instances[i], tpl)
+				out[i].DriftFields = instanceDiffFields(&instances[i], tpl)
+				out[i].Deviated = instanceDeviated(&instances[i], tpl)
+				out[i].DeviatedFields = out[i].DriftFields
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{"instances": out})
@@ -221,6 +275,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
 				Priority: tpl.Priority,
 				Description: tpl.Description, Enabled: true,
+				SyncedSpecVersion:       tpl.SpecVersion, // 实例化即快照模板 spec(漏洞 A)
 				SyncedTemplateUpdatedAt: tpl.UpdatedAt,
 			}
 		} else {
@@ -251,6 +306,9 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		if err := policy.ValidateFields(fieldsFromInstance(&inst)); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if !checkMarkExists(db, c, inst.Action, inst.Mark) {
 			return
 		}
 		if err := db.Create(&inst).Error; err != nil {
@@ -294,6 +352,9 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		}
 		if err := policy.ValidateFields(fieldsFromInstance(&body)); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if !checkMarkExists(db, c, body.Action, body.Mark) {
 			return
 		}
 		// MARK 白名单拦截:group_id 可空;其他场景 group_id 必填
@@ -343,33 +404,50 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusConflict, gin.H{"error": "节点未连接,无法移除规则"})
 			return
 		}
-		// 置 enabled=false + pending_delete=true,保留 applied=true 供 Submit 识别"待禁用"生成 -D 移除
-		if err := db.Model(&model.NodePolicyInstance{}).Where("id = ?", id).
-			Updates(map[string]any{"enabled": false, "pending_delete": true}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		// 触发移除下发(进保护期)
-		tasks, err := co.Submit(c.Request.Context(), 0, []string{inst.NodeID}, task.SubmitOpts{
+		// 原子移除:事务内创建 task + 标记实例并关联 task_id,dispatch 失败自动恢复实例
+		// (不再有"pending_delete=true 但 task_id 未关联"的孤儿态,漏洞 G 修复)。
+		t, err := co.SubmitRemoval(c.Request.Context(), inst.ID, task.SubmitOpts{
 			Author:      actor(c),
 			AutoApprove: true,
 		})
-		if err != nil || len(tasks) == 0 {
-			// Submit 失败:回滚标记,恢复实例原状态(启用、非待删)
-			db.Model(&model.NodePolicyInstance{}).Where("id = ?", id).
-				Updates(map[string]any{"enabled": true, "pending_delete": false})
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "移除下发失败: " + err.Error()})
 			return
 		}
-		taskID := tasks[0].ID
-		// 关联本次移除的 task_id,Confirm/Rollback 据此精确清理或恢复
-		db.Model(&model.NodePolicyInstance{}).Where("id = ?", id).
-			Update("pending_delete_task_id", taskID)
 		auditInst(auditSink, c, "delete", id, inst.Name, inst.NodeID)
 		c.JSON(http.StatusAccepted, gin.H{
-			"task_id": taskID,
+			"task_id": t.ID,
 			"message": "已进入保护期,可在保护期面板确认或回滚",
 		})
+	})
+
+	// drift 同步预览:返回实例当前 vs 模板最新的字段级 diff(不落库)。
+	// 前端 sync 确认前展示"将覆盖哪些字段",降低手动同步认知负担(配置侧漂移治理 1.2)。
+	g.POST("/instances/:id/sync-preview", func(c *gin.Context) {
+		id, ok := parseTplID(c)
+		if !ok {
+			return
+		}
+		var inst model.NodePolicyInstance
+		if err := db.First(&inst, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
+			return
+		}
+		var tpl model.PolicyTemplate
+		if err := db.First(&tpl, inst.TemplateID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
+			return
+		}
+		fields := make([]gin.H, 0)
+		for _, f := range instanceDiffFields(&inst, &tpl) {
+			fields = append(fields, gin.H{
+				"field":    f,
+				"label":    instFieldLabel(f),
+				"current":  instFieldValue(&inst, f),
+				"template": tplFieldValue(&tpl, f),
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"fields": fields})
 	})
 
 	// drift 同步:用模板最新参数覆盖实例(实例名/启用/节点保留)
@@ -388,46 +466,49 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
 			return
 		}
-		// 数值/调度字段始终同步(通用参数,由模板定义)
-		inst.GroupID = tpl.GroupID
-		inst.Direction = tpl.Direction
-		inst.Mark = tpl.Mark
-		inst.MatchMark = tpl.MatchMark
-		inst.Priority = tpl.Priority
-		// 字符串字段:仅当模板有值时才覆盖。模板为空 = 该字段是节点特有参数
-		// (由实例自定义,如节点 IP),同步时保留实例原值,避免清空实例配置。
-		if tpl.Source != "" {
-			inst.Source = tpl.Source
-		}
-		if tpl.Destination != "" {
-			inst.Destination = tpl.Destination
-		}
-		if tpl.Protocol != "" {
-			inst.Protocol = tpl.Protocol
-		}
-		if tpl.PortRange != "" {
-			inst.PortRange = tpl.PortRange
-		}
-		if tpl.Action != "" {
-			inst.Action = tpl.Action
-		}
-		if tpl.NatTo != "" {
-			inst.NatTo = tpl.NatTo
-		}
-		if tpl.SourceGroup != "" {
-			inst.SourceGroup = tpl.SourceGroup
-		}
-		if tpl.DestinationGroup != "" {
-			inst.DestinationGroup = tpl.DestinationGroup
-		}
-		inst.Applied = false                         // 同步后参数变更,需重新下发
-		inst.SyncedTemplateUpdatedAt = tpl.UpdatedAt // 同步完成,记录模板当前版本
+		// 全量覆盖:模板最新参数整体对齐实例(漏洞 E 修复)。
+		// 模板字段清空同样传播到实例,不再有"非空才覆盖"造成的假同步。
+		// 实例名/启用状态/删除流程状态是实例特有,保留不动。
+		// 全量覆盖 + spec 快照(sync 与 sync-all 共用逻辑)
+		applyTemplateToInstance(&inst, &tpl)
 		if err := db.Save(&inst).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		auditInst(auditSink, c, "sync", id, inst.Name, inst.NodeID)
 		c.JSON(http.StatusOK, inst)
+	})
+
+	// 节点级批量同步:同步该节点所有 drift(模板 SpecVersion 领先)实例。
+	// 已同步/无模板引用实例跳过;不触发下发(applied 置 false,用户另行 dispatch)。
+	// 配置侧漂移治理 1.3:一键同步全部,避免逐个手动 sync 的认知负担。
+	g.POST("/nodes/:id/sync-all", func(c *gin.Context) {
+		nodeID := c.Param("id")
+		var instances []model.NodePolicyInstance
+		if err := db.Where("node_id = ? AND template_id > 0", nodeID).Find(&instances).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		synced, skipped := 0, 0
+		for i := range instances {
+			var tpl model.PolicyTemplate
+			if err := db.First(&tpl, instances[i].TemplateID).Error; err != nil {
+				skipped++ // 模板已删(异常态),跳过
+				continue
+			}
+			if !instanceDrift(&instances[i], &tpl) {
+				skipped++
+				continue
+			}
+			applyTemplateToInstance(&instances[i], &tpl)
+			if err := db.Save(&instances[i]).Error; err != nil {
+				skipped++
+				continue
+			}
+			auditInst(auditSink, c, "sync", instances[i].ID, instances[i].Name, nodeID)
+			synced++
+		}
+		c.JSON(http.StatusOK, gin.H{"synced": synced, "skipped": skipped})
 	})
 
 	// 节点级 dispatch:编译该节点所有 enabled 实例下发,走审批/保护期
@@ -467,11 +548,191 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 	})
 }
 
-// instanceDrift 判断模板是否在实例上次同步后更新过。
-// 仅当模板 UpdatedAt 晚于实例 SyncedTemplateUpdatedAt 才视为 drift(可同步);
-// 实例自身编辑不视为 drift(用户主动偏离模板,不提示同步)。
+// instanceDrift 判断模板规则字段是否在实例上次同步后更新过(可同步)。
+// SpecVersion 主导:模板规则字段版本号大于实例快照版本 = drift;改模板名称/描述等
+// 非规则字段不递增 SpecVersion,不误报 drift(漏洞 A 修复)。
+// 兼容旧数据:模板 SpecVersion=0(存量模板未用新版编辑过)时回退 UpdatedAt 时间戳判据,
+// 避免仅记 SyncedTemplateUpdatedAt 的存量实例漏报。
 func instanceDrift(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) bool {
+	if tpl.SpecVersion > 0 {
+		return inst.SyncedSpecVersion < tpl.SpecVersion
+	}
 	return tpl.UpdatedAt.After(inst.SyncedTemplateUpdatedAt)
+}
+
+// instanceDiffFields 返回实例与模板当前参数不一致的规则字段名列表(配置侧漂移详情)。
+// 字段集同 templateSpecChanged;描述等非规则字段不参与。用于 drift 角标字段级展示
+// 与偏离检测,降低手动同步认知负担(用户可知具体哪些字段变了)。
+func instanceDiffFields(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) []string {
+	var fields []string
+	if inst.GroupID != tpl.GroupID {
+		fields = append(fields, "group_id")
+	}
+	if inst.Direction != tpl.Direction {
+		fields = append(fields, "direction")
+	}
+	if inst.Source != tpl.Source {
+		fields = append(fields, "source")
+	}
+	if inst.Destination != tpl.Destination {
+		fields = append(fields, "destination")
+	}
+	if inst.Protocol != tpl.Protocol {
+		fields = append(fields, "protocol")
+	}
+	if inst.PortRange != tpl.PortRange {
+		fields = append(fields, "port_range")
+	}
+	if inst.Action != tpl.Action {
+		fields = append(fields, "action")
+	}
+	if inst.Mark != tpl.Mark {
+		fields = append(fields, "mark")
+	}
+	if inst.NatTo != tpl.NatTo {
+		fields = append(fields, "nat_to")
+	}
+	if inst.SourceGroup != tpl.SourceGroup {
+		fields = append(fields, "source_group")
+	}
+	if inst.DestinationGroup != tpl.DestinationGroup {
+		fields = append(fields, "destination_group")
+	}
+	if inst.MatchMark != tpl.MatchMark {
+		fields = append(fields, "match_mark")
+	}
+	if inst.Priority != tpl.Priority {
+		fields = append(fields, "priority")
+	}
+	return fields
+}
+
+// instanceDeviated 判断实例参数是否手动偏离模板当前参数(不依赖 SpecVersion)。
+// 与 instanceDrift 互补:drift 看"模板是否更新过",deviated 看"实例参数是否与模板当前不一致"。
+func instanceDeviated(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) bool {
+	return len(instanceDiffFields(inst, tpl)) > 0
+}
+
+// applyTemplateToInstance 用模板最新参数全量覆盖实例规则字段(漏洞 E 修复语义)。
+// 实例名/启用/删除流程状态是实例特有保留;applied 置 false 待下发;spec 快照更新到模板最新。
+// sync(单条)与 sync-all(批量)共用,避免同步逻辑分叉。
+func applyTemplateToInstance(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) {
+	inst.GroupID = tpl.GroupID
+	inst.Direction = tpl.Direction
+	inst.Source = tpl.Source
+	inst.Destination = tpl.Destination
+	inst.Protocol = tpl.Protocol
+	inst.PortRange = tpl.PortRange
+	inst.Action = tpl.Action
+	inst.Mark = tpl.Mark
+	inst.NatTo = tpl.NatTo
+	inst.SourceGroup = tpl.SourceGroup
+	inst.DestinationGroup = tpl.DestinationGroup
+	inst.MatchMark = tpl.MatchMark
+	inst.Priority = tpl.Priority
+	inst.Description = tpl.Description
+	inst.Applied = false
+	inst.SyncedSpecVersion = tpl.SpecVersion
+	inst.SyncedTemplateUpdatedAt = tpl.UpdatedAt
+}
+
+// instFieldLabel 规则字段中文名(sync 预览/偏离 tooltip 展示用)。
+func instFieldLabel(name string) string {
+	switch name {
+	case "group_id":
+		return "所属策略组"
+	case "direction":
+		return "流量方向"
+	case "source":
+		return "源地址"
+	case "destination":
+		return "目的地址"
+	case "protocol":
+		return "协议"
+	case "port_range":
+		return "端口"
+	case "action":
+		return "动作"
+	case "mark":
+		return "标记"
+	case "nat_to":
+		return "转换目标"
+	case "source_group":
+		return "源地址组"
+	case "destination_group":
+		return "目的地址组"
+	case "match_mark":
+		return "匹配标记"
+	case "priority":
+		return "优先级"
+	}
+	return name
+}
+
+// instFieldValue / tplFieldValue 按字段名取字符串值(sync 预览 diff 用)。
+// 两类型规则字段集一致,分别 case;group_id/mark/match_mark/priority 转字符串展示。
+func instFieldValue(inst *model.NodePolicyInstance, name string) string {
+	switch name {
+	case "group_id":
+		return strconv.FormatUint(uint64(inst.GroupID), 10)
+	case "direction":
+		return inst.Direction
+	case "source":
+		return inst.Source
+	case "destination":
+		return inst.Destination
+	case "protocol":
+		return inst.Protocol
+	case "port_range":
+		return inst.PortRange
+	case "action":
+		return inst.Action
+	case "mark":
+		return strconv.FormatUint(uint64(inst.Mark), 10)
+	case "nat_to":
+		return inst.NatTo
+	case "source_group":
+		return inst.SourceGroup
+	case "destination_group":
+		return inst.DestinationGroup
+	case "match_mark":
+		return strconv.FormatUint(uint64(inst.MatchMark), 10)
+	case "priority":
+		return strconv.Itoa(inst.Priority)
+	}
+	return ""
+}
+
+func tplFieldValue(tpl *model.PolicyTemplate, name string) string {
+	switch name {
+	case "group_id":
+		return strconv.FormatUint(uint64(tpl.GroupID), 10)
+	case "direction":
+		return tpl.Direction
+	case "source":
+		return tpl.Source
+	case "destination":
+		return tpl.Destination
+	case "protocol":
+		return tpl.Protocol
+	case "port_range":
+		return tpl.PortRange
+	case "action":
+		return tpl.Action
+	case "mark":
+		return strconv.FormatUint(uint64(tpl.Mark), 10)
+	case "nat_to":
+		return tpl.NatTo
+	case "source_group":
+		return tpl.SourceGroup
+	case "destination_group":
+		return tpl.DestinationGroup
+	case "match_mark":
+		return strconv.FormatUint(uint64(tpl.MatchMark), 10)
+	case "priority":
+		return strconv.Itoa(tpl.Priority)
+	}
+	return ""
 }
 
 func parseTplID(c *gin.Context) (uint, bool) {
@@ -481,6 +742,75 @@ func parseTplID(c *gin.Context) (uint, bool) {
 		return 0, false
 	}
 	return uint(n), true
+}
+
+// checkTemplateNameUnique 校验模板 name 唯一(漏洞 K 修复),excludeID 排除自身(更新时)。
+// 模板 name 唯一后,导入去重按 name 判断才可靠,不再出现重名只处理第一条的问题。
+func checkTemplateNameUnique(db *gorm.DB, c *gin.Context, name string, excludeID uint) bool {
+	q := db.Model(&model.PolicyTemplate{}).Where("name = ?", name)
+	if excludeID > 0 {
+		q = q.Where("id != ?", excludeID)
+	}
+	var cnt int64
+	if err := q.Count(&cnt).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if cnt > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "模板名称已存在"})
+		return false
+	}
+	return true
+}
+
+// checkTemplateGroup 校验模板 group_id:>0 时必须指向存在的策略组,否则 400(漏洞 D 修复)。
+// group_id=0 放行(模板不绑定组的宽松语义,如 MARK 白名单模板落内置链)。
+func checkTemplateGroup(db *gorm.DB, c *gin.Context, groupID uint) bool {
+	if groupID == 0 {
+		return true
+	}
+	var grp model.CustomChain
+	if err := db.First(&grp, groupID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "策略组不存在"})
+		return false
+	}
+	return true
+}
+
+// checkMarkExists 校验 MARK 规则的打标值存在于标记管理(Mark 表)。
+// 标记语义(dev=开发/ops=运维等)由标记管理统一承载,规则 mark 字段存 value 引用;
+// 数值合法性(mark 非零)由 rulespec 校验,此处补"必须已定义"的引用完整性,
+// 与前端标记值下拉(从标记管理加载)一致,防御绕过 UI 直接传未定义值。
+// 仅 MARK 动作需校验;MatchMark 为编译内部字段,不在此校验。
+func checkMarkExists(db *gorm.DB, c *gin.Context, action string, mark uint32) bool {
+	if action != "MARK" {
+		return true
+	}
+	var m model.Mark
+	if err := db.Where("value = ?", mark).First(&m).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("标记值 %d 未在标记管理中定义,请先在标记管理创建", mark)})
+		return false
+	}
+	return true
+}
+
+// templateSpecChanged 判断模板规则字段是否变更,决定是否递增 SpecVersion(漏洞 A 修复)。
+// 规则字段:方向/源/目的/协议/端口/动作/标记/转换/组引用/匹配标记/优先级/归属组;
+// 非规则字段:名称/描述/启用——修改它们不触发节点实例 drift。
+func templateSpecChanged(orig, next *model.PolicyTemplate) bool {
+	return orig.GroupID != next.GroupID ||
+		orig.Direction != next.Direction ||
+		orig.Source != next.Source ||
+		orig.Destination != next.Destination ||
+		orig.Protocol != next.Protocol ||
+		orig.PortRange != next.PortRange ||
+		orig.Action != next.Action ||
+		orig.Mark != next.Mark ||
+		orig.NatTo != next.NatTo ||
+		orig.SourceGroup != next.SourceGroup ||
+		orig.DestinationGroup != next.DestinationGroup ||
+		orig.MatchMark != next.MatchMark ||
+		orig.Priority != next.Priority
 }
 
 // fieldsFromTemplate / fieldsFromInstance 从模板/实例抽取规则字段子集,供

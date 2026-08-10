@@ -89,6 +89,7 @@ export const cleanupNow = () => service.post('/v1/system/cleanup')
 
 // 仪表盘
 export const getDashboardStats = () => service.get('/v1/dashboard/stats')
+export const getConfigDrift = () => service.get('/v1/dashboard/config-drift')
 
 // iptables 规则
 export const getNodeIptablesRules = (nodeId) => service.get(`/v1/iptables/rules/${nodeId}`)
@@ -113,6 +114,8 @@ export const createInstance = (nodeId, data) => service.post(`/v1/nodes/${nodeId
 export const updateInstance = (id, data) => service.put(`/v1/instances/${id}`, data)
 export const deleteInstance = (id) => service.delete(`/v1/instances/${id}`)
 export const syncInstance = (id) => service.post(`/v1/instances/${id}/sync`)
+export const syncInstancePreview = (id) => service.post(`/v1/instances/${id}/sync-preview`)
+export const syncAllNode = (nodeId) => service.post(`/v1/nodes/${nodeId}/sync-all`)
 export const dispatchNode = (nodeId, data) => service.post(`/v1/nodes/${nodeId}/dispatch`, data || {})
 
 export default service

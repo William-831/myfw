@@ -36,8 +36,12 @@ type Task struct {
 	// used by the coordinator on both live runs and startup recovery.
 	ConfirmDeadline *time.Time `json:"confirm_deadline"`
 	Reviewer        string     `gorm:"size:128" json:"reviewer,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	// AutoConfirm 系统自愈任务标记(drift 恢复):apply 成功后直接 confirmed,
+	// 不进 confirm_wait 保护期。修复自愈死循环——自愈是系统行为,无人工确认,
+	// 若走保护期必然超时回滚,回滚恢复快照≠expected 又触发再漂移。
+	AutoConfirm bool      `gorm:"default:false" json:"auto_confirm,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Approval records the review decision on a task before it may be applied.
@@ -83,6 +87,7 @@ const (
 	AuditSceneExpertBypass = "expert_bypass" // 专家终端绕过保护期
 	AuditSceneAutoRollback = "auto_rollback" // 超时自动回滚
 	AuditSceneRecovery     = "recovery"      // 启动恢复
+	AuditSceneSelfHeal     = "self_heal"     // 系统自愈(drift 恢复),与人工操作区分
 
 	AuditResultSuccess    = "success"
 	AuditResultFailed     = "failed"

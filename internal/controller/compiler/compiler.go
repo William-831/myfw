@@ -81,9 +81,12 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 	usedBuiltin = make(map[string]struct{})
 
 	// 预加载实例所属策略组(GroupID -> CustomChain)。
+	// MARK 白名单实例不消费组链(规则落内置链,不受组影响):跳过其 GroupID 收集,
+	// 避免组不存在时静默跳过(1.3 修复:存量 MARK 实例带组也不失效)。
 	groupIDs := make(map[uint]struct{})
 	for i := range instances {
-		if instances[i].GroupID != 0 {
+		if instances[i].GroupID != 0 &&
+			!rulespec.IsMarkWhitelist(instances[i].Action, instances[i].Source, instances[i].SourceGroup, instances[i].PortRange) {
 			groupIDs[instances[i].GroupID] = struct{}{}
 		}
 	}
@@ -108,7 +111,9 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 		// MARK 白名单拦截:填了源地址组+端口,group_id=0 也生效(落内置链)
 		isMarkACL := rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange)
 		var groupChain, groupParent string
-		if inst.GroupID != 0 {
+		// MARK 白名单实例即使带 GroupID(历史数据/前端误选)也不走组分支:
+		// 规则落内置链(compileInstance 内覆盖 Chain),组不存在也不会整条失效。
+		if inst.GroupID != 0 && !isMarkACL {
 			g, ok := groupByID[inst.GroupID]
 			if !ok {
 				continue // 所属组不存在或未启用,实例不生效

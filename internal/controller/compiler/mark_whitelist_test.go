@@ -64,6 +64,50 @@ func TestCompileMarkWhitelist(t *testing.T) {
 	}
 }
 
+// TestCompileMarkWhitelistWithGroupIDIgnoresGroupChain 验证 MARK 白名单实例即使带
+// GroupID(历史数据/前端误选),也不消费组链:编译仍落内置链。
+// 修复前(僵尸链):MARK 实例 GroupID=999 且组不存在 -> 预加载 groupByID 无 999 ->
+// 循环体 `if !ok { continue }` 静默跳过,白名单拦截整条失效。
+// 修复后:MARK 白名单实例不查组链,规则落内置链不受组影响。
+func TestCompileMarkWhitelistWithGroupIDIgnoresGroupChain(t *testing.T) {
+	c, _ := newTestCompiler(t)
+	ctx := context.Background()
+	mustCreateNode(t, c, "n_a")
+
+	// MARK 白名单实例带 GroupID=999,但组 999 不存在(存量数据残留/前端误选)
+	inst := model.NodePolicyInstance{
+		NodeID: "n_a", Name: "docker-acl", Action: "MARK", Mark: 15,
+		Direction: "FORWARD", Protocol: "TCP", SourceGroup: "whitelist", PortRange: "8080",
+		GroupID: 999, Priority: 50, Enabled: true,
+	}
+	if err := c.DB.Create(&inst).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rules, _, chains, err := c.CompileForNode(ctx, "n_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 仍产出 3 条 MARK 白名单规则,不被"组不存在"跳过
+	if len(rules) != 3 {
+		t.Fatalf("want 3 rules, got %d: %+v", len(rules), rules)
+	}
+	if rules[0].Chain != "MARKMANGLE" {
+		t.Fatalf("打标应落 MARKMANGLE(忽略组), got %s", rules[0].Chain)
+	}
+	if rules[1].Chain != "MARKACL-FWD" || rules[2].Chain != "MARKACL-FWD" {
+		t.Fatalf("过滤应落 MARKACL-FWD(忽略组), got %s/%s", rules[1].Chain, rules[2].Chain)
+	}
+	// 内置链仍下发
+	chainNames := map[string]bool{}
+	for _, cc := range chains {
+		chainNames[cc.Name] = true
+	}
+	if !chainNames["MARKMANGLE"] || !chainNames["MARKACL-FWD"] {
+		t.Fatalf("期望下发 MARKMANGLE/MARKACL-FWD, got %v", chainNames)
+	}
+}
+
 // TestCompileMarkWhitelistInput 验证主机入站(INPUT)方向:打标仍落 MARKMANGLE,
 // 过滤链落 MARKACL-IN(挂 MYFW-INPUT)。
 func TestCompileMarkWhitelistInput(t *testing.T) {

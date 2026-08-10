@@ -43,6 +43,7 @@
                 <el-button size="small" type="primary" @click="openCreate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>新建策略</el-button>
                 <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
                 <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点(全量对齐)</el-button>
+                <el-button size="small" type="warning" @click="handleSyncAll" :disabled="!selectedNodeId || !driftInstanceCount" :loading="syncingAll">同步全部漂移({{ driftInstanceCount }})</el-button>
               </div>
             </div>
           </template>
@@ -53,7 +54,11 @@
               <div class="inst-top">
                 <span class="inst-name">{{ inst.name }}</span>
                 <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
-                <el-tag v-if="inst.drift" size="small" type="warning" effect="dark">⚠ 模板已更新</el-tag>
+                <el-tooltip v-if="inst.deviated" :content="driftFieldsText(inst)" placement="top">
+                  <el-tag :type="inst.drift ? 'warning' : 'danger'" size="small" effect="dark">
+                    {{ inst.drift ? '⚠ 模板已更新(' + (inst.deviated_fields?.length || 0) + '字段)' : '✎ 已偏离模板' }}
+                  </el-tag>
+                </el-tooltip>
                 <el-tag v-if="inst.pending_delete" size="small" type="warning" effect="dark">待确认移除</el-tag>
                 <el-tag v-else-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
                 <el-tag v-else-if="inst.enabled && inst.applied" size="small" type="success" effect="plain">已下发</el-tag>
@@ -110,7 +115,7 @@
         <el-form-item label="实例名称"><el-input v-model="instForm.name" /></el-form-item>
         <el-form-item v-if="instForm.action !== 'MARK'" label="所属组">
           <el-select v-model="instForm.group_id" style="width: 100%">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name} - ${cc.description || cc.parent}`" :value="cc.id" />
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name}${cc.description ? ' - ' + cc.description : ''}`" :value="cc.id" />
           </el-select>
         </el-form-item>
         <div class="form-row">
@@ -136,7 +141,20 @@
           <el-form-item label="端口范围" class="form-col"><el-input v-model="instForm.port_range" placeholder="如 80 或 1000:2000" /></el-form-item>
         </div>
         <el-form-item label="动作">
-          <el-select v-model="instForm.action" style="width: 100%"><el-option label="允许 ACCEPT" value="ACCEPT" /><el-option label="丢弃 DROP" value="DROP" /><el-option label="拒绝 REJECT" value="REJECT" /><el-option label="标记 MARK" value="MARK" /><el-option label="目的转换 DNAT" value="DNAT" /><el-option label="源转换 SNAT" value="SNAT" /></el-select>
+          <el-select v-model="instForm.action" style="width: 100%">
+            <el-option-group label="流量控制">
+              <el-option label="允许 ACCEPT" value="ACCEPT" />
+              <el-option label="丢弃 DROP" value="DROP" />
+              <el-option label="拒绝 REJECT" value="REJECT" />
+            </el-option-group>
+            <el-option-group label="地址转换">
+              <el-option label="目的转换 DNAT" value="DNAT" />
+              <el-option label="源转换 SNAT" value="SNAT" />
+            </el-option-group>
+            <el-option-group label="白名单拦截">
+              <el-option label="端口白名单拦截 MARK" value="MARK" />
+            </el-option-group>
+          </el-select>
         </el-form-item>
         <el-form-item v-if="instForm.action === 'MARK'" label="流量方向">
           <el-select v-model="instForm.direction" style="width: 100%">
@@ -157,7 +175,7 @@
         <el-form-item v-if="isCreate" label="立即应用"><el-switch v-model="instForm.apply" /></el-form-item>
       </el-form>
       <div class="cmd-preview">
-        <div class="cmd-preview-head">命令预览(规则落 MYFW 自定义链,系统链已自动跳转)</div>
+        <div class="cmd-preview-head">规则预览</div>
         <pre class="cmd-preview-code"><span v-for="(line, i) in previewCommand" :key="i" :class="'cmd-' + line.type">{{ line.text }}{{ i < previewCommand.length - 1 ? '\n' : '' }}</span></pre>
       </div>
       <template #footer>
@@ -174,7 +192,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
-import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask } from '@/api'
+import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, syncInstancePreview, syncAllNode, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const route = useRoute()
@@ -208,7 +226,7 @@ const currentNodeLabel = computed(() => {
   return n ? (n.ip || n.hostname || n.id.slice(0, 12)) : '未选择'
 })
 
-const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
+const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '白名单拦截', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
 
 // 命令预览:根据实例表单拼接底层 iptables 命令,无感教学
 const previewCommand = computed(() => {
@@ -419,12 +437,54 @@ const saveInst = async () => {
 
 const handleSync = async (inst) => {
   try {
-    await ElMessageBox.confirm(`同步实例「${inst.name}」为模板最新参数?当前实例参数将被覆盖.`, '确认同步', { type: 'warning', confirmButtonText: '同步', cancelButtonText: '取消' })
+    // 先调预览接口拿字段级 diff,展示"将覆盖什么"再确认(降低手动同步认知负担)
+    let diffText = '将用模板最新参数覆盖此实例'
+    try {
+      const p = await syncInstancePreview(inst.id)
+      const fields = p.fields || []
+      if (fields.length) {
+        diffText = '将覆盖以下字段:<br>' + fields
+          .map((f) => `· ${f.label}: ${f.current || '(空)'} → ${f.template || '(空)'}`)
+          .join('<br>')
+      } else {
+        diffText = '实例与模板当前参数一致,无需同步'
+      }
+    } catch { /* 预览失败不阻塞,仍可确认 */ }
+    await ElMessageBox.confirm(`同步实例「${inst.name}」?<br>${diffText}`, '确认同步', {
+      type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '同步', cancelButtonText: '取消'
+    })
     await syncInstance(inst.id)
     ElMessage.success('已同步')
     loadInstances()
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('同步失败')
+  }
+}
+
+// 字段中文名映射:实例与模板参数 diff 的 tooltip 展示
+const fieldLabels = { group_id: '所属策略组', direction: '流量方向', source: '源地址', destination: '目的地址', protocol: '协议', port_range: '端口', action: '动作', mark: '标记', nat_to: '转换目标', source_group: '源地址组', destination_group: '目的地址组', match_mark: '匹配标记', priority: '优先级' }
+const driftFieldsText = (inst) => {
+  const f = inst.deviated_fields || inst.drift_fields || []
+  if (!f.length) return '与模板参数一致'
+  return '与模板不一致: ' + f.map((x) => fieldLabels[x] || x).join('、')
+}
+
+// 批量同步:一键把当前节点所有漂移实例同步为模板最新参数
+const syncingAll = ref(false)
+const driftInstanceCount = computed(() => instances.value.filter((i) => i.drift).length)
+const handleSyncAll = async () => {
+  const n = driftInstanceCount.value
+  if (!n) { ElMessage.info('没有待同步的漂移实例'); return }
+  try {
+    await ElMessageBox.confirm(`将把当前节点 ${n} 个漂移实例同步为模板最新参数. 手动修改过的实例参数将被覆盖, 同步后需重新下发生效.`, '确认批量同步', { type: 'warning', confirmButtonText: '同步', cancelButtonText: '取消' })
+    syncingAll.value = true
+    const d = await syncAllNode(selectedNodeId.value)
+    ElMessage.success(`已同步 ${d.synced} 个实例, 跳过 ${d.skipped} 个`)
+    loadInstances()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e?.response?.data?.error || '批量同步失败')
+  } finally {
+    syncingAll.value = false
   }
 }
 

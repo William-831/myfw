@@ -65,6 +65,7 @@
             <el-option label="常规变更" value="normal" />
             <el-option label="专家绕过" value="expert_bypass" />
             <el-option label="超时回滚" value="auto_rollback" />
+            <el-option label="系统自愈" value="self_heal" />
           </el-select>
           <el-button size="small" type="primary" @click="handleSearch" :disabled="loading">搜索</el-button>
           <el-button size="small" @click="handleReset" :disabled="loading">重置</el-button>
@@ -81,7 +82,7 @@
             </div>
             <div class="tl-content">
               <div class="tl-row">
-                <span class="tl-actor">👤 {{ g.actor }}</span>
+                <span class="tl-actor">{{ g.actor === 'system' ? '🤖 系统' : '👤 ' + g.actor }}</span>
                 <span class="tl-node">🖥 {{ g.nodeIP }}</span>
                 <span class="tl-time">{{ g.relativeTime }}</span>
                 <span class="tl-badge" :class="groupBadge(g)">{{ g.badgeLabel }}</span>
@@ -275,7 +276,7 @@ const getActionLabel = (action) => {
   }
   return map[action] || action || '-'
 }
-const sceneLabel = (s) => ({ normal: '常规变更', expert_bypass: '专家绕过', auto_rollback: '超时回滚', recovery: '启动恢复' }[s] || s || '-')
+const sceneLabel = (s) => ({ normal: '常规变更', expert_bypass: '专家绕过', auto_rollback: '超时回滚', recovery: '启动恢复', self_heal: '系统自愈' }[s] || s || '-')
 const resultLabel = (r) => ({ success: '成功', failed: '失败', rolled_back: '已回滚', pending: '进行中' }[r] || r || '-')
 const formatTime = (t) => { if (!t) return '-'; try { return new Date(t).toLocaleString() } catch { return t } }
 const formatRelative = (t) => {
@@ -296,7 +297,7 @@ const summarizeDetail = (row) => {
   if (!d) return row.detail || '-'
   switch (row.action) {
     case 'iptables.exec': return d.command || '-'
-    case 'task.submit': return `策略#${d.policy_id || '-'}${d.auto_approve ? '(自动审批)' : ''}`
+    case 'task.submit': return `${d.auto_confirm ? '[自愈] ' : ''}策略#${d.policy_id || '-'}${d.auto_approve ? '(自动审批)' : ''}`
     case 'task.applying_ok': return d.hash ? '哈希 ' + String(d.hash).slice(0, 12) : '成功'
     default: return row.detail || '-'
   }

@@ -55,13 +55,13 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("%s 需指定 nat_to", s.Action)
 	}
 
-	// mark 值限定为 dev(15)/ops(255) 两种权限标记
-	if s.Action == "MARK" && s.Mark != 15 && s.Mark != 255 {
-		return fmt.Errorf("mark 必须是 15(dev) 或 255(ops)")
+	// MARK 打标值必须非零:0 在 iptables 表示无标记,不能作为打标值。
+	// 标记值不在此硬编码特定数值(如 15/255)——数值合法性只要求非零,
+	// 引用完整性(必须存在于标记管理 Mark 表,语义如 dev=开发/ops=运维)由 API 层校验。
+	if s.Action == "MARK" && s.Mark == 0 {
+		return fmt.Errorf("MARK 打标值不可为 0(0 表示无标记)")
 	}
-	if s.MatchMark != 0 && s.MatchMark != 15 && s.MatchMark != 255 {
-		return fmt.Errorf("match_mark 必须是 0/15/255")
-	}
+	// match_mark:0=不匹配,任意非零 uint32 合法(标记管理已保证值有效)。
 
 	// MARK 动作只做白名单拦截:必须有源(地址或组)+端口,不存在"单纯打标"。
 	// 编译器自动生成 mangle 打标 + filter 白名单放行 + 兜底 DROP。

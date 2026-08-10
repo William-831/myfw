@@ -59,13 +59,16 @@ type Handler struct {
 	// last snapshot taken before Apply, keyed by TaskId — read when Rollback
 	// arrives, cleared on Confirm.
 	last map[string]string
+	// lastHash 与 last 同步:每个 Apply 前快照的 hash。Rollback 恢复快照后用它
+	// 更新 watchdog expected,避免恢复状态被判为 drift(自愈→回滚→再漂移死循环)。
+	lastHash map[string]string
 }
 
 // New builds a Handler around drv. If drv is nil, Apply tasks are rejected
 // with a clear message (useful during dev on macOS where no real driver is
 // available).
 func New(drv Driver, log *slog.Logger) *Handler {
-	return &Handler{D: drv, Log: log, last: map[string]string{}}
+	return &Handler{D: drv, Log: log, last: map[string]string{}, lastHash: map[string]string{}}
 }
 
 // SetHashNotifier registers a notifier to receive successful Apply hashes.
@@ -112,12 +115,13 @@ func (h *Handler) OnApply(ctx context.Context, task *myfwv1.ApplyTask) *myfwv1.T
 		return res
 	}
 
-	snap, _, err := h.D.Snapshot(ctx)
+	snap, snapHash, err := h.D.Snapshot(ctx)
 	if err != nil {
 		res.Message = "snapshot failed: " + err.Error()
 		return res
 	}
 	h.last[task.TaskId] = snap
+	h.lastHash[task.TaskId] = snapHash
 
 	hash, err := h.D.Apply(ctx, task.RuleSet)
 	if err != nil {
@@ -149,6 +153,7 @@ func (h *Handler) OnApply(ctx context.Context, task *myfwv1.ApplyTask) *myfwv1.T
 // considered stable.
 func (h *Handler) OnConfirm(ctx context.Context, task *myfwv1.ConfirmTask) {
 	delete(h.last, task.TaskId)
+	delete(h.lastHash, task.TaskId)
 	h.Log.Info("apply confirmed", "task_id", task.TaskId)
 }
 
@@ -163,7 +168,16 @@ func (h *Handler) OnRollback(ctx context.Context, task *myfwv1.RollbackTask) {
 		h.Log.Error("rollback failed", "task_id", task.TaskId, "err", err)
 		return
 	}
+	// 恢复后把 watchdog expected 更新为快照 hash:恢复后的实际规则 == 快照 hash,
+	// 否则 expected 仍停留在 apply 后的值,恢复状态被判为 drift,触发
+	// "自愈→回滚→再漂移→再自愈"死循环(8月9 线上实锤,5 分钟一轮)。
+	if h.HashNotifier != nil {
+		if snapHash, ok := h.lastHash[task.TaskId]; ok && snapHash != "" {
+			h.HashNotifier.SetExpectedHash(snapHash)
+		}
+	}
 	delete(h.last, task.TaskId)
+	delete(h.lastHash, task.TaskId)
 	h.Log.Info("rolled back", "task_id", task.TaskId)
 }
 

@@ -56,14 +56,20 @@ func TestValidateFields_MarkWhitelist(t *testing.T) {
 }
 
 func TestValidateFields_MarkValue(t *testing.T) {
-	if err := ValidateFields(Fields{Action: "MARK", Mark: 16}); err == nil {
-		t.Fatal("mark=16 应被拒绝(仅允许 15/255)")
+	// mark 非零即可(不再硬编码 15/255,引用标记管理由 API 层校验),但必须非零:0 表示无标记
+	if err := ValidateFields(Fields{Action: "MARK", Mark: 0, Protocol: "TCP", PortRange: "8080", Source: "10.0.0.0/24"}); err == nil {
+		t.Fatal("mark=0(无标记)应被拒绝,MARK 打标值不可为 0")
+	}
+	// 任意非零值合法(非 15/255 的自定义标记也可用)
+	if err := ValidateFields(Fields{Action: "MARK", Mark: 16, Protocol: "TCP", PortRange: "8080", Source: "10.0.0.0/24"}); err != nil {
+		t.Fatalf("mark=16(非 15/255)应通过,got: %v", err)
 	}
 	if err := ValidateFields(Fields{Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "8080"}); err == nil {
 		t.Fatal("mark=15 无源(纯打标)应被拒绝,MARK 需指定源")
 	}
-	if err := ValidateFields(Fields{Action: "ACCEPT", MatchMark: 99}); err == nil {
-		t.Fatal("match_mark=99 应被拒绝(仅允许 0/15/255)")
+	// match_mark:0=不限,任意非零合法
+	if err := ValidateFields(Fields{Action: "ACCEPT", MatchMark: 99}); err != nil {
+		t.Fatalf("match_mark=99 应通过(任意非零),got: %v", err)
 	}
 }
 

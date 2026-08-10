@@ -129,6 +129,9 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 	// 注入 drift 恢复回调:Agent 检测到 drift 请求 sync 时,Controller 重新下发期望态。
 	// 仅在线节点触发(避免离线节点堆积 FAILED task);Apply 幂等,成功后 expected 更新,
 	// 下次 watchdog 不再 drift,不会风暴。异步执行不阻塞 stream 处理。
+	// 自愈任务 AutoConfirm:apply 成功即确认,不走保护期——自愈是系统行为,无人工确认,
+	// 若走保护期必然超时回滚,回滚恢复快照≠expected 又触发再漂移,形成死循环(线上实锤)。
+	// HasInFlight 去重:节点已有在途任务(自愈下发中)时跳过,避免叠加下发。
 	streamSvc.OnSync = func(nodeID string) {
 		online := false
 		for _, id := range streamSvc.Reg.Connected() {
@@ -140,11 +143,16 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 		if !online {
 			return
 		}
+		if co.HasInFlight(nodeID) {
+			log.Debug("sync-triggered submit skipped: task in flight", "node_id", nodeID)
+			return
+		}
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := co.Submit(ctx, 0, []string{nodeID}, task.SubmitOpts{
-				Author: "system", AutoApprove: true,
+				Author: "system", AutoApprove: true, AutoConfirm: true,
+				Scene: model.AuditSceneSelfHeal,
 			}); err != nil {
 				log.Warn("sync-triggered submit failed", "node_id", nodeID, "err", err)
 			}

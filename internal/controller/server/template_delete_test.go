@@ -97,3 +97,61 @@ func TestDeleteInstanceNotFound(t *testing.T) {
 		t.Fatalf("status: got %d, want 404, body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestDeleteTemplateWithInstancesRejected 验证模板被节点实例引用时删除返回 409,
+// 模板保留,不产生孤儿实例(漏洞 B 修复)。
+func TestDeleteTemplateWithInstancesRejected(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver: db.DriverSQLite, DSN: "file::memory:",
+		MaxOpenConns: 1, MaxIdleConns: 1, LogLevel: gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb.Create(&model.PolicyTemplate{ID: 1, Name: "tpl"})
+	gdb.Create(&model.NodePolicyInstance{ID: 1, NodeID: "n1", TemplateID: 1, Name: "inst", Enabled: true})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/templates/1", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	var tpl model.PolicyTemplate
+	if err := gdb.First(&tpl, 1).Error; err != nil {
+		t.Fatalf("模板应保留: %v", err)
+	}
+}
+
+// TestDeleteTemplateNoInstancesOK 验证无实例引用的模板可正常删除(回归)。
+func TestDeleteTemplateNoInstancesOK(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver: db.DriverSQLite, DSN: "file::memory:",
+		MaxOpenConns: 1, MaxIdleConns: 1, LogLevel: gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb.Create(&model.PolicyTemplate{ID: 2, Name: "free-tpl"})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/templates/2", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204, body=%s", w.Code, w.Body.String())
+	}
+	var tpl model.PolicyTemplate
+	if err := gdb.First(&tpl, 2).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("模板应已删除, err=%v", err)
+	}
+}

@@ -20,6 +20,7 @@
       <el-table :data="tasks" style="width: 100%" v-loading="loading">
         <el-table-column label="策略" min-width="160">
           <template #default="{ row }">
+            <el-tag v-if="row.auto_confirm" size="small" type="warning" class="mr-1">自愈</el-tag>
             <span class="policy-name">{{ row.policy_name || '(单条规则)' }}</span>
           </template>
         </el-table-column>
@@ -33,7 +34,12 @@
             <el-tag :type="getStatusType(row.status)" size="small">{{ getStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="reviewer" label="审批人" width="100" />
+        <el-table-column label="审批人" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.reviewer === 'system'" size="small" type="warning">系统自愈</el-tag>
+            <span v-else>{{ row.reviewer || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="创建时间" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
@@ -60,7 +66,10 @@
         <el-descriptions-item label="状态">
           <el-tag :type="getStatusType(viewTask.status)" size="small">{{ getStatusLabel(viewTask.status) }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="审批人">{{ viewTask.reviewer || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="审批人">
+          <el-tag v-if="viewTask.reviewer === 'system'" size="small" type="warning">系统自愈</el-tag>
+          <span v-else>{{ viewTask.reviewer || '-' }}</span>
+        </el-descriptions-item>
         <el-descriptions-item label="任务ID" :span="2"><code>{{ viewTask.id }}</code></el-descriptions-item>
         <el-descriptions-item label="消息" :span="2">{{ viewTask.message || '-' }}</el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatTime(viewTask.created_at) }}</el-descriptions-item>
@@ -208,4 +217,5 @@ onMounted(() => {
 .header-actions { display: flex; gap: 12px; align-items: center; }
 .policy-name { font-weight: 600; color: #1E293B; }
 .mono { font-family: 'JetBrains Mono', monospace; }
+.mr-1 { margin-right: 4px; }
 </style>

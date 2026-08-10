@@ -73,9 +73,10 @@
         <el-form-item label="模板名称" prop="name" :rules="[{ required: true, message: '必填' }]">
           <el-input v-model="form.name" placeholder="如: 允许SSH" />
         </el-form-item>
-        <el-form-item label="所属组" prop="group_id" :rules="[{ required: true, message: '必选' }]">
-          <el-select v-model="form.group_id" placeholder="策略组(继承方向/子链)" style="width: 100%">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name} - ${cc.description || cc.parent}`" :value="cc.id" />
+        <!-- MARK 白名单不归属策略组(规则落内置链),隐藏所属组避免误导 -->
+        <el-form-item v-if="form.action !== 'MARK'" label="所属组" prop="group_id" :rules="[{ required: true, message: '必选' }]">
+          <el-select v-model="form.group_id" placeholder="所属策略组" style="width: 100%">
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name}${cc.description ? ' - ' + cc.description : ''}`" :value="cc.id" />
           </el-select>
         </el-form-item>
         <div class="form-row">
@@ -104,7 +105,25 @@
         </div>
         <el-form-item label="动作">
           <el-select v-model="form.action" style="width: 100%">
-            <el-option label="允许 ACCEPT" value="ACCEPT" /><el-option label="丢弃 DROP" value="DROP" /><el-option label="拒绝 REJECT" value="REJECT" /><el-option label="标记 MARK" value="MARK" /><el-option label="目的转换 DNAT" value="DNAT" /><el-option label="源转换 SNAT" value="SNAT" />
+            <el-option-group label="流量控制">
+              <el-option label="允许 ACCEPT" value="ACCEPT" />
+              <el-option label="丢弃 DROP" value="DROP" />
+              <el-option label="拒绝 REJECT" value="REJECT" />
+            </el-option-group>
+            <el-option-group label="地址转换">
+              <el-option label="目的转换 DNAT" value="DNAT" />
+              <el-option label="源转换 SNAT" value="SNAT" />
+            </el-option-group>
+            <el-option-group label="白名单拦截">
+              <el-option label="端口白名单拦截 MARK" value="MARK" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
+        <!-- MARK 白名单流量方向:容器转发(Docker -p)走 FORWARD,主机入站走 INPUT -->
+        <el-form-item v-if="form.action === 'MARK'" label="流量方向">
+          <el-select v-model="form.direction" style="width: 100%">
+            <el-option label="容器转发(Docker 端口映射)" value="FORWARD" />
+            <el-option label="主机入站(本地服务)" value="INPUT" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.action === 'DNAT' || form.action === 'SNAT'" label="NAT目标"><el-input v-model="form.nat_to" placeholder="192.168.1.100:8080" /></el-form-item>
@@ -118,8 +137,8 @@
         <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
       <div class="cmd-preview">
-        <div class="cmd-preview-head">命令预览(规则落 MYFW 自定义链)</div>
-        <pre class="cmd-preview-code">{{ previewCommand }}</pre>
+        <div class="cmd-preview-head">规则预览</div>
+        <pre class="cmd-preview-code"><span v-for="(line, i) in previewCommand" :key="i" :class="'cmd-' + line.type">{{ line.text }}{{ i < previewCommand.length - 1 ? '\n' : '' }}</span></pre>
       </div>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -174,7 +193,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Expand, Fold } from '@element-plus/icons-vue'
 import {
@@ -205,10 +224,20 @@ const editingId = ref(null)
 const form = reactive(emptyForm())
 
 function emptyForm() {
-  return { name: '', group_id: null, source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
+  return { name: '', group_id: null, direction: 'FORWARD', source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
 }
 
-const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '标记', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
+// 动作切换时清理关联字段:MARK 白名单不归属策略组(落内置链),非 MARK 无流量方向
+watch(() => form.action, (action) => {
+  if (action === 'MARK') {
+    form.group_id = 0
+    if (!form.direction) form.direction = 'FORWARD'
+  } else {
+    form.direction = ''
+  }
+})
+
+const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '白名单拦截', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
 const tplName = (id) => templates.value.find((t) => t.id === id)?.name || `#${id}`
 
 // 按策略组分类(未归组单独一区)
@@ -227,13 +256,30 @@ const groupedTemplates = computed(() => {
     const cc = customChains.value.find((c) => c.id === Number(gid))
     groups.push({ key: 'g' + gid, label: cc ? `${cc.name} - ${cc.description || cc.parent}` : `组#${gid}`, templates: byGroup[gid] })
   }
-  if (ungrouped.length) groups.push({ key: 'ungrouped', label: '未归组', templates: ungrouped })
+  // group_id=0 仅 MARK 白名单模板(规则落内置链),单独归"白名单拦截"区
+  if (ungrouped.length) groups.push({ key: 'ungrouped', label: '白名单拦截', templates: ungrouped })
   return groups
 })
 
-// 命令预览:基于表单拼接底层 iptables 命令
+// 规则预览:MARK 白名单展示意图描述(实际自动编译 3 条:打标+白名单放行+兜底 DROP),
+// 与后端 compiler 行为一致;其余动作展示底层命令。
 const previewCommand = computed(() => {
   const f = form
+  if (f.action === 'MARK') {
+    const pp = f.port_range
+      ? (f.protocol && f.protocol !== 'ANY' ? `${f.protocol} 端口 ${f.port_range}` : `端口 ${f.port_range}`)
+      : '<请填端口>'
+    const m = f.mark ? String(f.mark) : '<选标记值>'
+    const src = f.source ? `源 ${f.source}`
+      : (f.source_group ? `源地址组 ${f.source_group}` : '<请填源地址/组>')
+    const dir = f.direction === 'INPUT' ? '主机入站(INPUT)' : '容器转发(FORWARD)'
+    return [
+      { text: `① 打标(平台内置链): 到 ${pp} 的流量盖标记 ${m}`, type: 'mark' },
+      { text: `② 白名单放行: ${src} 且带标记 ${m} -> 允许`, type: 'accept' },
+      { text: `③ 兜底拒绝: 带标记 ${m} 的其余流量 -> 丢弃`, type: 'drop' },
+      { text: `流量方向: ${dir}`, type: 'default' },
+    ]
+  }
   const cc = customChains.value.find((c) => c.id === f.group_id)
   const table = cc?.table || 'filter'
   const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
@@ -246,16 +292,14 @@ const previewCommand = computed(() => {
     parts.push('-p', f.protocol.toLowerCase())
     if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)
   }
-  if (f.action === 'MARK') {
-    parts.push('-j', 'MARK', '--set-mark', String(f.mark || 0))
-  } else if (f.action === 'DNAT') {
+  if (f.action === 'DNAT') {
     parts.push('-j', 'DNAT', ...(f.nat_to ? ['--to-destination', f.nat_to] : []))
   } else if (f.action === 'SNAT') {
     parts.push('-j', 'SNAT', ...(f.nat_to ? ['--to-source', f.nat_to] : []))
   } else if (f.action) {
     parts.push('-j', f.action)
   }
-  return parts.join(' ')
+  return [{ text: parts.join(' '), type: 'default' }]
 })
 
 const loadTemplates = async () => {
@@ -305,6 +349,8 @@ const openAdd = () => {
 }
 const openEdit = (t) => {
   Object.assign(form, t)
+  // 存量 MARK 模板可能缺 direction(旧数据),补默认 FORWARD
+  if (t.action === 'MARK' && !form.direction) form.direction = 'FORWARD'
   editingId.value = t.id
   dialogTitle.value = '编辑模板'
   dialogVisible.value = true
@@ -312,7 +358,8 @@ const openEdit = (t) => {
 
 const save = async () => {
   if (!form.name) { ElMessage.warning('请填模板名称'); return }
-  if (!form.group_id) { ElMessage.warning('请选所属组'); return }
+  // MARK 白名单不归属策略组(落内置链);其他动作需选策略组
+  if (form.action !== 'MARK' && !form.group_id) { ElMessage.warning('请选所属组'); return }
   saving.value = true
   try {
     if (editingId.value) {
@@ -514,6 +561,10 @@ onMounted(() => {
 .cmd-preview { margin-top: 8px; }
 .cmd-preview-head { font-size: 12px; color: #64748b; margin-bottom: 6px; }
 .cmd-preview-code { background: var(--c-surface); color: var(--c-text-1); padding: 10px; border-radius: 6px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.cmd-mark { color: #2563eb; }
+.cmd-accept { color: #16a34a; }
+.cmd-drop { color: #dc2626; }
+.cmd-default { color: var(--c-text-1, #1e293b); }
 
 .mark-form { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
 .mark-list { display: flex; flex-direction: column; gap: 8px; }

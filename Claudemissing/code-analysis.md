@@ -95,9 +95,9 @@
 | Policy | policy.go:7 | 策略规则（Source, Destination, Protocol, PortRange, Action, Targets等） |
 | PolicyVersion | policy.go:35 | 策略版本快照 |
 | Rule | policy.go:47 | 已编译的规则（iptables 格式） |
-| PolicyTemplate | policy_template.go:7 | 策略模板（Policy 迁移后的产物） |
-| NodePolicyInstance | policy_template.go:33 | 节点策略实例（模板下发到具体节点） |
-| Task | task.go:21 | 任务（Apply/Confirm/Rollback） |
+| PolicyTemplate | policy_template.go:7 | 策略模板（Policy 迁移后的产物）;v1.2 加 SpecVersion(规则字段单调版本,drift 判据,改描述不递增) |
+| NodePolicyInstance | policy_template.go:33 | 节点策略实例（模板下发到具体节点）;v1.2 加 SyncedSpecVersion(同步时模板 spec 快照) |
+| Task | task.go:21 | 任务（Apply/Confirm/Rollback）;v1.2 加 AutoConfirm 字段(自愈任务 apply 成功即确认,跳过保护期) |
 | Approval | task.go:44 | 审批记录 |
 | Snapshot | task.go:55 | 规则快照（Rollback 用） |
 | AuditLog | task.go:67 | 审计日志 |
@@ -124,9 +124,9 @@
 | registerTaskRoutes | task_routes.go:18 | 任务列表/详情 |
 | registerTaskLifecycleRoutes | task_lifecycle_routes.go:16 | 任务审批/确认/回滚 |
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
-| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 |
+| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测) |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
-| registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 |
+| registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
 | registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查 |
 | registerAddressGroupRoutes | address_group_routes.go:19 | 地址组 CRUD |
 | registerCustomChainRoutes | custom_chain_routes.go:18 | 自定义链 CRUD |
@@ -160,12 +160,19 @@
 - `checkAuth()`（第 211 行）：业务层认证（证书吊销检查、节点状态、autoReregister）
 - `autoReregister()`（第 272 行）：Controller 数据库重建后自动注册存量 Agent
 
-**策略/模板**（internal/controller/policy/ + compiler/）：
+**策略/模板**（internal/controller/policy/ + compiler/ + rulespec/）：
 - `policy.Service`：策略 CRUD
-- `compiler.Compiler`：策略编译为 iptables 规则
+- `compiler.Compiler`：策略编译为 iptables 规则;v1.2 MARK 白名单实例不消费组链(compileInstances 预加载组跳过 isMarkACL 的 GroupID,组不存在不整条失效)
+- `rulespec.Spec.Validate`：规则字段唯一校验权威(API 入口/编译器/Agent driver 三层复用,无 DB);v1.2 MARK 打标值非零即合法(不再硬编码 15/255),引用完整性(标记必须存在于 Mark 表)由 API 层 `checkMarkExists` 承担
+- 配置侧漂移治理(template_routes.go)：`instanceDrift`(模板 SpecVersion 判据)+ `instanceDiffFields`/`instanceDeviated`(实例参数 vs 模板当前参数,不依赖 SpecVersion)+ `applyTemplateToInstance`(sync 单条与 sync-all 批量共用的全量覆盖)+ `instFieldLabel/instFieldValue/tplFieldValue`(diff 预览中文字段名);`GET /instances/:id` 返回 drift_fields/deviated/deviated_fields
 
 **任务协调器**（internal/controller/task/coordinator.go）：
 - `Coordinator`：Apply → 审批 → 确认/回滚 状态机
+- `SubmitOpts`：Author/AutoApprove/AutoConfirm(自愈跳过保护期)/Scene(审计场景)
+- `HasInFlight(nodeID)`：OnSync 去重(节点有 pending_approval/dispatching/applying/confirm_wait 任务时跳过)
+- `SubmitRemoval(instanceID,opts)`：移除实例保护期任务,事务内原子创建 task+标记 pending_delete 并关联 task_id(漏洞 G 修复)
+- `refreshNodePreview`：审批 dispatch 时用最新实例刷新 diff 预览,排除 pending_delete(漏洞 F' 修复)
+- `handleResult`：AutoConfirm 任务 apply 成功直接 confirmed(发 Confirm 释放 Agent 快照,审计 scene=self_heal);失败仅回退 enabled 实例 applied、成功不动 pending_delete 实例(漏洞 J/S 修复)
 
 **安全层**（internal/security/）：
 - `SecureInterceptor`：gRPC 拦截器（mTLS + 会话令牌 + HMAC 签名 + IP 钉扎 + 防重放）

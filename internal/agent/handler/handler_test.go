@@ -102,6 +102,54 @@ func TestOnApplyWithNilDriverGracefullyFails(t *testing.T) {
 	}
 }
 
+// recordingNotifier 记录 SetExpectedHash 的调用序列,用于验证 watchdog 期望值更新。
+type recordingNotifier struct{ hashes []string }
+
+func (r *recordingNotifier) SetExpectedHash(h string) { r.hashes = append(r.hashes, h) }
+
+// TestOnRollbackUpdatesExpectedHash 验证回滚恢复快照后把 watchdog expected 更新为
+// 快照 hash:避免恢复后的规则被误判为 drift,杜绝"自愈→回滚→再漂移→再自愈"死循环。
+// 红阶段:修复前 OnRollback 不通知 HashNotifier,expected 停留在 apply 后 hash。
+func TestOnRollbackUpdatesExpectedHash(t *testing.T) {
+	f := &fakeDriver{SnapshotOut: "SNAP", ApplyHash: "sha256:applied"}
+	n := &recordingNotifier{}
+	h := New(f, slog.Default())
+	h.SetHashNotifier(n)
+
+	// apply 后 expected = 期望态 hash
+	h.OnApply(context.Background(), &myfwv1.ApplyTask{TaskId: "t4",
+		RuleSet: &myfwv1.RuleSet{Rules: []*myfwv1.CompiledRule{{Id: "r"}}}})
+	if len(n.hashes) != 1 || n.hashes[0] != "sha256:applied" {
+		t.Fatalf("apply 后应通知 expected=applied hash, got %v", n.hashes)
+	}
+
+	// 回滚后 expected 应更新为快照 hash(而非停留在 applied hash)
+	h.OnRollback(context.Background(), &myfwv1.RollbackTask{TaskId: "t4"})
+	if len(f.RestoreCalls) != 1 || f.RestoreCalls[0] != "SNAP" {
+		t.Fatalf("rollback 未恢复快照: %v", f.RestoreCalls)
+	}
+	if len(n.hashes) != 2 || n.hashes[1] != "sha256:snap" {
+		t.Fatalf("rollback 后应通知 expected=snapshot hash(sha256:snap), got %v", n.hashes)
+	}
+}
+
+// TestOnConfirmClearsSnapshotHash 验证 Confirm 同时清除快照与快照 hash 记录。
+func TestOnConfirmClearsSnapshotHash(t *testing.T) {
+	f := &fakeDriver{SnapshotOut: "S", ApplyHash: "sha256:x"}
+	h := New(f, slog.Default())
+	h.OnApply(context.Background(), &myfwv1.ApplyTask{TaskId: "t5", RuleSet: &myfwv1.RuleSet{}})
+	if _, ok := h.last["t5"]; !ok {
+		t.Fatal("precondition: snapshot should be retained after Apply")
+	}
+	h.OnConfirm(context.Background(), &myfwv1.ConfirmTask{TaskId: "t5"})
+	if _, ok := h.last["t5"]; ok {
+		t.Fatal("Confirm should clear the retained snapshot")
+	}
+	if _, ok := h.lastHash["t5"]; ok {
+		t.Fatal("Confirm should clear the retained snapshot hash")
+	}
+}
+
 // TestOnDecommissionInvokesFn 验证注销指令触发自毁回调并传递 reason。
 func TestOnDecommissionInvokesFn(t *testing.T) {
 	var gotReason string

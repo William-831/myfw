@@ -6,6 +6,7 @@
       <StatCard :icon="CircleCheck" :value="stats.active_node_count" label="在线节点" accent="var(--c-success)" :sub="onlineSub" />
       <StatCard :icon="Lock" :value="stats.policy_count" label="策略总数" accent="var(--c-info)" :sub="policySub" />
       <StatCard :icon="Clock" :value="stats.pending_task_count" label="待审批" accent="var(--c-warning)" :sub="pendingSub" />
+      <StatCard :icon="Warning" :value="configDrift.total" label="配置漂移" accent="var(--c-danger)" :sub="driftSub" />
     </div>
 
     <!-- 主区:左节点状态环形图 + 右审计时间线,等高填满剩余空间 -->
@@ -28,8 +29,8 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Connection, CircleCheck, Lock, Clock } from '@element-plus/icons-vue'
-import { getDashboardStats, getAuditLogs } from '@/api'
+import { Connection, CircleCheck, Lock, Clock, Warning } from '@element-plus/icons-vue'
+import { getDashboardStats, getAuditLogs, getConfigDrift } from '@/api'
 import StatCard from '@/components/StatCard.vue'
 import StatusPanel from '@/components/StatusPanel.vue'
 import AuditFeed from '@/components/AuditFeed.vue'
@@ -48,6 +49,10 @@ const stats = reactive({
   pending_task_count: 0
 })
 
+// 配置漂移(模板已更新但实例未跟)统计,与运行时规则漂移区分
+const configDrift = reactive({ total: 0, nodes: [] })
+const driftSub = computed(() => configDrift.total ? `涉及 ${configDrift.nodes.length} 个节点 · 可一键同步` : '模板与实例一致')
+
 // 占比工具:node_count 为 0 时返回 0
 const pct = (n) => (stats.node_count ? Math.round((n / stats.node_count) * 100) : 0)
 
@@ -63,6 +68,10 @@ onMounted(async () => {
   } catch {
     // 保持默认值
   }
+
+  try {
+    Object.assign(configDrift, await getConfigDrift())
+  } catch { /* 配置漂移加载失败不阻塞 */ }
 
   auditLoading.value = true
   try {
@@ -90,7 +99,7 @@ onMounted(async () => {
 .stat-row {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--gap);
 }
 
