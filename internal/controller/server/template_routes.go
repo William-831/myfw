@@ -40,7 +40,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if err := policy.ValidateFields(fieldsFromTemplate(&tpl, chainTableFor(db, tpl.ChainID, tpl.GroupID))); err != nil {
+		if err := policy.ValidateFields(fieldsFromTemplate(&tpl, chainTableFor(db, tpl.GroupID))); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -52,9 +52,6 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			return
 		}
 		if !checkTemplateGroup(db, c, tpl.GroupID) {
-			return
-		}
-		if !checkTemplateChain(db, c, tpl.ChainID) {
 			return
 		}
 		if !checkMarkExists(db, c, tpl.Action, tpl.Mark) {
@@ -80,14 +77,11 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if err := policy.ValidateFields(fieldsFromTemplate(&body, chainTableFor(db, body.ChainID, body.GroupID))); err != nil {
+		if err := policy.ValidateFields(fieldsFromTemplate(&body, chainTableFor(db, body.GroupID))); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		if !checkTemplateGroup(db, c, body.GroupID) {
-			return
-		}
-		if !checkTemplateChain(db, c, body.ChainID) {
 			return
 		}
 		if !checkMarkExists(db, c, body.Action, body.Mark) {
@@ -219,18 +213,14 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			DriftFields       []string `json:"drift_fields"`   // 实例与模板当前参数不一致的规则字段
 			Deviated          bool     `json:"deviated"`       // 实例参数 ≠ 模板当前参数(无论谁改的,含手动偏离)
 			DeviatedFields    []string `json:"deviated_fields"` // 同 drift_fields,实例侧偏离视角
-			ChainUnavailable  bool     `json:"chain_unavailable"` // 落点链(ChainID/组链)不存在或未启用(P2 显式化)
+			ChainUnavailable  bool     `json:"chain_unavailable"` // 归属组链不存在或未启用(P2 显式化)
 		}
-		// 加载实例落点链(ChainID 优先,否则 GroupID),计算 chain_unavailable:
-		// 组/链被禁用或删除时实例不再静默失效,前端据此预警。
+		// 加载实例归属组链(group_id),计算 chain_unavailable:
+		// 组被禁用或删除时实例不再静默失效,前端据此预警。
 		chainIDs := map[uint]struct{}{}
 		for i := range instances {
-			id := instances[i].ChainID
-			if id == 0 {
-				id = instances[i].GroupID
-			}
-			if id != 0 {
-				chainIDs[id] = struct{}{}
+			if instances[i].GroupID != 0 {
+				chainIDs[instances[i].GroupID] = struct{}{}
 			}
 		}
 		chains := map[uint]*model.CustomChain{}
@@ -269,7 +259,6 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			Name             string `json:"name"`
 			Apply            bool   `json:"apply"`
 			GroupID          uint   `json:"group_id"`
-			ChainID          uint   `json:"chain_id"` // 独立落点链(与组解耦),0=继承组链
 			Direction        string `json:"direction"`
 			Source           string `json:"source"`
 			Destination      string `json:"destination"`
@@ -302,7 +291,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			}
 			inst = model.NodePolicyInstance{
 				TemplateID: tpl.ID, NodeID: nodeID, Name: name,
-				GroupID: tpl.GroupID, ChainID: tpl.ChainID, Direction: tpl.Direction, Source: tpl.Source, Destination: tpl.Destination,
+				GroupID: tpl.GroupID, Direction: tpl.Direction, Source: tpl.Source, Destination: tpl.Destination,
 				Protocol: tpl.Protocol, PortRange: tpl.PortRange, Action: tpl.Action,
 				Mark: tpl.Mark, NatTo: tpl.NatTo, SourceGroup: tpl.SourceGroup,
 				DestinationGroup: tpl.DestinationGroup, MatchMark: tpl.MatchMark,
@@ -317,15 +306,15 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				c.JSON(http.StatusBadRequest, gin.H{"error": "需填写实例名称"})
 				return
 			}
-			// MARK 白名单拦截:group_id/chain_id 可空(规则落内置链);其他场景落点链必填
+			// MARK 白名单拦截:group_id 可空(规则落内置链);其他场景归属组必填
 			isMarkACL := rulespec.IsMarkWhitelist(body.Action, body.Source, body.SourceGroup, body.PortRange)
-			if body.GroupID == 0 && body.ChainID == 0 && !isMarkACL {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组或落点链"})
+			if body.GroupID == 0 && !isMarkACL {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 				return
 			}
 			inst = model.NodePolicyInstance{
 				TemplateID: 0, NodeID: nodeID, Name: body.Name,
-				GroupID: body.GroupID, ChainID: body.ChainID, Source: body.Source, Destination: body.Destination,
+				GroupID: body.GroupID, Source: body.Source, Destination: body.Destination,
 				Protocol: body.Protocol, PortRange: body.PortRange, Action: body.Action,
 				Mark: body.Mark, NatTo: body.NatTo, SourceGroup: body.SourceGroup,
 				DestinationGroup: body.DestinationGroup, MatchMark: body.MatchMark,
@@ -337,7 +326,7 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		if inst.Action != "MARK" {
 			inst.Direction = ""
 		}
-		if err := policy.ValidateFields(fieldsFromInstance(&inst, chainTableFor(db, inst.ChainID, inst.GroupID))); err != nil {
+		if err := policy.ValidateFields(fieldsFromInstance(&inst, chainTableFor(db, inst.GroupID))); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -383,20 +372,17 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		} else {
 			body.Applied = false
 		}
-		if err := policy.ValidateFields(fieldsFromInstance(&body, chainTableFor(db, body.ChainID, body.GroupID))); err != nil {
+		if err := policy.ValidateFields(fieldsFromInstance(&body, chainTableFor(db, body.GroupID))); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		if !checkMarkExists(db, c, body.Action, body.Mark) {
 			return
 		}
-		if !checkTemplateChain(db, c, body.ChainID) {
-			return
-		}
-		// MARK 白名单拦截:group_id/chain_id 可空;其他场景落点链必填
+		// MARK 白名单拦截:group_id 可空;其他场景归属组必填
 		isMarkACL := rulespec.IsMarkWhitelist(body.Action, body.Source, body.SourceGroup, body.PortRange)
-		if body.GroupID == 0 && body.ChainID == 0 && !isMarkACL {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组或落点链"})
+		if body.GroupID == 0 && !isMarkACL {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 			return
 		}
 		if err := db.Save(&body).Error; err != nil {
@@ -604,9 +590,6 @@ func instanceDiffFields(inst *model.NodePolicyInstance, tpl *model.PolicyTemplat
 	if inst.GroupID != tpl.GroupID {
 		fields = append(fields, "group_id")
 	}
-	if inst.ChainID != tpl.ChainID {
-		fields = append(fields, "chain_id")
-	}
 	if inst.Direction != tpl.Direction {
 		fields = append(fields, "direction")
 	}
@@ -657,7 +640,6 @@ func instanceDeviated(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate)
 // sync(单条)与 sync-all(批量)共用,避免同步逻辑分叉。
 func applyTemplateToInstance(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) {
 	inst.GroupID = tpl.GroupID
-	inst.ChainID = tpl.ChainID
 	inst.Direction = tpl.Direction
 	inst.Source = tpl.Source
 	inst.Destination = tpl.Destination
@@ -681,8 +663,6 @@ func instFieldLabel(name string) string {
 	switch name {
 	case "group_id":
 		return "所属策略组"
-	case "chain_id":
-		return "落点链"
 	case "direction":
 		return "流量方向"
 	case "source":
@@ -717,8 +697,6 @@ func instFieldValue(inst *model.NodePolicyInstance, name string) string {
 	switch name {
 	case "group_id":
 		return strconv.FormatUint(uint64(inst.GroupID), 10)
-	case "chain_id":
-		return strconv.FormatUint(uint64(inst.ChainID), 10)
 	case "direction":
 		return inst.Direction
 	case "source":
@@ -751,8 +729,6 @@ func tplFieldValue(tpl *model.PolicyTemplate, name string) string {
 	switch name {
 	case "group_id":
 		return strconv.FormatUint(uint64(tpl.GroupID), 10)
-	case "chain_id":
-		return strconv.FormatUint(uint64(tpl.ChainID), 10)
 	case "direction":
 		return tpl.Direction
 	case "source":
@@ -823,52 +799,30 @@ func checkTemplateGroup(db *gorm.DB, c *gin.Context, groupID uint) bool {
 	return true
 }
 
-// checkTemplateChain 校验落点链 chain_id:>0 时必须指向存在的策略组(链),否则 400(P1a)。
-// 与 checkTemplateGroup 互补:group_id 是继承落点,chain_id 是独立覆盖落点(与组解耦)。
-func checkTemplateChain(db *gorm.DB, c *gin.Context, chainID uint) bool {
-	if chainID == 0 {
-		return true
-	}
-	var ch model.CustomChain
-	if err := db.First(&ch, chainID).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "落点链不存在"})
-		return false
-	}
-	return true
-}
-
-// chainTableFor 查询落点链(ChainID 优先,否则 GroupID)的表;落点链不存在/为空返回 ""。
+// chainTableFor 查询归属组链(group_id)的表;组不存在/为空返回 ""。
 // 供 rulespec 表一致性校验(DNAT/SNAT 须 nat 表链, P3)。
-func chainTableFor(db *gorm.DB, chainID, groupID uint) string {
-	id := chainID
-	if id == 0 {
-		id = groupID
-	}
-	if id == 0 {
+func chainTableFor(db *gorm.DB, groupID uint) string {
+	if groupID == 0 {
 		return ""
 	}
 	var ch model.CustomChain
-	if err := db.First(&ch, id).Error; err != nil {
+	if err := db.First(&ch, groupID).Error; err != nil {
 		return ""
 	}
 	return ch.Table
 }
 
-// chainAvailable 判断实例落点链(ChainID 优先,否则 GroupID)是否存在且启用。
+// chainAvailable 判断实例归属组链(group_id)是否存在且启用。
 // MARK 白名单落平台内置链,不依赖用户链,恒返回 true。
-// 实例列表据此标 chain_unavailable(P2:组/链禁用或删除不再静默失效)。
+// 实例列表据此标 chain_unavailable(P2:组禁用或删除不再静默失效)。
 func chainAvailable(chains map[uint]*model.CustomChain, inst *model.NodePolicyInstance) bool {
 	if rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange) {
 		return true
 	}
-	id := inst.ChainID
-	if id == 0 {
-		id = inst.GroupID
-	}
-	if id == 0 {
+	if inst.GroupID == 0 {
 		return true
 	}
-	ch, ok := chains[id]
+	ch, ok := chains[inst.GroupID]
 	return ok && ch.Enabled
 }
 
@@ -894,7 +848,6 @@ func checkMarkExists(db *gorm.DB, c *gin.Context, action string, mark uint32) bo
 // 非规则字段:名称/描述/启用——修改它们不触发节点实例 drift。
 func templateSpecChanged(orig, next *model.PolicyTemplate) bool {
 	return orig.GroupID != next.GroupID ||
-		orig.ChainID != next.ChainID ||
 		orig.Direction != next.Direction ||
 		orig.Source != next.Source ||
 		orig.Destination != next.Destination ||

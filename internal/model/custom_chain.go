@@ -13,7 +13,7 @@ type ChainMount struct {
 }
 
 // CustomChain 用户自定义子链:子链 MYFW-<name> 被一个或多个父链 jump 进来。
-// 规则通过 ChainID(落点链)/GroupID(继承落点)落到子链,用于规则按业务归类。
+// 规则通过 GroupID(组即落点)落到子链,用于规则按业务归类。
 // Parent/Priority 为兼容字段(主挂载 mounts[0] 的镜像,供旧代码/旧数据回退);
 // Mounts 为权威挂载列表(JSON),读取优先 Mounts,空则回退 Parent/Priority(存量零迁移)。
 type CustomChain struct {

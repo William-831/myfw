@@ -95,8 +95,8 @@
 | Policy | policy.go:7 | 策略规则（Source, Destination, Protocol, PortRange, Action, Targets等） |
 | PolicyVersion | policy.go:35 | 策略版本快照 |
 | Rule | policy.go:47 | 已编译的规则（iptables 格式） |
-| PolicyTemplate | policy_template.go:7 | 策略模板（Policy 迁移后的产物）;v1.2 加 SpecVersion(规则字段单调版本,drift 判据,改描述不递增);v1.3 加 ChainID(独立落点链,0=继承组链,与组解耦) |
-| NodePolicyInstance | policy_template.go:33 | 节点策略实例（模板下发到具体节点）;v1.2 加 SyncedSpecVersion(同步时模板 spec 快照);v1.3 加 ChainID(独立落点链) |
+| PolicyTemplate | policy_template.go:7 | 策略模板（Policy 迁移后的产物）;v1.2 加 SpecVersion(规则字段单调版本,drift 判据,改描述不递增) |
+| NodePolicyInstance | policy_template.go:33 | 节点策略实例（模板下发到具体节点）;v1.2 加 SyncedSpecVersion(同步时模板 spec 快照) |
 | CustomChain | custom_chain.go:7 | 自定义子链(策略组);v1.3 加 Mounts(JSON []ChainMount 权威挂载列表)+ ChainMount 类型 + MountList()(空回退 Parent/Priority 单挂载,多钩子 P1b) |
 | Task | task.go:21 | 任务（Apply/Confirm/Rollback）;v1.2 加 AutoConfirm 字段(自愈任务 apply 成功即确认,跳过保护期) |
 | Approval | task.go:44 | 审批记录 |
@@ -125,7 +125,7 @@
 | registerTaskRoutes | task_routes.go:18 | 任务列表/详情 |
 | registerTaskLifecycleRoutes | task_lifecycle_routes.go:16 | 任务审批/确认/回滚 |
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
-| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 落点链 ChainID 全链路 + chain_unavailable 标记 + chainTableFor/checkTemplateChain |
+| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性) |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
 | registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
 | registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查 |
@@ -165,9 +165,9 @@
 
 **策略/模板**（internal/controller/policy/ + compiler/ + rulespec/）：
 - `policy.Service`：策略 CRUD
-- `compiler.Compiler`：策略编译为 iptables 规则;v1.2 MARK 白名单实例不消费组链(compileInstances 预加载组跳过 isMarkACL 的 GroupID,组不存在不整条失效);v1.3 落点链 = ChainID 优先否则 GroupID(解耦),loadCustomChains 按链×挂载展开同名多条 CustomChainDef(多钩子,零 proto),compileInstance 传 chainTable 做 DNAT/SNAT 表一致性校验
+- `compiler.Compiler`：策略编译为 iptables 规则;v1.2 MARK 白名单实例不消费组链(compileInstances 预加载组跳过 isMarkACL 的 GroupID,组不存在不整条失效);v1.3 组即落点(compileInstances 用 GroupID 查链),loadCustomChains 按链×挂载展开同名多条 CustomChainDef(多钩子,零 proto),compileInstance 传 chainTable 做 DNAT/SNAT 表一致性校验
 - `rulespec.Spec.Validate`：规则字段唯一校验权威(API 入口/编译器/Agent driver 三层复用,无 DB);v1.2 MARK 打标值非零即合法(不再硬编码 15/255),引用完整性(标记必须存在于 Mark 表)由 API 层 `checkMarkExists` 承担;v1.3 加 ChainTable 字段,DNAT/SNAT 须 nat 表链(动作-链表一致性)
-- 配置侧漂移治理(template_routes.go)：`instanceDrift`(模板 SpecVersion 判据)+ `instanceDiffFields`/`instanceDeviated`(实例参数 vs 模板当前参数,不依赖 SpecVersion)+ `applyTemplateToInstance`(sync 单条与 sync-all 批量共用的全量覆盖)+ `instFieldLabel/instFieldValue/tplFieldValue`(diff 预览中文字段名);`GET /instances/:id` 返回 drift_fields/deviated/deviated_fields;v1.3 加 ChainID(落点链)全链路(diff/同步/校验)+ `chain_unavailable` 标记(P2 组生命周期显式化)+ `chainTableFor`/`checkTemplateChain`(表一致性与落点链存在性)
+- 配置侧漂移治理(template_routes.go)：`instanceDrift`(模板 SpecVersion 判据)+ `instanceDiffFields`/`instanceDeviated`(实例参数 vs 模板当前参数,不依赖 SpecVersion)+ `applyTemplateToInstance`(sync 单条与 sync-all 批量共用的全量覆盖)+ `instFieldLabel/instFieldValue/tplFieldValue`(diff 预览中文字段名);`GET /instances/:id` 返回 drift_fields/deviated/deviated_fields;v1.3 `chain_unavailable` 标记(P2 组生命周期显式化)+ `chainTableFor`(组链表 table,表一致性)
 
 **任务协调器**（internal/controller/task/coordinator.go）：
 - `Coordinator`：Apply → 审批 → 确认/回滚 状态机

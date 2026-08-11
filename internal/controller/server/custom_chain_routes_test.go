@@ -134,7 +134,7 @@ func TestUpdateChainDisableAuditsAffectedInstances(t *testing.T) {
 	}
 }
 
-// TestDeleteChainRejectedWhenReferenced 验证链被实例(落点链 ChainID)引用时删除被 409 拒绝。
+// TestDeleteChainRejectedWhenReferenced 验证链被实例(组链 GroupID)引用时删除被 409 拒绝。
 func TestDeleteChainRejectedWhenReferenced(t *testing.T) {
 	gdb, h := newTestGDB(t)
 	var ch model.CustomChain
@@ -144,9 +144,9 @@ func TestDeleteChainRejectedWhenReferenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	gdb.Where("name = ?", "dmz").First(&ch)
-	// 引用链:ChainID 指向该链(独立落点)
+	// 引用链:GroupID 指向该链(组即落点)
 	gdb.Create(&model.NodePolicyInstance{
-		Name: "r1", NodeID: "n1", GroupID: 0, ChainID: ch.ID, Action: "ACCEPT", Enabled: true,
+		Name: "r1", NodeID: "n1", GroupID: ch.ID, Action: "ACCEPT", Enabled: true,
 	})
 
 	w := postJSON(t, h, http.MethodDelete, "/api/v1/custom-chains/"+strconv.FormatUint(uint64(ch.ID), 10), "")

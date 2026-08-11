@@ -9,38 +9,6 @@ import (
 	"iptables-tool/internal/model"
 )
 
-// TestCreateTemplateWithChainID 验证模板可带独立落点链 chain_id(P1a 解耦):
-// 模板规则落点与"归属组"解耦,chain_id 指向存在的链时创建成功。
-func TestCreateTemplateWithChainID(t *testing.T) {
-	gdb, h := newTestGDB(t)
-	var ch model.CustomChain
-	if err := gdb.Create(&model.CustomChain{
-		Name: "dmz", Parent: "MYFW-FORWARD", Table: "filter", Priority: 1, Enabled: true,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	gdb.Where("name = ?", "dmz").First(&ch)
-
-	body := `{"name":"t-dmz","chain_id":` + strconv.FormatUint(uint64(ch.ID), 10) + `,"action":"ACCEPT","protocol":"TCP","port_range":"443"}`
-	w := postJSON(t, h, http.MethodPost, "/api/v1/templates", body)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status: got %d, want 201, body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"chain_id":`+strconv.FormatUint(uint64(ch.ID), 10)) {
-		t.Fatalf("响应应含 chain_id, body=%s", w.Body.String())
-	}
-}
-
-// TestCreateTemplateRejectsMissingChain 验证落点链 chain_id 不存在被 400 拒绝。
-func TestCreateTemplateRejectsMissingChain(t *testing.T) {
-	_, h := newTestGDB(t)
-	body := `{"name":"t-bad","chain_id":9999,"action":"ACCEPT"}`
-	w := postJSON(t, h, http.MethodPost, "/api/v1/templates", body)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400, body=%s", w.Code, w.Body.String())
-	}
-}
-
 // TestCreateTemplateRejectsDNATOnFilterChain 验证 P3 API 层表一致性:
 // DNAT 模板落 filter 表链被 400 拒绝(而非下发执行期才报 iptables 错)。
 func TestCreateTemplateRejectsDNATOnFilterChain(t *testing.T) {

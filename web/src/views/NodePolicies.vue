@@ -119,13 +119,6 @@
             <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name}${cc.description ? ' - ' + cc.description : ''}`" :value="cc.id" />
           </el-select>
         </el-form-item>
-        <!-- 落点链:规则落点与组解耦(P1a),空=继承所属组链 -->
-        <el-form-item v-if="instForm.action !== 'MARK'" label="落点链">
-          <el-select v-model="instForm.chain_id" clearable placeholder="空=继承所属组链" style="width: 100%">
-            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name} (${cc.table}表)${cc.description ? ' - ' + cc.description : ''}`" :value="cc.id" />
-          </el-select>
-          <span class="form-hint">规则落点与组解耦:可指定独立链(DNAT/SNAT 须 nat 表链),空则用所属组链</span>
-        </el-form-item>
         <div class="form-row">
           <el-form-item label="源地址" class="form-col"><el-input v-model="instForm.source" :placeholder="instForm.action === 'MARK' ? '白名单 IP/CIDR,如 192.168.1.5' : '空=任意'" /></el-form-item>
           <el-form-item v-if="instForm.action !== 'MARK'" label="目标地址" class="form-col"><el-input v-model="instForm.destination" placeholder="空=任意" /></el-form-item>
@@ -254,7 +247,7 @@ const previewCommand = computed(() => {
       { text: `iptables -t filter -A ${acl} -m mark --mark ${m} -j DROP`, type: 'drop' },
     ]
   }
-  const cc = customChains.value.find(c => c.id === (f.chain_id || f.group_id))
+  const cc = customChains.value.find(c => c.id === f.group_id)
   const table = cc?.table || 'filter'
   const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
   const parts = ['iptables', '-t', table, '-A', chain]
@@ -387,7 +380,7 @@ const formVisible = ref(false)
 const savingInst = ref(false)
 const isCreate = ref(false)
 const defaultForm = () => ({
-  template_id: 0, name: '', group_id: 0, chain_id: 0, direction: 'FORWARD', source: '', destination: '',
+  template_id: 0, name: '', group_id: 0, direction: 'FORWARD', source: '', destination: '',
   source_group: '', destination_group: '', protocol: 'ANY',
   port_range: '', action: 'ACCEPT', mark: 0, nat_to: '',
   match_mark: 0, priority: 50, description: '', enabled: true, apply: false
@@ -397,7 +390,6 @@ const instForm = reactive(defaultForm())
 watch(() => instForm.action, (action) => {
   if (action === 'MARK') {
     instForm.group_id = 0
-    instForm.chain_id = 0
     if (!instForm.direction) instForm.direction = 'FORWARD'
   } else {
     instForm.direction = ''
@@ -422,7 +414,7 @@ const saveInst = async () => {
     if (!instForm.port_range) { ElMessage.warning('请填端口'); return }
     if (!instForm.mark) { ElMessage.warning('请选标记值'); return }
   } else {
-    if (!instForm.group_id && !instForm.chain_id) { ElMessage.warning('请选策略组或落点链'); return }
+    if (!instForm.group_id) { ElMessage.warning('请选策略组'); return }
   }
   // 匹配标记入口已移除(仅 MARK 打标保留),强制清零避免旧实例残留 match_mark
   instForm.match_mark = 0
@@ -471,7 +463,7 @@ const handleSync = async (inst) => {
 }
 
 // 字段中文名映射:实例与模板参数 diff 的 tooltip 展示
-const fieldLabels = { group_id: '所属策略组', chain_id: '落点链', direction: '流量方向', source: '源地址', destination: '目的地址', protocol: '协议', port_range: '端口', action: '动作', mark: '标记', nat_to: '转换目标', source_group: '源地址组', destination_group: '目的地址组', match_mark: '匹配标记', priority: '优先级' }
+const fieldLabels = { group_id: '所属策略组', direction: '流量方向', source: '源地址', destination: '目的地址', protocol: '协议', port_range: '端口', action: '动作', mark: '标记', nat_to: '转换目标', source_group: '源地址组', destination_group: '目的地址组', match_mark: '匹配标记', priority: '优先级' }
 const driftFieldsText = (inst) => {
   const f = inst.deviated_fields || inst.drift_fields || []
   if (!f.length) return '与模板参数一致'

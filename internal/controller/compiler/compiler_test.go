@@ -255,55 +255,6 @@ func TestCompileRejectsDNATOnFilterChain(t *testing.T) {
 	}
 }
 
-// TestCompileForNodeChainIDPreferred 验证落点链独立于组(P1a 解耦):
-// 实例 ChainID 指向链 B(非组链 A)时, 编译规则落到链 B 而非组链。
-func TestCompileForNodeChainIDPreferred(t *testing.T) {
-	c, _ := newTestCompiler(t)
-	ctx := context.Background()
-	mustCreateNode(t, c, "n_a")
-	groupID := mustCreateChain(t, c)                          // 组链 acl-fwd
-	chainID := mustCreateChainNamed(t, c, "dmz", "filter", nil) // 落点链 dmz
-
-	mustCreateInstance(t, c, model.NodePolicyInstance{
-		NodeID: "n_a", Name: "allow-ssh", GroupID: groupID, ChainID: chainID,
-		Source: "10.0.0.0/24", Protocol: "TCP", PortRange: "22",
-		Action: "ACCEPT", Priority: 10, Enabled: true,
-	})
-
-	got, _, _, err := c.CompileForNode(ctx, "n_a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 rule, got %d", len(got))
-	}
-	if got[0].Chain != "dmz" {
-		t.Fatalf("ChainID 指定落点链应覆盖组链, want Chain=dmz, got %q", got[0].Chain)
-	}
-}
-
-// TestCompileForNodeChainIDFallbackToGroup 验证 ChainID=0 回落组链(兼容存量):
-// 实例未指定落点链时, 规则落到组链(与解耦前行为一致)。
-func TestCompileForNodeChainIDFallbackToGroup(t *testing.T) {
-	c, _ := newTestCompiler(t)
-	ctx := context.Background()
-	mustCreateNode(t, c, "n_a")
-	groupID := mustCreateChain(t, c) // 组链 acl-fwd
-
-	mustCreateInstance(t, c, model.NodePolicyInstance{
-		NodeID: "n_a", Name: "allow-ssh", GroupID: groupID, ChainID: 0,
-		Protocol: "TCP", PortRange: "22", Action: "ACCEPT", Priority: 10, Enabled: true,
-	})
-
-	got, _, _, err := c.CompileForNode(ctx, "n_a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].Chain != "acl-fwd" {
-		t.Fatalf("ChainID=0 应回落组链 acl-fwd, got %+v", got)
-	}
-}
-
 // TestCompileCustomChainsMultiMount 验证多挂载展开(P1b 多钩子):
 // 链带多挂载时, CompileForNode 的 customChains 输出同名多条(不同 parent),
 // driver 据此创建多 jump, 实现"同一链同时挂多个父链"。
@@ -319,7 +270,7 @@ func TestCompileCustomChainsMultiMount(t *testing.T) {
 	})
 	_ = groupID
 	mustCreateInstance(t, c, model.NodePolicyInstance{
-		NodeID: "n_a", Name: "dmz-rule", GroupID: groupID, ChainID: 0,
+		NodeID: "n_a", Name: "dmz-rule", GroupID: groupID,
 		Protocol: "TCP", PortRange: "443", Action: "ACCEPT", Priority: 10, Enabled: true,
 	})
 

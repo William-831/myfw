@@ -16,7 +16,7 @@ import (
 
 // registerCustomChainRoutes 挂载策略组(自定义子链)的 CRUD 接口。策略组=自定义子链
 // MYFW-<name>,可多挂载(一条链被多个父链各 jump 一次,多钩子 P1b);
-// 条目(模板/实例)通过 group_id(继承)/chain_id(独立落点)归属链,规则落于链。
+// 条目(模板/实例)通过 group_id 归属链(组即落点),规则落于链。
 func registerCustomChainRoutes(r gin.IRouter, db *gorm.DB, auditSink *audit.Sink) {
 	g := r.Group("/api/v1/custom-chains")
 	g.GET("", listCustomChains(db))
@@ -152,14 +152,14 @@ func deleteCustomChain(db *gorm.DB, auditSink *audit.Sink) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		// 引用检查:策略(group_id)/模板/实例(group_id OR chain_id)引用本链则拒绝删除
+		// 引用检查:策略(group_id)/模板/实例(group_id)引用本链则拒绝删除
 		var count int64
 		db.Model(&model.Policy{}).Where("group_id = ?", ch.ID).Count(&count)
 		if count == 0 {
-			db.Model(&model.PolicyTemplate{}).Where("group_id = ? OR chain_id = ?", ch.ID, ch.ID).Count(&count)
+			db.Model(&model.PolicyTemplate{}).Where("group_id = ?", ch.ID).Count(&count)
 		}
 		if count == 0 {
-			db.Model(&model.NodePolicyInstance{}).Where("group_id = ? OR chain_id = ?", ch.ID, ch.ID).Count(&count)
+			db.Model(&model.NodePolicyInstance{}).Where("group_id = ?", ch.ID).Count(&count)
 		}
 		if count > 0 {
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("自定义链被 %d 条策略/模板/实例引用,请先移除引用后再删除", count)})
@@ -237,12 +237,12 @@ func auditChain(auditSink *audit.Sink, c *gin.Context, op string, id uint, name 
 	})
 }
 
-// chainReferencedInstances 统计引用该链的实例数(落点链 ChainID 或组链 GroupID)。
+// chainReferencedInstances 统计引用该链的实例数(组链 GroupID)。
 // 供禁用链审计 detail 展示受影响实例数(P2)。
 func chainReferencedInstances(db *gorm.DB, chainID uint) int64 {
 	var n int64
 	db.Model(&model.NodePolicyInstance{}).
-		Where("group_id = ? OR chain_id = ?", chainID, chainID).
+		Where("group_id = ?", chainID).
 		Count(&n)
 	return n
 }

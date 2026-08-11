@@ -80,20 +80,15 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 	setNames = make(map[string]struct{})
 	usedBuiltin = make(map[string]struct{})
 
-	// 预加载实例落点链(ChainID 优先,否则 GroupID 继承;两者均指向 CustomChain)。
-	// 解耦语义:落点链 = 规则执行落点,与"归属组"独立(ChainID 覆盖 GroupID)。
+	// 预加载实例归属组链(GroupID 指向 CustomChain,组即落点)。
 	// MARK 白名单实例落平台内置链,不消费用户链:跳过收集。
 	chainIDs := make(map[uint]struct{})
 	for i := range instances {
 		if rulespec.IsMarkWhitelist(instances[i].Action, instances[i].Source, instances[i].SourceGroup, instances[i].PortRange) {
 			continue
 		}
-		id := instances[i].ChainID
-		if id == 0 {
-			id = instances[i].GroupID
-		}
-		if id != 0 {
-			chainIDs[id] = struct{}{}
+		if instances[i].GroupID != 0 {
+			chainIDs[instances[i].GroupID] = struct{}{}
 		}
 	}
 	chainByID := make(map[uint]*model.CustomChain)
@@ -118,18 +113,15 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 		isMarkACL := rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange)
 		var groupChain, groupParent string
 		if !isMarkACL {
-			// 非 MARK:落点链 = ChainID 优先,否则 GroupID(兼容旧模型,两者均指向 CustomChain)。
-			// MARK 白名单即使带 ChainID/GroupID 也不走此分支:规则落内置链,不受用户链影响。
-			chainID := inst.ChainID
+			// 非 MARK:落点链 = 归属组链(组即落点)。
+			// MARK 白名单即使带 GroupID 也不走此分支:规则落内置链,不受用户链影响。
+			chainID := inst.GroupID
 			if chainID == 0 {
-				chainID = inst.GroupID
-			}
-			if chainID == 0 {
-				continue // 无落点链,实例不生效
+				continue // 无归属组,实例不生效
 			}
 			ch, ok := chainByID[chainID]
 			if !ok {
-				continue // 落点链不存在或未启用,实例不生效(实例列表接口配合 chain_unavailable 标记)
+				continue // 归属组不存在或未启用,实例不生效(实例列表接口配合 chain_unavailable 标记)
 			}
 			groupChain, groupParent = ch.Name, ch.MountList()[0].Parent
 			chainToTable[groupChain] = ch.Table
