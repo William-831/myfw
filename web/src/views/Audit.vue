@@ -39,6 +39,11 @@
         <div class="num-val">{{ dash.summary.drift_count || 0 }}</div>
         <div class="num-lbl">漂移事件</div>
         <div class="num-sub">自愈 {{ dash.summary.self_heal || 0 }}</div>
+        <div class="drift-class">
+          <span class="dc-tamper">🔴 篡改 {{ dash.summary.drift_external_tamper || 0 }}</span>
+          <span class="dc-removed">🟠 删除 {{ dash.summary.drift_rule_removed || 0 }}</span>
+          <span class="dc-loss">🟡 重启丢失 {{ dash.summary.drift_restart_loss || 0 }}</span>
+        </div>
       </div>
     </div>
 
@@ -266,7 +271,7 @@ const statusLabel = (a) => {
 // --- 工具函数 ---
 const getActionLabel = (action) => {
   const map = {
-    'node.register': '节点注册', 'node.drift': '规则漂移', 'node.heartbeat': '节点心跳',
+    'node.register': '节点注册', 'node.drift': '规则漂移', 'node.drift.classified': '漂移分类', 'node.heartbeat': '节点心跳',
     'node.archived': '节点归档', 'node.auto_reregister': '自动重注册',
     'policy.create': '策略创建', 'policy.update': '策略更新', 'policy.delete': '策略删除', 'policy.apply': '策略应用',
     'task.submit': '任务提交', 'task.approve': '任务审批', 'task.reject': '任务拒绝',
@@ -292,11 +297,13 @@ const formatRelative = (t) => {
   return d + '天前'
 }
 const parseDetail = (s) => { if (!s) return null; try { return JSON.parse(s) } catch { return null } }
+const driftSourceLabel = (s) => ({ external_tamper: '外部篡改', rule_removed: '规则被删', restart_loss: '重启丢失', unspecified: '未知' }[s] || s || '未知')
 const summarizeDetail = (row) => {
   const d = parseDetail(row.detail)
   if (!d) return row.detail || '-'
   switch (row.action) {
     case 'iptables.exec': return d.command || '-'
+    case 'node.drift.classified': return `${driftSourceLabel(d.source)} · ${d.summary || ''}`
     case 'task.submit': return `${d.auto_confirm ? '[自愈] ' : ''}策略#${d.policy_id || '-'}${d.auto_approve ? '(自动审批)' : ''}`
     case 'task.applying_ok': return d.hash ? '哈希 ' + String(d.hash).slice(0, 12) : '成功'
     default: return row.detail || '-'
@@ -432,6 +439,10 @@ onMounted(() => { loadNodes(); loadDashboard(); loadConfidence(); loadLogs() })
 .num-sub { font-size: 11px; color: var(--c-text-3); }
 .num-card.bypass .num-val { color: var(--c-danger); }
 .num-card.drift .num-val { color: var(--c-warning); }
+.drift-class { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--c-text-3); }
+.drift-class .dc-tamper { color: var(--c-danger); }
+.drift-class .dc-removed { color: var(--c-warning); }
+.drift-class .dc-loss { color: var(--c-primary); }
 
 /* 图表行 */
 .chart-row { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 12px; padding: 16px; }

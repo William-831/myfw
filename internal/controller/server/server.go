@@ -159,6 +159,13 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 		}()
 	}
 
+	// 注入 drift 分类编译器:收到 node.drift 后编译节点期望规则集,与 Agent 上报的
+	// 实际规则做 diff 分类(区分重启丢失/外部篡改),见 2026-08-11_运行时drift分类设计.md
+	streamSvc.CompileExpected = func(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, error) {
+		expected, _, _, err := comp.CompileForNode(ctx, nodeID)
+		return expected, err
+	}
+
 	// Web (Gin) REST 路由
 	assetH := asset.New(db, auditSink, cfg.Bootstrap.TokenTTL)
 	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink)

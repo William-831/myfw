@@ -124,6 +124,36 @@ func (s *Sink) Dashboard(ctx context.Context, days int) (*DashboardStats, error)
 	stats.Summary["drift_count"] = int(drift)
 	stats.Summary["self_heal"] = int(heal)
 
+	// drift 来源分类统计(node.drift.classified):区分篡改/删除/重启丢失/未知严重度。
+	// 逐条解析 detail.source(低频数据,Go 侧聚合避免 json_extract 跨库兼容性差异)。
+	// 与 drift_count(事件总数)互补,反映"正常重启丢失"与"外部篡改"的真实占比。
+	stats.Summary["drift_external_tamper"] = 0
+	stats.Summary["drift_rule_removed"] = 0
+	stats.Summary["drift_restart_loss"] = 0
+	stats.Summary["drift_unspecified"] = 0
+	var classLogs []model.AuditLog
+	if err := s.DB.WithContext(ctx).Where("action = ? AND created_at >= ?", "node.drift.classified", since).Find(&classLogs).Error; err != nil {
+		return nil, err
+	}
+	for i := range classLogs {
+		var d struct {
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal([]byte(classLogs[i].Detail), &d); err != nil {
+			continue
+		}
+		switch d.Source {
+		case "external_tamper":
+			stats.Summary["drift_external_tamper"]++
+		case "rule_removed":
+			stats.Summary["drift_rule_removed"]++
+		case "restart_loss":
+			stats.Summary["drift_restart_loss"]++
+		default:
+			stats.Summary["drift_unspecified"]++
+		}
+	}
+
 	// 健康率 = 确认生效 / (确认 + 回滚 + 失败)
 	effective := confirmed + manualRB + autoRB + failed
 	if effective > 0 {

@@ -56,6 +56,10 @@ type Service struct {
 	// 由 server.go 注入(避免 stream 直接依赖 task 包造成循环导入)。nil 时仅记日志。
 	// 回调内部应异步执行(Apply 不阻塞 stream 处理)。
 	OnSync func(nodeID string)
+
+	// CompileExpected 编译节点期望规则集(drift 分类用),由 server.go 注入
+	// (包装 compiler.CompileForNode,避免 stream 直接依赖 compiler 包)。nil 时分类回落 unspecified。
+	CompileExpected func(ctx context.Context, nodeID string) ([]*myfwv1.CompiledRule, error)
 }
 
 // New builds a Service with an empty registry.
@@ -502,6 +506,8 @@ func (s *Service) isArchived(ctx context.Context, nodeID string) (bool, error) {
 }
 
 // auditDrift writes a drift event to the audit log.
+// 同步写基础审计(hash)后,异步分类(编译 expected + 拉 actual + diff)补写 node.drift.classified,
+// 区分"重启规则丢失(良性)"与"外部篡改(恶性)"。异步不阻塞 stream 收包;分类失败回落 unspecified。
 func (s *Service) auditDrift(ctx context.Context, nodeID string, drift *myfwv1.DriftReport) {
 	if s.Audit == nil {
 		return
@@ -516,6 +522,44 @@ func (s *Service) auditDrift(ctx context.Context, nodeID string, drift *myfwv1.D
 		Action: "node.drift",
 		NodeID: nodeID,
 		Detail: string(detail),
+	})
+	// 异步分类:复用 stream 连接上下文值(节点标识),不被连接关闭取消
+	go s.classifyAndAudit(context.WithoutCancel(ctx), nodeID, drift)
+}
+
+// classifyAndAudit 异步分类 drift 并补写 node.drift.classified 审计。
+// 依赖 CompileExpected(期望编译产物)与 DB 中 Agent 上报的实际 MYFW 规则;
+// RequestRulesAndWait 拉取失败不影响分类(用 DB 现有规则兜底)。
+func (s *Service) classifyAndAudit(ctx context.Context, nodeID string, drift *myfwv1.DriftReport) {
+	if s.Audit == nil {
+		return
+	}
+	cls := DriftClass{Source: DriftSourceUnspecified, Summary: "分类失败(无法获取期望/实际规则)"}
+	if s.CompileExpected != nil {
+		if expected, err := s.CompileExpected(ctx, nodeID); err == nil {
+			_ = s.RequestRulesAndWait(ctx, nodeID, 3*time.Second)
+			var actual []model.IptablesRule
+			if s.DB != nil {
+				s.DB.WithContext(ctx).Where("node_id = ? AND is_myfw = ?", nodeID, true).Find(&actual)
+			}
+			cls = classifyDrift(expected, actual)
+		}
+	}
+	cdetail, _ := json.Marshal(map[string]any{
+		"source":        cls.Source,
+		"summary":       cls.Summary,
+		"expected_n":    cls.ExpectedN,
+		"actual_n":      cls.ActualN,
+		"missing":       cls.Missing,
+		"extra":         cls.Extra,
+		"expected_hash": drift.ExpectedHash,
+		"actual_hash":   drift.ActualHash,
+	})
+	_ = s.Audit.Write(ctx, model.AuditLog{
+		Actor:  "system",
+		Action: "node.drift.classified",
+		NodeID: nodeID,
+		Detail: string(cdetail),
 	})
 }
 

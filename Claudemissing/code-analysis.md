@@ -151,6 +151,8 @@
 - `SendRenewCert()`（第 457 行）：续签指令
 - `SendRuleOperation()`（第 403 行）：增删改插规则
 - `RequestRulesAndWait()`（第 377 行）：拉取节点实时规则
+- `auditDrift()`（第 504 行）：收到 Agent drift 上报时同步写 `node.drift` 审计 + 异步分类
+- `classifyAndAudit()`：异步编译 expected(`CompileExpected` 注入) + 拉 actual + `classifyDrift` 分类,补写 `node.drift.classified` 审计(区分篡改/删除/重启丢失)
 - `Registry`（第 548 行）：在线节点连接注册表
   - `Register()`（第 571 行）：注册连接
   - `Deregister()`（第 581 行）：注销连接
@@ -266,7 +268,8 @@
 | cmd/agent/main.go | 459 | Agent 入口 + selfDestruct |
 | internal/controller/server/server.go | 446 | 服务器组装 + 路由注册 + gRPC 拦截器 |
 | internal/controller/server/node_routes.go | 179 | 节点 CRUD REST API |
-| internal/controller/stream/stream.go | 629 | gRPC 双向流 + 心跳 + 消息转发 |
+| internal/controller/stream/stream.go | ~660 | gRPC 双向流 + 心跳 + 消息转发 + drift 异步分类 |
+| internal/controller/stream/drift_classify.go | ~170 | 运行时 drift 来源分类纯函数(external_tamper/rule_removed/restart_loss/unspecified) |
 | internal/controller/templateio/templateio.go | ~180 | 模板库导入导出（Bundle/Export/Import） |
 | internal/controller/registration/registration.go | 381 | 首次注册 + 证书续签 |
 | internal/controller/asset/asset.go | 167 | 节点管理 REST（token/审批/拒绝） |
