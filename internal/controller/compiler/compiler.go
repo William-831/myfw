@@ -80,28 +80,34 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 	setNames = make(map[string]struct{})
 	usedBuiltin = make(map[string]struct{})
 
-	// 预加载实例所属策略组(GroupID -> CustomChain)。
-	// MARK 白名单实例不消费组链(规则落内置链,不受组影响):跳过其 GroupID 收集,
-	// 避免组不存在时静默跳过(1.3 修复:存量 MARK 实例带组也不失效)。
-	groupIDs := make(map[uint]struct{})
+	// 预加载实例落点链(ChainID 优先,否则 GroupID 继承;两者均指向 CustomChain)。
+	// 解耦语义:落点链 = 规则执行落点,与"归属组"独立(ChainID 覆盖 GroupID)。
+	// MARK 白名单实例落平台内置链,不消费用户链:跳过收集。
+	chainIDs := make(map[uint]struct{})
 	for i := range instances {
-		if instances[i].GroupID != 0 &&
-			!rulespec.IsMarkWhitelist(instances[i].Action, instances[i].Source, instances[i].SourceGroup, instances[i].PortRange) {
-			groupIDs[instances[i].GroupID] = struct{}{}
+		if rulespec.IsMarkWhitelist(instances[i].Action, instances[i].Source, instances[i].SourceGroup, instances[i].PortRange) {
+			continue
+		}
+		id := instances[i].ChainID
+		if id == 0 {
+			id = instances[i].GroupID
+		}
+		if id != 0 {
+			chainIDs[id] = struct{}{}
 		}
 	}
-	groupByID := make(map[uint]*model.CustomChain)
-	if len(groupIDs) > 0 {
-		ids := make([]uint, 0, len(groupIDs))
-		for id := range groupIDs {
+	chainByID := make(map[uint]*model.CustomChain)
+	if len(chainIDs) > 0 {
+		ids := make([]uint, 0, len(chainIDs))
+		for id := range chainIDs {
 			ids = append(ids, id)
 		}
-		var groups []model.CustomChain
-		if e := c.DB.WithContext(ctx).Where("id IN ? AND enabled = ?", ids, true).Find(&groups).Error; e != nil {
+		var chains []model.CustomChain
+		if e := c.DB.WithContext(ctx).Where("id IN ? AND enabled = ?", ids, true).Find(&chains).Error; e != nil {
 			return nil, nil, nil, nil, e
 		}
-		for i := range groups {
-			groupByID[groups[i].ID] = &groups[i]
+		for i := range chains {
+			chainByID[chains[i].ID] = &chains[i]
 		}
 	}
 
@@ -111,19 +117,26 @@ func (c *Compiler) compileInstances(ctx context.Context, instances []model.NodeP
 		// MARK 白名单拦截:填了源地址组+端口,group_id=0 也生效(落内置链)
 		isMarkACL := rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange)
 		var groupChain, groupParent string
-		// MARK 白名单实例即使带 GroupID(历史数据/前端误选)也不走组分支:
-		// 规则落内置链(compileInstance 内覆盖 Chain),组不存在也不会整条失效。
-		if inst.GroupID != 0 && !isMarkACL {
-			g, ok := groupByID[inst.GroupID]
-			if !ok {
-				continue // 所属组不存在或未启用,实例不生效
+		if !isMarkACL {
+			// 非 MARK:落点链 = ChainID 优先,否则 GroupID(兼容旧模型,两者均指向 CustomChain)。
+			// MARK 白名单即使带 ChainID/GroupID 也不走此分支:规则落内置链,不受用户链影响。
+			chainID := inst.ChainID
+			if chainID == 0 {
+				chainID = inst.GroupID
 			}
-			groupChain, groupParent = g.Name, g.Parent
-			chainToTable[groupChain] = g.Table
-		} else if !isMarkACL {
-			continue // 无组且非 MARK 白名单,不生效
+			if chainID == 0 {
+				continue // 无落点链,实例不生效
+			}
+			ch, ok := chainByID[chainID]
+			if !ok {
+				continue // 落点链不存在或未启用,实例不生效(实例列表接口配合 chain_unavailable 标记)
+			}
+			groupChain, groupParent = ch.Name, ch.MountList()[0].Parent
+			chainToTable[groupChain] = ch.Table
 		}
-		crs, e := compileInstance(inst, groupChain, groupParent)
+		// MARK 白名单:groupChain/groupParent 保持空,compileInstance 覆盖落平台内置链;
+		// chainTable 空则跳过表一致性校验(MARK 不校验用户链)
+		crs, e := compileInstance(inst, groupChain, groupParent, chainToTable[groupChain])
 		if e != nil {
 			return nil, nil, nil, nil, fmt.Errorf("compiler: instance %d: %w", inst.ID, e)
 		}
@@ -161,8 +174,11 @@ func (c *Compiler) CompileInstances(ctx context.Context, instances []model.NodeP
 	return rules, chainToTable, err
 }
 
-// loadCustomChains 加载所有启用的自定义子链,转为下发的 CustomChainDef 期望态。
-// 按 priority 排序:父链中 jump 到各子链的顺序由组优先级决定(值小排前)。
+// loadCustomChains 加载所有启用的自定义子链,按挂载点展开为下发 CustomChainDef 期望态。
+// 按 priority 排序:父链中 jump 到各子链的顺序由链优先级决定(值小排前)。
+// 多挂载(P1b 多钩子):每链每挂载展开一条同名 CustomChainDef(不同 parent),
+// driver syncCustomChains 对同名链 -N 幂等 + -C 检查 -A 追加 jump,天然生成多 jump,
+// 零 proto/Agent 改动实现"同一链同时挂多个父链"。
 func (c *Compiler) loadCustomChains(ctx context.Context) ([]*myfwv1.CustomChainDef, error) {
 	var chains []model.CustomChain
 	if err := c.DB.WithContext(ctx).Where("enabled = ?", true).Order("priority ASC, id ASC").Find(&chains).Error; err != nil {
@@ -170,11 +186,13 @@ func (c *Compiler) loadCustomChains(ctx context.Context) ([]*myfwv1.CustomChainD
 	}
 	out := make([]*myfwv1.CustomChainDef, 0, len(chains))
 	for i := range chains {
-		out = append(out, &myfwv1.CustomChainDef{
-			Name:   chains[i].Name,
-			Parent: chains[i].Parent,
-			Table:  chains[i].Table,
-		})
+		for _, m := range chains[i].MountList() {
+			out = append(out, &myfwv1.CustomChainDef{
+				Name:   chains[i].Name,
+				Parent: m.Parent,
+				Table:  chains[i].Table,
+			})
+		}
 	}
 	return out, nil
 }
@@ -314,18 +332,21 @@ func parseLabels(s string) []string {
 }
 
 // compileInstance 将节点策略实例编译为 CompiledRule(可多条:MARK 白名单拦截时自动追加
-// 放行/兜底规则)。方向与子链从所属策略组继承(groupChain=组名,groupParent=父链名);
-// MARK 白名单拦截实例无组(group_id=0),规则落平台内置链。rule id 用 "i<实例ID>"。
-func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent string) ([]*myfwv1.CompiledRule, error) {
+// 放行/兜底规则)。方向与子链从落点链继承(groupChain=链名,groupParent=主挂载父链名,
+// chainTable=链表,供 DNAT/SNAT 表一致性校验);MARK 白名单拦截实例落平台内置链。
+// rule id 用 "i<实例ID>"。
+func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent, chainTable string) ([]*myfwv1.CompiledRule, error) {
 	// 非 MARK 动作 Direction 字段无意义,兼容旧数据强制清空
 	if inst.Action != "MARK" {
 		inst.Direction = ""
 	}
 	// 编译前 rulespec 校验:确保规则可执行,防旧脏数据绕过入口校验。
+	// ChainTable 空(DNAT/SNAT 无落点链时如 MARK 白名单)跳过表一致性校验。
 	if err := (rulespec.Spec{
 		Action: inst.Action, Direction: inst.Direction, Mark: inst.Mark,
 		MatchMark: inst.MatchMark, NatTo: inst.NatTo, Protocol: inst.Protocol,
 		PortRange: inst.PortRange, Source: inst.Source, SourceGroup: inst.SourceGroup,
+		ChainTable: chainTable,
 	}).Validate(); err != nil {
 		return nil, fmt.Errorf("instance %d: %w", inst.ID, err)
 	}

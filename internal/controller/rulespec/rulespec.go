@@ -17,6 +17,7 @@ type Spec struct {
 	PortRange   string
 	Source      string
 	SourceGroup string
+	ChainTable  string // 落点链表(filter/nat/mangle),空=不校验(MARK 白名单落内置链)
 }
 
 var validProtocols = map[string]bool{
@@ -53,6 +54,12 @@ func (s Spec) Validate() error {
 	// DNAT/SNAT 需要 nat_to
 	if (s.Action == "DNAT" || s.Action == "SNAT") && s.NatTo == "" {
 		return fmt.Errorf("%s 需指定 nat_to", s.Action)
+	}
+	// DNAT/SNAT 必须落 nat 表链:iptables 的 DNAT/SNAT 目标仅在 nat 表可用,
+	// 落 filter/mangle 链会在 Agent 执行期报错。编译期拦截(表一致性, P3),
+	// ChainTable 空则跳过(调用方未提供链信息,如 MARK 白名单落内置链)。
+	if (s.Action == "DNAT" || s.Action == "SNAT") && s.ChainTable != "" && s.ChainTable != "nat" {
+		return fmt.Errorf("%s 规则须落 nat 表链,当前落点链为 %s 表(请选用 PREROUTING/POSTROUTING 钩子的策略组)", s.Action, s.ChainTable)
 	}
 
 	// MARK 打标值必须非零:0 在 iptables 表示无标记,不能作为打标值。

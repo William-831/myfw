@@ -79,6 +79,13 @@
             <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name}${cc.description ? ' - ' + cc.description : ''}`" :value="cc.id" />
           </el-select>
         </el-form-item>
+        <!-- 落点链:规则落点与组解耦(P1a),空=继承所属组链 -->
+        <el-form-item v-if="form.action !== 'MARK'" label="落点链">
+          <el-select v-model="form.chain_id" clearable placeholder="空=继承所属组链" style="width: 100%">
+            <el-option v-for="cc in customChains" :key="cc.id" :label="`${cc.name} (${cc.table}表)${cc.description ? ' - ' + cc.description : ''}`" :value="cc.id" />
+          </el-select>
+          <span class="form-hint">规则落点与组解耦:可指定独立链(DNAT/SNAT 须 nat 表链),空则用所属组链</span>
+        </el-form-item>
         <div class="form-row">
           <el-form-item label="源地址" class="form-col"><el-input v-model="form.source" placeholder="IP/CIDR,空=任意" /></el-form-item>
           <el-form-item label="目标地址" class="form-col"><el-input v-model="form.destination" placeholder="IP/CIDR,空=任意" /></el-form-item>
@@ -224,13 +231,14 @@ const editingId = ref(null)
 const form = reactive(emptyForm())
 
 function emptyForm() {
-  return { name: '', group_id: null, direction: 'FORWARD', source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
+  return { name: '', group_id: null, chain_id: 0, direction: 'FORWARD', source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
 }
 
-// 动作切换时清理关联字段:MARK 白名单不归属策略组(落内置链),非 MARK 无流量方向
+// 动作切换时清理关联字段:MARK 白名单不归属策略组/链(落内置链),非 MARK 无流量方向
 watch(() => form.action, (action) => {
   if (action === 'MARK') {
     form.group_id = 0
+    form.chain_id = 0
     if (!form.direction) form.direction = 'FORWARD'
   } else {
     form.direction = ''
@@ -280,7 +288,7 @@ const previewCommand = computed(() => {
       { text: `流量方向: ${dir}`, type: 'default' },
     ]
   }
-  const cc = customChains.value.find((c) => c.id === f.group_id)
+  const cc = customChains.value.find((c) => c.id === (f.chain_id || f.group_id))
   const table = cc?.table || 'filter'
   const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
   const parts = ['iptables', '-t', table, '-A', chain]

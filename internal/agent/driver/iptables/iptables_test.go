@@ -280,3 +280,46 @@ func TestTeardownRemovesEverything(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyMultiMountSameChain 验证多挂载(P1b):同名 CustomChainDef 重复出现(不同 parent)
+// 时, driver 在同一父链各生成一次 jump(不重复), 实现"同一链同时挂多个父链"。
+// Controller 将链的多挂载展开为同名多条 CustomChainDef, 此测试锁定 driver 既有能力不回归。
+func TestApplyMultiMountSameChain(t *testing.T) {
+	d, fake := newDriver(t)
+	ctx := context.Background()
+	if err := d.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	cc := []*myfwv1.CustomChainDef{
+		{Name: "dmz", Parent: "MYFW-FORWARD", Table: "filter"},
+		{Name: "dmz", Parent: "MYFW-INPUT", Table: "filter"},
+	}
+	rules := []*myfwv1.CompiledRule{
+		{Id: "r1", Chain: "dmz", Direction: myfwv1.Direction_DIRECTION_FORWARD, Action: myfwv1.Action_ACTION_ACCEPT, Priority: 1},
+	}
+	if _, err := d.Apply(ctx, &myfwv1.RuleSet{Rules: rules, CustomChains: cc}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// 两个父链各恰有一次 jump(同名链 -N 幂等 + -C 检查后 -A, 不重复)
+	for _, parent := range []string{"MYFW-FORWARD", "MYFW-INPUT"} {
+		count := 0
+		for _, r := range fake.Tables["filter"][parent] {
+			if strings.Contains(r, "-j MYFW-dmz") {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("父链 %s 应有 1 次 jump 到 MYFW-dmz, got %d", parent, count)
+		}
+	}
+	// 链内规则应存在(Apply 追加到 MYFW-dmz)
+	found := false
+	for _, r := range fake.Tables["filter"]["MYFW-dmz"] {
+		if strings.Contains(r, "-j ACCEPT") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("MYFW-dmz 链内应有规则")
+	}
+}

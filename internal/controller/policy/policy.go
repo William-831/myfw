@@ -254,6 +254,7 @@ type Fields struct {
 	PortRange   string
 	Source      string
 	SourceGroup string
+	ChainTable  string // 落点链表(filter/nat/mangle),供 DNAT/SNAT 表一致性校验(P3)
 }
 
 // ValidateFields 校验规则字段约束,委托 rulespec.Validate 统一校验。
@@ -263,6 +264,7 @@ func ValidateFields(f Fields) error {
 		Action: f.Action, Direction: f.Direction, Mark: f.Mark, MatchMark: f.MatchMark,
 		NatTo: f.NatTo, Protocol: f.Protocol, PortRange: f.PortRange,
 		Source: f.Source, SourceGroup: f.SourceGroup,
+		ChainTable: f.ChainTable,
 	}
 	return spec.Validate()
 }

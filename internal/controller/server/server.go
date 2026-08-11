@@ -389,7 +389,7 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerIptablesRoutes(r, db, streamSvc, comp, auditSink)
 	registerTemplateRoutes(r, db, co, auditSink, streamSvc)
 	registerAddressGroupRoutes(r, db)
-	registerCustomChainRoutes(r, db)
+	registerCustomChainRoutes(r, db, auditSink)
 	registerMarkRoutes(r, db, auditSink)
 	registerSystemRoutes(r, db)
 
