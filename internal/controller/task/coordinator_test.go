@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
 	"iptables-tool/internal/controller/audit"
@@ -429,5 +430,78 @@ func TestSubmitRemovalAutoApproveFailureRestores(t *testing.T) {
 	}
 	if tk.Status != model.TaskFailed {
 		t.Fatalf("task 应为 failed, got %s", tk.Status)
+	}
+}
+
+// --- 规则库版本回滚链路(计划三)-----------------------------------------------
+
+// TestSubmitRuleSet_StoresSnapshot 验证 SubmitRuleSet 创建携带 RuleSetSnapshot
+// 的 task:回滚下发不重新编译,直接用历史规则集快照。
+func TestSubmitRuleSet_StoresSnapshot(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	rs := &myfwv1.RuleSet{
+		NodeId: "n1",
+		Rules: []*myfwv1.CompiledRule{
+			{Id: "i1", Chain: "acl-fwd", Action: myfwv1.Action_ACTION_ACCEPT},
+		},
+	}
+	if _, err := co.SubmitRuleSet(ctx, "n1", rs, SubmitOpts{Author: "admin"}); err != nil {
+		t.Fatalf("submit ruleset: %v", err)
+	}
+	var persisted model.Task
+	if err := gdb.First(&persisted, "node_id = ?", "n1").Error; err != nil {
+		t.Fatalf("查 task: %v", err)
+	}
+	if persisted.RuleSetSnapshot == "" {
+		t.Fatal("want RuleSetSnapshot persisted")
+	}
+	var loaded myfwv1.RuleSet
+	if err := protojson.Unmarshal([]byte(persisted.RuleSetSnapshot), &loaded); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if len(loaded.Rules) != 1 || loaded.Rules[0].Id != "i1" {
+		t.Fatalf("snapshot rules mismatch: %+v", loaded.Rules)
+	}
+	if persisted.Status != model.TaskPendingApproval {
+		t.Fatalf("want pending_approval, got %s", persisted.Status)
+	}
+	if persisted.ChangeType != "rollback" {
+		t.Fatalf("want change_type=rollback, got %q", persisted.ChangeType)
+	}
+}
+
+// TestHandleResult_RollbackTaskClearsApplied 验证回滚任务 apply 成功后
+// 实例 applied 全置 false(规则已按历史版本收敛,与当前实例定义不一致,提示需重新下发)。
+func TestHandleResult_RollbackTaskClearsApplied(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	gdb.Create(&model.NodePolicyInstance{ID: 1, NodeID: "n1", Name: "a", Enabled: true, Applied: true})
+	gdb.Create(&model.Task{ID: "t_rb", NodeID: "n1", Status: model.TaskApplying,
+		Version: time.Now().Unix(), RuleSetSnapshot: `{"rules":[]}`})
+
+	co.handleResult(ctx, &myfwv1.TaskResult{TaskId: "t_rb", Ok: true})
+
+	var inst model.NodePolicyInstance
+	if err := gdb.First(&inst, 1).Error; err != nil {
+		t.Fatalf("查实例: %v", err)
+	}
+	if inst.Applied {
+		t.Fatal("回滚任务成功后实例 applied 必须清 false(规则已偏离当前定义)")
+	}
+}
+
+// TestSubmitRuleSet_AutoApproveDispatches 冒烟:AutoApprove 走完整 dispatch 链路
+// (节点未连接,dispatch 失败属预期,不应 panic)。
+func TestSubmitRuleSet_AutoApproveDispatches(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	rs := &myfwv1.RuleSet{NodeId: "n1", Rules: []*myfwv1.CompiledRule{{Id: "i1"}}}
+	_, _ = co.SubmitRuleSet(context.Background(), "n1", rs, SubmitOpts{Author: "admin", AutoApprove: true})
+	var task model.Task
+	if err := gdb.First(&task, "node_id = ?", "n1").Error; err != nil {
+		t.Fatalf("task not found: %v", err)
+	}
+	if task.Status == model.TaskPendingApproval || task.Status == model.TaskDispatching {
+		t.Fatalf("AutoApprove 应已尝试 dispatch, got %s", task.Status)
 	}
 }

@@ -1,0 +1,475 @@
+package simulator
+
+import (
+	"testing"
+
+	myfwv1 "iptables-tool/api/myfw/v1"
+)
+
+// 测试基建:构造规则/链/地址组的简写函数,让用例聚焦行为而非样板。
+
+func rule(id, chain string, action myfwv1.Action, muts ...func(*myfwv1.CompiledRule)) *myfwv1.CompiledRule {
+	r := &myfwv1.CompiledRule{
+		Id: id, Chain: chain, Action: action,
+		Protocol: myfwv1.Protocol_PROTOCOL_TCP,
+	}
+	for _, m := range muts {
+		m(r)
+	}
+	return r
+}
+
+func chain(name, parent, table string) *myfwv1.CustomChainDef {
+	return &myfwv1.CustomChainDef{Name: name, Parent: parent, Table: table}
+}
+
+func set(name string, members ...string) *myfwv1.AddressSet {
+	return &myfwv1.AddressSet{Name: name, Kind: "custom", Members: members}
+}
+
+func tcpFlow(dir, src, dst string, sport, dport int) Flow {
+	return Flow{Direction: dir, SourceIP: src, DestIP: dst, Protocol: "tcp", SrcPort: sport, DstPort: dport}
+}
+
+// 断言最终判定。
+func assertVerdict(t *testing.T, got *Result, want Verdict) {
+	t.Helper()
+	if got.Verdict != want {
+		t.Fatalf("verdict: got %q, want %q, steps=%+v note=%q", got.Verdict, want, got.Steps, got.Note)
+	}
+}
+
+// 断言存在某条命中规则(且其判定动作正确)。
+func assertMatchedRule(t *testing.T, got *Result, ruleID string) {
+	t.Helper()
+	for _, s := range got.Steps {
+		if s.RuleID == ruleID && s.Matched {
+			return
+		}
+	}
+	t.Fatalf("期望命中规则 %q,但未命中,steps=%+v verdict=%q", ruleID, got.Steps, got.Verdict)
+}
+
+// TestEvaluate_ACCEPT_MatchRule: 端口匹配的 ACCEPT 规则命中即放行。
+func TestEvaluate_ACCEPT_MatchRule(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-http", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 12345, 8080), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	assertMatchedRule(t, got, "i-http")
+}
+
+// TestEvaluate_Pass_NoMatch: 无规则命中 -> PASS(系统默认策略放行)。
+func TestEvaluate_Pass_NoMatch(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-http", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 12345, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_Drop: DROP 规则命中即丢弃。
+func TestEvaluate_Drop(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-drop", "acl-fwd", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "443"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("acl-fwd", "MYFW-FORWARD", "filter")}
+
+	got, err := Evaluate(tcpFlow("FORWARD", "10.0.0.2", "172.16.0.1", 40000, 443), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictDrop)
+	assertMatchedRule(t, got, "i-drop")
+}
+
+// TestEvaluate_Reject: REJECT 规则命中即拒绝。
+func TestEvaluate_Reject(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-rej", "business-input", myfwv1.Action_ACTION_REJECT, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "3389"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 50000, 3389), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictReject)
+}
+
+// TestEvaluate_PriorityOrder: 同链内 priority 小的先评估,DROP(10) 先于 ACCEPT(20) 生效。
+func TestEvaluate_PriorityOrder(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-accept", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Priority = 20
+		}),
+		rule("i-drop", "business-input", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+			r.Priority = 10
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 11111, 80), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictDrop)
+	assertMatchedRule(t, got, "i-drop")
+}
+
+// TestEvaluate_SourceCIDR: 源 CIDR 匹配/不匹配。
+func TestEvaluate_SourceCIDR(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-intranet", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Source = "192.168.1.0/24"
+			r.PortRange = "22"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	// 网段内命中
+	got, err := Evaluate(tcpFlow("INPUT", "192.168.1.5", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+
+	// 网段外不命中 -> PASS
+	got, err = Evaluate(tcpFlow("INPUT", "10.0.0.5", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_SourceGroup: 地址组成员匹配/不匹配(ipset 无状态语义)。
+func TestEvaluate_SourceGroup(t *testing.T) {
+	sets := []*myfwv1.AddressSet{set("internal", "10.0.0.0/8", "192.168.0.0/16")}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-internal", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.SourceGroup = "internal"
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "10.1.2.3", "10.0.0.1", 40000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+
+	// 组成员外 -> PASS
+	got, err = Evaluate(tcpFlow("INPUT", "8.8.8.8", "10.0.0.1", 40000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_DestinationGroup: 目的地址组匹配。
+func TestEvaluate_DestinationGroup(t *testing.T) {
+	sets := []*myfwv1.AddressSet{set("web-servers", "172.16.0.0/16")}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-web", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.DestinationGroup = "web-servers"
+			r.PortRange = "443"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "172.16.9.9", 50000, 443), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+}
+
+// TestEvaluate_MarkFlow: MARK 规则打标后,后续 match_mark 规则匹配该标记。
+func TestEvaluate_MarkFlow(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-mark", "mark-in", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "22"
+			r.Mark = 15
+		}),
+		rule("i-marked-accept", "mark-in", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.MatchMark = 15
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("mark-in", "MYFW-INPUT", "filter")}
+
+	// 22 端口:先打标 15,再被 match_mark=15 放行
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	assertMatchedRule(t, got, "i-mark")
+
+	// 8080 端口:不打标,不被放行 -> PASS
+	got, err = Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 30000, 8080), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_PortRange: 端口区间匹配。
+func TestEvaluate_PortRange(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-range", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "1000-2000"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 10000, 1500), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+
+	got, err = Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 10000, 3000), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_ProtocolMismatch: 协议不匹配不命中。
+func TestEvaluate_ProtocolMismatch(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-udp", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Protocol = myfwv1.Protocol_PROTOCOL_UDP
+			r.PortRange = "53"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	// tcp 流量对 udp 规则不命中
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 20000, 53), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_ChainOrder: 链定义顺序决定遍历顺序,前链 ACCEPT 优先于后链 DROP。
+func TestEvaluate_ChainOrder(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-accept", "allow-first", myfwv1.Action_ACTION_ACCEPT),
+		rule("i-drop", "deny-second", myfwv1.Action_ACTION_DROP),
+	}
+	chains := []*myfwv1.CustomChainDef{
+		chain("allow-first", "MYFW-INPUT", "filter"),
+		chain("deny-second", "MYFW-INPUT", "filter"),
+	}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 10000, 80), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+}
+
+// TestEvaluate_InvalidDirection: 未知方向报错。
+func TestEvaluate_InvalidDirection(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-http", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	if _, err := Evaluate(tcpFlow("PREROUTING", "1.2.3.4", "10.0.0.1", 10000, 8080), rules, chains, nil); err == nil {
+		t.Fatal("PREROUTING 方向应报错(首版仅支持 filter 表 INPUT/FORWARD/OUTPUT)")
+	}
+}
+
+// TestEvaluate_MarkWhitelist_Accepted: MARK 白名单主场景——mangle 打标预遍(INPUT)
+// 给 :22 打标,filter MARKACL 白名单源命中放行。
+func TestEvaluate_MarkWhitelist_Accepted(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		// 1. mangle 打标:任何源到 :22 打标 15
+		rule("i5", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "22"
+			r.Mark = 15
+		}),
+		// 2. filter 白名单:源在 192.168.1.0/24 且带标 15 -> ACCEPT
+		rule("i5-acl", "MARKACL-IN", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Source = "192.168.1.0/24"
+			r.MatchMark = 15
+		}),
+		// 3. filter 兜底:带标 15 -> DROP
+		rule("i5-drop", "MARKACL-IN", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+			r.MatchMark = 15
+			r.Priority = 1
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{
+		chain("MARKMANGLE", "MYFW-MANGLE", "mangle"),
+		chain("MARKACL-IN", "MYFW-INPUT", "filter"),
+	}
+
+	// 白名单源 -> ACCEPT
+	got, err := Evaluate(tcpFlow("INPUT", "192.168.1.5", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	assertMatchedRule(t, got, "i5-acl")
+}
+
+// TestEvaluate_MarkWhitelist_Dropped: 非白名单源到 :22 被兜底 DROP。
+func TestEvaluate_MarkWhitelist_Dropped(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i5", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "22"
+			r.Mark = 15
+		}),
+		rule("i5-acl", "MARKACL-IN", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Source = "192.168.1.0/24"
+			r.MatchMark = 15
+		}),
+		rule("i5-drop", "MARKACL-IN", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+			r.MatchMark = 15
+			r.Priority = 1
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{
+		chain("MARKMANGLE", "MYFW-MANGLE", "mangle"),
+		chain("MARKACL-IN", "MYFW-INPUT", "filter"),
+	}
+
+	got, err := Evaluate(tcpFlow("INPUT", "8.8.8.8", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictDrop)
+	assertMatchedRule(t, got, "i5-drop")
+}
+
+// TestEvaluate_MarkWhitelist_Fwd: FORWARD 方向 MARKACL-FWD 白名单同样生效(容器转发场景)。
+func TestEvaluate_MarkWhitelist_Fwd(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i7", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "8080"
+			r.Mark = 15
+		}),
+		rule("i7-acl", "MARKACL-FWD", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Source = "10.0.0.0/8"
+			r.MatchMark = 15
+		}),
+		rule("i7-drop", "MARKACL-FWD", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+			r.MatchMark = 15
+			r.Priority = 1
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{
+		chain("MARKMANGLE", "MYFW-MANGLE", "mangle"),
+		chain("MARKACL-FWD", "MYFW-FORWARD", "filter"),
+	}
+
+	got, err := Evaluate(tcpFlow("FORWARD", "10.1.2.3", "172.16.0.1", 40000, 8080), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+
+	got, err = Evaluate(tcpFlow("FORWARD", "172.16.9.9", "172.16.0.1", 40000, 8080), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictDrop)
+}
+
+// TestEvaluate_MarkOnly_NoFilter: 仅 mangle 打标、无 filter 规则 -> 打标不产生终止,PASS。
+func TestEvaluate_MarkOnly_NoFilter(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-mangle", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.Mark = 15
+			r.PortRange = "22"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("MARKMANGLE", "MYFW-MANGLE", "mangle")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 10000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	// mangle 打标规则已评估(记录命中步),无 filter 终止规则 -> PASS
+	assertVerdict(t, got, VerdictPass)
+	assertMatchedRule(t, got, "i-mangle")
+}
+
+// TestEvaluate_MangleDnat_Note: mangle 链上出现 DNAT 等非打标动作,提示并忽略,不终止。
+func TestEvaluate_MangleDnat_Note(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-mdnat", "MARKMANGLE", myfwv1.Action_ACTION_DNAT, func(r *myfwv1.CompiledRule) {
+			r.NatTo = "10.0.0.9:8080"
+			r.PortRange = "80"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("MARKMANGLE", "MYFW-MANGLE", "mangle")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 10000, 80), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_DnatNote: filter 表内出现 DNAT 不支持的规则,记录提示并继续。
+func TestEvaluate_DnatNote(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-dnat", "business-input", myfwv1.Action_ACTION_DNAT, func(r *myfwv1.CompiledRule) {
+			r.NatTo = "10.0.0.9:8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 10000, 80), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+	if got.Note == "" {
+		t.Fatal("DNAT 不支持应输出说明性 note")
+	}
+}
+
+// TestEvaluate_ICMP: ICMP 协议匹配。
+func TestEvaluate_ICMP(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i-icmp", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Protocol = myfwv1.Protocol_PROTOCOL_ICMP
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(Flow{Direction: "INPUT", SourceIP: "1.2.3.4", DestIP: "10.0.0.1", Protocol: "icmp"}, rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	assertMatchedRule(t, got, "i-icmp")
+}

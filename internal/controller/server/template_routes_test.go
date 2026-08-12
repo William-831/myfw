@@ -610,3 +610,150 @@ func TestSyncAllInstances(t *testing.T) {
 		t.Fatalf("inst3 不应被其他节点 sync-all 影响, got src=%q spec=%d", inst3.Source, inst3.SyncedSpecVersion)
 	}
 }
+
+// TestCreateTemplateIgnoresClientID 验证创建模板时忽略前端传入的 id(问题 4 修复):
+// 前端 form 残留 id 时 POST 仍创建新记录,不触发主键冲突(UNIQUE constraint failed: id 1555)。
+func TestCreateTemplateIgnoresClientID(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver:       db.DriverSQLite,
+		DSN:          "file::memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+		LogLevel:     gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// 预置 id=5 的模板(模拟前端编辑后 form 残留 id=5) + group 3
+	gdb.Create(&model.CustomChain{ID: 3, Name: "grp", Parent: "MYFW-FORWARD", Table: "filter"})
+	gdb.Create(&model.PolicyTemplate{ID: 5, Name: "existing", Action: "ACCEPT", GroupID: 3})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	// 传残留 id=5 + 新名称,应创建新记录(id 自增,非 5)
+	body := `{"id":5,"name":"new-tpl","group_id":3,"action":"ACCEPT"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var tpl model.PolicyTemplate
+	if err := json.Unmarshal(w.Body.Bytes(), &tpl); err != nil {
+		t.Fatalf("unmarshal: %v, body=%s", err, w.Body.String())
+	}
+	if tpl.ID == 5 {
+		t.Fatal("应忽略前端传入 id=5,创建新自增 id,而非复用 5 致主键冲突")
+	}
+	if tpl.Name != "new-tpl" {
+		t.Fatalf("name 应为 new-tpl, got %q", tpl.Name)
+	}
+}
+
+// TestCreateTemplateMARKNoSourceOK 验证 MARK 白名单模板创建时源地址可选(问题 2 修复):
+// 模板是可复用骨架,源地址留实例化时填,模板级不强制(原 rulespec 强制源导致模板无法创建)。
+func TestCreateTemplateMARKNoSourceOK(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver:       db.DriverSQLite,
+		DSN:          "file::memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+		LogLevel:     gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb.Create(&model.Mark{Name: "dev", Value: 15, Description: "开发"})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	// MARK 模板无源,有端口+标记值,应创建成功(源留实例化)
+	body := `{"name":"mark-skel","action":"MARK","mark":15,"protocol":"TCP","port_range":"8080"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateInstanceMARKNoSourceRejected 验证实例 MARK 无源被 400 拒绝(问题 2 修复):
+// 模板可无源(骨架),但实例编译下发需要源(白名单放行规则),实例层校验 MARK 源必填。
+func TestCreateInstanceMARKNoSourceRejected(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver:       db.DriverSQLite,
+		DSN:          "file::memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+		LogLevel:     gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb.Create(&model.Mark{Name: "dev", Value: 15, Description: "开发"})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	// 直接新建实例(template_id=0)MARK 无源,应 400
+	body := `{"name":"bad-inst","action":"MARK","mark":15,"protocol":"TCP","port_range":"8080"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/n1/instances", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "源") {
+		t.Fatalf("error 应提示源地址, body=%s", w.Body.String())
+	}
+}
+
+// TestInstantiateMARKTemplateWithBodySource 验证从无源 MARK 模板实例化时 body.source 覆盖(问题 2 修复):
+// 模板无源(骨架),实例化时 body 传源覆盖,实例源=body.source,通过实例层 MARK 源校验。
+func TestInstantiateMARKTemplateWithBodySource(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver:       db.DriverSQLite,
+		DSN:          "file::memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+		LogLevel:     gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb.Create(&model.Mark{Name: "dev", Value: 15, Description: "开发"})
+	// 无源 MARK 模板(骨架:端口+标记,源留实例化)
+	gdb.Create(&model.PolicyTemplate{ID: 1, Name: "mark-skel", Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "8080", SpecVersion: 1})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	body := `{"template_id":1,"name":"inst","source":"10.0.0.0/24"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/n1/instances", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var inst model.NodePolicyInstance
+	if err := json.Unmarshal(w.Body.Bytes(), &inst); err != nil {
+		t.Fatalf("unmarshal: %v, body=%s", err, w.Body.String())
+	}
+	if inst.Source != "10.0.0.0/24" {
+		t.Fatalf("实例 source 应为 body 覆盖值 10.0.0.0/24, got %q", inst.Source)
+	}
+}

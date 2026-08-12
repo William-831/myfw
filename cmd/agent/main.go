@@ -183,6 +183,8 @@ func run() error {
 
 	// 6. 上报 iptables 规则到 Controller
 	go reportIptablesRules(ctx, cfg, nodeID, log)
+	// 6.1 周期上报 MYFW 规则命中率到 Controller(规则活性分析)
+	go reportRuleHits(ctx, cfg, nodeID, log)
 
 	// 7. 构建任务处理器
 	var h *handler.Handler
@@ -312,6 +314,47 @@ func reportIptablesRules(ctx context.Context, cfg agentcfg.Config, nodeID string
 		log.Info("iptables rules reported successfully", "node_id", nodeID)
 	} else {
 		log.Warn("report iptables rules failed", "status", resp.StatusCode)
+	}
+}
+
+// reportRuleHits 周期采集 MYFW 规则命中率(pkts/bytes + comment 反解实例 ID)并上报到
+// Controller。规则活性分析:Controller 据此标记死规则(启用且 packets=0 且超阈值)。
+func reportRuleHits(ctx context.Context, cfg agentcfg.Config, nodeID string, log *slog.Logger) {
+	time.Sleep(5 * time.Second) // 等待连接稳定
+	coll := collector.New(60*time.Second, log)
+
+	report := func() {
+		hits, err := coll.CollectRuleHits()
+		if err != nil {
+			log.Warn("collect rule hits failed", "err", err)
+			return
+		}
+		if len(hits) == 0 {
+			return
+		}
+		body, _ := json.Marshal(map[string]any{"hits": hits})
+		url := buildControllerWebURL(cfg.Controller.Endpoint) + "/api/v1/iptables/hits/" + nodeID
+		resp, err := http.Post(url, "application/json", strings.NewReader(string(body)))
+		if err != nil {
+			log.Warn("report rule hits failed", "err", err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			log.Warn("report rule hits failed", "status", resp.StatusCode)
+		}
+	}
+
+	report()
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			report()
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

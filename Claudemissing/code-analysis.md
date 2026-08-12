@@ -27,11 +27,11 @@
 │   ├── controller/         # Controller 入口（Web + gRPC 服务器）
 │   └── agent/              # Agent 入口（systemd 服务，长连接 + 防火墙驱动）
 ├── internal/
-│   ├── model/              # GORM 数据模型（18 个实体）
+│   ├── model/              # GORM 数据模型（19 个实体）
 │   ├── agent/              # Agent 端逻辑
 │   │   ├── bootstrap/      # 首次引导注册（token 交换证书）
 │   │   ├── capability/     # 主机能力探测（iptables/nftables/docker/k8s）
-│   │   ├── collector/      # iptables 规则采集器
+│   │   ├── collector/      # iptables 规则采集器;v1.4 CollectRuleHits(iptables -L -v -n -x 解析 pkts/bytes + comment 反解实例 ID,规则活性分析)
 │   │   ├── config/         # Agent 配置加载
 │   │   ├── conn/           # mTLS 连接管理与长连接 Loop
 │   │   ├── driver/         # 防火墙驱动抽象
@@ -40,13 +40,15 @@
 │   │   ├── handler/        # Controller 消息调度（Apply/Rollback/Renew/Decommission）
 │   │   └── watchdog/       # 规则漂移检测
 │   ├── controller/         # Controller 端逻辑
+│   │   ├── revision/       # 规则库版本档案(计划三):ArchiveApply/Archive/List/Load,归档期望态 RuleSet,保留最近 30 份
 │   │   ├── asset/          # 节点管理 REST API（bootstrap token 创建/审批/拒绝）
 │   │   ├── audit/          # 审计日志
 │   │   ├── auth/           # Web 会话认证
 │   │   ├── compiler/       # 规则编译（策略 -> iptables 规则）
 │   │   ├── policy/         # 策略服务
 │   │   ├── registration/   # gRPC 注册服务（首次注册 + 证书续签）
-│   │   ├── server/         # Gin 路由 + gRPC 服务器组装（14 个路由注册函数）
+│   │   ├── server/         # Gin 路由 + gRPC 服务器组装（15 个路由注册函数）
+│   │   ├── simulator/      # 流量仿真预演引擎(计划二):纯函数 Evaluate(flow, rules, chains, sets) 输出命中路径 + 最终判定;首版 filter 表无状态匹配,支持地址组/MARK/优先级
 │   │   ├── stream/         # gRPC 双向流连接管理（消息收发 + 心跳）
 │   │   ├── templateio/     # 模板库导入导出（Bundle/Export/Import）
 │   │   └── task/           # 任务协调器（Apply/Confirm/Rollback 状态机）
@@ -84,7 +86,7 @@
 
 ### 2. 数据模型（internal/model/）
 
-18 个实体，AutoMigrate 顺序由 `AllModels()`（models.go:11）定义：
+19 个实体，AutoMigrate 顺序由 `AllModels()`（models.go:11）定义：
 
 | 实体 | 文件 | 行号 | 关键字段 |
 |------|------|------|----------|
@@ -107,7 +109,15 @@
 | CustomChain | custom_chain.go:7 | 自定义链 |
 | Mark | mark.go:8 | 防火墙标记 |
 | User | user.go:7 | 用户 |
-| SystemSetting | system_setting.go:7 | 系统设置 |
+| SystemSetting | system_setting.go:7 | 系统设置(含一次性种子标记 seed.custom_chains.v1) |
+| NodeRuleRevision | node_rule_revision.go:9 | 节点规则库版本档案(计划三):RevNo 节点内递增、Payload=期望态 RuleSet(protojson)、Source(apply/manual/rollback)、按保留策略最近 30 份清理 |
+| RuleHitStat | rule_hit.go:9 | 规则命中统计(计划一):按 (node_id,instance_id) 唯一 upsert;Packets/Bytes 取同实例多条规则 max;死规则=enabled+有统计+packets=0+created_at 超 7 天 |
+
+**预置常用链**（internal/model/seed.go）：`builtinCustomChains` 5 条(business-input/acl-forward/
+mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(db.go:164) 调用:
+首次启动按 name 幂等播种,全部成功后写 SystemSetting `seed.custom_chains.v1=done`;
+之后启动查标记已 done 直接跳过 → 用户删除/编辑后重启不重建不覆盖(seed_test.go 4 用例)。
+版本化 key:清单变更改 v2 即增量播种。
 
 ### 3. Controller 模块
 
@@ -125,14 +135,16 @@
 | registerTaskRoutes | task_routes.go:18 | 任务列表/详情 |
 | registerTaskLifecycleRoutes | task_lifecycle_routes.go:16 | 任务审批/确认/回滚 |
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
-| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性) |
+| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性);v1.5 POST /templates 忽略前端 id(主键冲突修复)+ requireMarkSource(实例 MARK 源必填,模板可无源骨架)+ 实例化合并 body.source 覆盖 |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
 | registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
-| registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查 |
+| registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查;v1.4 规则活性分析(计划一):POST /iptables/hits/:node_id(Agent 上报命中率,同实例 max 聚合 upsert RuleHitStat)+ GET /iptables/rule-hits/:node_id(命中率列表+死规则判定,dead=enabled+有统计+packets=0+超 7 天) |
 | registerAddressGroupRoutes | address_group_routes.go:19 | 地址组 CRUD |
 | registerCustomChainRoutes | custom_chain_routes.go:18 | 自定义链 CRUD;v1.3 多挂载(mounts 权威+Parent/Priority 镜像回退,返回 mount_list)+ 禁用链审计 chain.disabled(含 affected_instances) |
 | registerMarkRoutes | mark_routes.go:18 | 标记 CRUD |
 | registerSystemRoutes | system_routes.go:16 | 系统设置（保留策略/清理） |
+| registerRevisionRoutes | revision_routes.go:18 | 规则库版本档案(计划三):GET /nodes/:id/revisions 历史列表 + POST /revisions/:no/rollback 回滚(先归档当前版本再下发历史 RuleSet,走保护期) |
+| registerSimulateRoutes | simulate_routes.go:12 | 流量仿真预演(计划二):POST /api/v1/simulate,入参 node_id + flow 五元组(收敛到节点级:基于该节点 CompileForNode 编译的 CompiledRule 推演,不接受外部规则集内联),返回 verdict/steps/note |
 
 **节点管理 REST API**（internal/controller/asset/asset.go）：
 - `POST /api/v1/nodes/bootstrap` — 创建 bootstrap token（第 64 行）
@@ -166,12 +178,19 @@
 **策略/模板**（internal/controller/policy/ + compiler/ + rulespec/）：
 - `policy.Service`：策略 CRUD
 - `compiler.Compiler`：策略编译为 iptables 规则;v1.2 MARK 白名单实例不消费组链(compileInstances 预加载组跳过 isMarkACL 的 GroupID,组不存在不整条失效);v1.3 组即落点(compileInstances 用 GroupID 查链),loadCustomChains 按链×挂载展开同名多条 CustomChainDef(多钩子,零 proto),compileInstance 传 chainTable 做 DNAT/SNAT 表一致性校验
-- `rulespec.Spec.Validate`：规则字段唯一校验权威(API 入口/编译器/Agent driver 三层复用,无 DB);v1.2 MARK 打标值非零即合法(不再硬编码 15/255),引用完整性(标记必须存在于 Mark 表)由 API 层 `checkMarkExists` 承担;v1.3 加 ChainTable 字段,DNAT/SNAT 须 nat 表链(动作-链表一致性)
+- `rulespec.Spec.Validate`：规则字段唯一校验权威(API 入口/编译器/Agent driver 三层复用,无 DB);v1.2 MARK 打标值非零即合法(不再硬编码 15/255),引用完整性(标记必须存在于 Mark 表)由 API 层 `checkMarkExists` 承担;v1.3 加 ChainTable 字段,DNAT/SNAT 须 nat 表链(动作-链表一致性);v1.5 MARK 源校验移除(模板可无源骨架,源校验移至实例层 requireMarkSource)
 - 配置侧漂移治理(template_routes.go)：`instanceDrift`(模板 SpecVersion 判据)+ `instanceDiffFields`/`instanceDeviated`(实例参数 vs 模板当前参数,不依赖 SpecVersion)+ `applyTemplateToInstance`(sync 单条与 sync-all 批量共用的全量覆盖)+ `instFieldLabel/instFieldValue/tplFieldValue`(diff 预览中文字段名);`GET /instances/:id` 返回 drift_fields/deviated/deviated_fields;v1.3 `chain_unavailable` 标记(P2 组生命周期显式化)+ `chainTableFor`(组链表 table,表一致性)
+
+**流量仿真预演**（internal/controller/simulator/,计划二）：
+- `simulator.Flow`(direction/source_ip/dest_ip/protocol/src_port/dst_port/mark,均带 JSON tag)
+- `simulator.Evaluate(flow, rules, chains, sets) *Result`：纯函数无副作用。语义对齐 driver.Apply——所有规则落子链 MYFW-<chain>,父链 MYFW-INPUT/FORWARD/OUTPUT 仅 conntrack+子链 jump;INPUT/FORWARD 先 mangle 打标预遍(挂 MYFW-MANGLE 的 mangle 链仅 MARK 生效,支撑 MARK 白名单主场景),再按链定义顺序(compiler priority 升序)进各 filter 子链,链内按 priority 升序、次按 id 线性匹配;ACCEPT/DROP/REJECT 终止,MARK 打标继续(后续 match_mark 命中),DNAT/SNAT 提示不支持继续;无命中返回 PASS(默认策略放行)
+- 支持源/目的 IP/CIDR、地址组(set 成员 ipset 语义)、协议、端口区间("22"/"1000-2000")、match_mark;首版无状态匹配,仅 filter 终止判定 + mangle 打标,其余表/动作跳过;tcp/udp 流未指定 dst_port 不命中带端口规则
+- `Result{verdict, steps[], note}`：steps 记录逐条规则匹配结果(chain/rule_id/action/mark/matched/note)
 
 **任务协调器**（internal/controller/task/coordinator.go）：
 - `Coordinator`：Apply → 审批 → 确认/回滚 状态机
 - `SubmitOpts`：Author/AutoApprove/AutoConfirm(自愈跳过保护期)/Scene(审计场景)
+- 计划三回滚链路：Task 加 `RuleSetSnapshot`(protojson RuleSet,回滚任务专用)；`SubmitRuleSet`(给定规则集建回滚任务,dispatch 时快照非空跳过编译直接用历史规则集)；handleResult 回滚任务成功后实例 applied 全置 false(规则已偏离当前定义)；`ArchiveFn` 回调普通任务 Apply 成功归档(revision.Service 注入)
 - `HasInFlight(nodeID)`：OnSync 去重(节点有 pending_approval/dispatching/applying/confirm_wait 任务时跳过)
 - `SubmitRemoval(instanceID,opts)`：移除实例保护期任务,事务内原子创建 task+标记 pending_delete 并关联 task_id(漏洞 G 修复)
 - `refreshNodePreview`：审批 dispatch 时用最新实例刷新 diff 预览,排除 pending_delete(漏洞 F' 修复)
@@ -212,7 +231,7 @@
 
 **防火墙驱动**（internal/agent/driver/）：
 - `driver.Driver` 接口：`Apply()`, `Snapshot()`, `Restore()`
-- `iptables.Driver`：`iptables-restore` 方式应用规则集
+- `iptables.Driver`：`iptables-restore` 方式应用规则集;v1.4 compileRule 追加 `-m comment --comment "myfw:<规则Id>"`(编码实例 ID,供 Agent 命中率采集反解)
 - `nftables.Driver`：`nft -f` 方式应用规则集
 
 **引导注册**（internal/agent/bootstrap/）：
@@ -244,7 +263,7 @@
 | /nodes | Nodes.vue | 节点管理（列表/添加/编辑/删除/审批/规则查看） |
 | /policies | NodePolicies.vue | 策略管理 |
 | /templates | TemplateLibrary.vue | 策略模板库 |
-| /node-policies | NodePolicies.vue | 节点策略实例 |
+| /node-policies | NodePolicies.vue | 节点策略实例(含流量预演面板:五元组仿真命中路径,计划二) |
 | /address-groups | AddressGroups.vue | 地址组 |
 | /custom-chains | CustomChains.vue | 自定义链 |
 | /approve | Approve.vue | 审批任务 |
@@ -253,7 +272,7 @@
 
 ### API 封装（web/src/api/index.js）
 - 基于 axios，baseURL 自动适配
-- 36 个导出函数，覆盖所有 REST API
+- 38 个导出函数，覆盖所有 REST API(含计划三 revisions/rollback + 计划二 simulateFlow)
 
 ### 组件
 - `AuditFeed.vue` — 审计实时推送

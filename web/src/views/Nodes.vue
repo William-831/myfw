@@ -264,6 +264,35 @@
         <el-descriptions-item label="最后活跃" :span="2">{{ formatDate(detailNode.last_seen) }}</el-descriptions-item>
         <el-descriptions-item label="创建时间" :span="2">{{ formatDate(detailNode.created_at) }}</el-descriptions-item>
       </el-descriptions>
+
+      <!-- 规则库版本历史(计划三):普通任务 Apply 成功自动归档,可一键回滚 -->
+      <div style="margin-top: 18px">
+        <div class="drift-section-title">规则库版本历史(最近 30 份)</div>
+        <el-table :data="revisions" size="small" v-loading="revisionsLoading" max-height="260" style="margin-top: 8px">
+          <el-table-column label="版本" width="70" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" type="info">#{{ row.rev_no }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="来源" width="100">
+            <template #default="{ row }">
+              <el-tag size="small" :type="sourceTagType(row.source)">{{ sourceLabel(row.source) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="note" label="说明" show-overflow-tooltip />
+          <el-table-column label="归档时间" width="160">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" align="center">
+            <template #default="{ row }">
+              <el-button size="small" type="danger" plain :loading="rollbackingRev === row.rev_no" @click="handleRollbackRevision(row)">回滚</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div v-if="!revisionsLoading && revisions.length === 0" class="empty-state" style="margin-top: 8px">
+          暂无版本记录(普通任务 Apply 成功后将自动归档)
+        </div>
+      </div>
     </el-dialog>
 
     <!-- 快速诊断对话框（只读：健康状态 + 链统计 + 规则概览） -->
@@ -400,7 +429,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom, CircleCheck } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks, approveNode } from '@/api'
+import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks, approveNode, getNodeRevisions, rollbackRevision } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const loading = ref(false)
@@ -457,8 +486,15 @@ const editRules = {
 // 节点详情
 const detailNode = reactive({
   id: '', name: '', hostname: '', ip: '', status: '', capability: null,
-  labels: '', last_seen: '', created_at: '', cert_not_after: '', online: false, online: false
+  labels: '', last_seen: '', created_at: '', cert_not_after: '', online: false
 })
+
+// 规则库版本档案(计划三)
+const revisions = ref([])
+const revisionsLoading = ref(false)
+const rollbackingRev = ref(null)
+const sourceLabel = (s) => ({ apply: '变更归档', manual: '手动', rollback: '回滚前归档' }[s] || s || '-')
+const sourceTagType = (s) => ({ apply: 'primary', manual: 'success', rollback: 'warning' }[s] || 'info')
 
 // iptables 规则
 const rulesNode = reactive({ id: '', name: '', hostname: '', ip: '', capability: null })
@@ -787,8 +823,48 @@ const handleView = async (row) => {
     const data = await getNode(row.id)
     Object.assign(detailNode, data)
     detailDialogVisible.value = true
+    loadRevisions(row.id)
   } catch {
     ElMessage.error('获取节点详情失败')
+  }
+}
+
+// 加载规则库版本历史(计划三)
+const loadRevisions = async (nodeId) => {
+  revisionsLoading.value = true
+  try {
+    const data = await getNodeRevisions(nodeId)
+    revisions.value = data.revisions || []
+  } catch {
+    revisions.value = []
+  } finally {
+    revisionsLoading.value = false
+  }
+}
+
+// 回滚到指定版本(二次确认)。回滚是临时排障手段:节点规则库整体收敛到历史版本,
+// 完成后实例标记未同步,需重新下发收敛。
+const handleRollbackRevision = async (rev) => {
+  try {
+    await ElMessageBox.confirm(
+      `回滚到版本 #${rev.rev_no}(${formatDate(rev.created_at)})?` +
+        '该操作将把节点规则库整体收敛到历史版本,回滚为临时排障手段,' +
+        '完成后实例将标记为未同步,需重新下发收敛。',
+      '规则库版本回滚',
+      { type: 'warning', confirmButtonText: '确认回滚', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  rollbackingRev.value = rev.rev_no
+  try {
+    await rollbackRevision(detailNode.id, rev.rev_no)
+    ElMessage.success(`已发起回滚到版本 #${rev.rev_no},请关注任务进度`)
+    await loadRevisions(detailNode.id)
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.error || '回滚失败(节点可能离线)')
+  } finally {
+    rollbackingRev.value = null
   }
 }
 

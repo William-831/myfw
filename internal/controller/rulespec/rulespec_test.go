@@ -23,6 +23,7 @@ func TestValidate_AcceptValid(t *testing.T) {
 		{"match_mark=255", Spec{Action: "ACCEPT", MatchMark: 255}},
 		{"match_mark=0(不限)", Spec{Action: "ACCEPT", MatchMark: 0}},
 		{"MARK自定义标记值100", Spec{Action: "MARK", Mark: 100, Protocol: "TCP", PortRange: "8080", Source: "10.0.0.0/24"}},
+		{"MARK模板无源骨架(源留实例化填)", Spec{Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "8080"}},
 		{"match_mark自定义值100", Spec{Action: "ACCEPT", MatchMark: 100}},
 		{"ICMP无端口", Spec{Action: "ACCEPT", Protocol: "ICMP"}},
 	}
@@ -48,8 +49,7 @@ func TestValidate_RejectInvalid(t *testing.T) {
 		{"DNAT+filter表链(表不匹配)", Spec{Action: "DNAT", NatTo: "10.0.0.1:80", ChainTable: "filter"}},
 		{"SNAT+mangle表链(表不匹配)", Spec{Action: "SNAT", NatTo: "192.168.1.1", ChainTable: "mangle"}},
 		{"MARK白名单mark零值(无标记)", Spec{Action: "MARK", Mark: 0, Protocol: "TCP", PortRange: "8080", Source: "10.0.0.0/24"}},
-		{"MARK无源(单纯打标已废弃)", Spec{Action: "MARK", Mark: 15}},
-		{"MARK有端口无源", Spec{Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "62022"}},
+		{"MARK无端口(骨架也需端口)", Spec{Action: "MARK", Mark: 15, Source: "10.0.0.0/24"}},
 		{"MARK白名单+源+无端口", Spec{Action: "MARK", Mark: 15, Source: "10.0.0.0/24"}},
 		{"MARK白名单+地址组+无端口", Spec{Action: "MARK", Mark: 15, SourceGroup: "whitelist"}},
 		{"MARK白名单方向错误", Spec{Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "8080", Source: "10.0.0.0/24", Direction: "OUTBOUND"}},

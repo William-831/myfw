@@ -31,6 +31,7 @@ import (
 	"iptables-tool/internal/controller/compiler"
 	"iptables-tool/internal/controller/policy"
 	"iptables-tool/internal/controller/registration"
+	"iptables-tool/internal/controller/revision"
 	"iptables-tool/internal/controller/stream"
 	"iptables-tool/internal/controller/task"
 	"iptables-tool/internal/model"
@@ -126,6 +127,12 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 	comp := compiler.New(db)
 	co := task.NewCoordinator(db, streamSvc, comp, auditSink, log)
 
+	// 规则库版本档案(计划三):普通任务 Apply 成功后自动归档节点期望态规则集。
+	revSvc := revision.New(db, comp, log)
+	co.ArchiveFn = func(ctx context.Context, nodeID, taskID string) error {
+		return revSvc.ArchiveApply(ctx, nodeID, taskID)
+	}
+
 	// 注入 drift 恢复回调:Agent 检测到 drift 请求 sync 时,Controller 重新下发期望态。
 	// 仅在线节点触发(避免离线节点堆积 FAILED task);Apply 幂等,成功后 expected 更新,
 	// 下次 watchdog 不再 drift,不会风暴。异步执行不阻塞 stream 处理。
@@ -168,7 +175,7 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 
 	// Web (Gin) REST 路由
 	assetH := asset.New(db, auditSink, cfg.Bootstrap.TokenTTL)
-	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink)
+	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink, revSvc)
 
 	s := &Server{
 		cfg:    cfg,
@@ -365,7 +372,7 @@ func autoReregister(ctx context.Context, db *gorm.DB, cert *x509.Certificate, no
 }
 
 // newWebHandler 构建 Gin 引擎。
-func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service, policySvc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink) http.Handler {
+func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service, policySvc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink, revSvc *revision.Service) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -392,6 +399,8 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	registerCustomChainRoutes(r, db, auditSink)
 	registerMarkRoutes(r, db, auditSink)
 	registerSystemRoutes(r, db)
+	registerRevisionRoutes(r, revSvc, co)
+	registerSimulateRoutes(r, comp, db)
 
 	// Agent 二进制与 CA 证书下载(节点安装脚本 curl 拉取)
 	// 二进制挂载到 /var/www/agent/,CA 挂载到 /etc/myfw/ca/(与 controller.prod.example.yaml 的 ca.cert_file 一致)
@@ -413,7 +422,11 @@ func BuildWebHandler(db *gorm.DB, tokenTTL time.Duration) http.Handler {
 	policySvc := policy.New(db)
 	comp := compiler.New(db)
 	co := task.NewCoordinator(db, streamSvc, comp, auditSink, slog.Default())
-	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink)
+	revSvc := revision.New(db, comp, slog.Default())
+	co.ArchiveFn = func(ctx context.Context, nodeID, taskID string) error {
+		return revSvc.ArchiveApply(ctx, nodeID, taskID)
+	}
+	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink, revSvc)
 }
 
 // BuildWebHandlerWithStream 测试辅助：注入共享的 stream.Service。
@@ -423,7 +436,11 @@ func BuildWebHandlerWithStream(db *gorm.DB, tokenTTL time.Duration, streamSvc *s
 	policySvc := policy.New(db)
 	comp := compiler.New(db)
 	co := task.NewCoordinator(db, streamSvc, comp, auditSink, slog.Default())
-	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink)
+	revSvc := revision.New(db, comp, slog.Default())
+	co.ArchiveFn = func(ctx context.Context, nodeID, taskID string) error {
+		return revSvc.ArchiveApply(ctx, nodeID, taskID)
+	}
+	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink, revSvc)
 }
 
 // Run 启动两个服务器并阻塞直到 ctx 取消。

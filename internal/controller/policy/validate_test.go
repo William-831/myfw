@@ -34,9 +34,9 @@ func TestValidateFields_MarkWhitelist(t *testing.T) {
 			wantErr: "FORWARD",
 		},
 		{
-			name:    "纯打标已废弃(无源)",
+			name:    "无源骨架通过(源留实例化,实例层 requireMarkSource 校验)",
 			f:       Fields{Action: "MARK", Mark: 255, Protocol: "TCP", PortRange: "8080"},
-			wantErr: "源地址或源地址组",
+			wantErr: "",
 		},
 	}
 	for _, tc := range cases {
@@ -64,8 +64,9 @@ func TestValidateFields_MarkValue(t *testing.T) {
 	if err := ValidateFields(Fields{Action: "MARK", Mark: 16, Protocol: "TCP", PortRange: "8080", Source: "10.0.0.0/24"}); err != nil {
 		t.Fatalf("mark=16(非 15/255)应通过,got: %v", err)
 	}
-	if err := ValidateFields(Fields{Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "8080"}); err == nil {
-		t.Fatal("mark=15 无源(纯打标)应被拒绝,MARK 需指定源")
+	// MARK 无源骨架通过 ValidateFields(源校验移至实例层 requireMarkSource,模板可无源)
+	if err := ValidateFields(Fields{Action: "MARK", Mark: 15, Protocol: "TCP", PortRange: "8080"}); err != nil {
+		t.Fatalf("mark=15 无源模板骨架应通过(源留实例化),got: %v", err)
 	}
 	// match_mark:0=不限,任意非零合法
 	if err := ValidateFields(Fields{Action: "ACCEPT", MatchMark: 99}); err != nil {

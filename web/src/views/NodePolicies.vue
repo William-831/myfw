@@ -44,6 +44,8 @@
                 <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
                 <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点(全量对齐)</el-button>
                 <el-button size="small" type="warning" @click="handleSyncAll" :disabled="!selectedNodeId || !driftInstanceCount" :loading="syncingAll">同步全部漂移({{ driftInstanceCount }})</el-button>
+                <el-button size="small" type="info" @click="openSimulate" :disabled="!selectedNodeId"><el-icon><Monitor /></el-icon>流量预演</el-button>
+                <el-checkbox v-model="onlyDead" size="small" class="dead-filter">仅看死规则</el-checkbox>
               </div>
             </div>
           </template>
@@ -54,16 +56,15 @@
               <div class="inst-top">
                 <span class="inst-name">{{ inst.name }}</span>
                 <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
-                <el-tooltip v-if="inst.deviated" :content="driftFieldsText(inst)" placement="top">
-                  <el-tag :type="inst.drift ? 'warning' : 'danger'" size="small" effect="dark">
-                    {{ inst.drift ? '⚠ 模板已更新(' + (inst.deviated_fields?.length || 0) + '字段)' : '✎ 已偏离模板' }}
-                  </el-tag>
+                <el-tooltip v-if="inst.drift" :content="driftFieldsText(inst)" placement="top">
+                  <el-tag type="warning" size="small" effect="dark">⚠ 模板已更新({{ inst.deviated_fields?.length || 0 }}字段)</el-tag>
                 </el-tooltip>
                 <el-tag v-if="inst.pending_delete" size="small" type="warning" effect="dark">待确认移除</el-tag>
                 <el-tag v-else-if="inst.chain_unavailable" size="small" type="danger" effect="dark">⚠ 链不可用</el-tag>
                 <el-tag v-else-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
                 <el-tag v-else-if="inst.enabled && inst.applied" size="small" type="success" effect="plain">已下发</el-tag>
                 <el-tag v-else-if="!inst.enabled && inst.applied" size="small" type="danger" effect="dark">待移除</el-tag>
+                <el-tag v-if="ruleHitsMap[inst.id]?.dead" size="small" type="info" effect="dark">死规则</el-tag>
                 <el-tag :type="inst.enabled ? 'success' : 'info'" size="small">{{ inst.enabled ? '启用' : '禁用' }}</el-tag>
               </div>
               <div class="inst-rule">
@@ -78,6 +79,7 @@
               <div class="inst-foot">
                 <div class="foot-left">
                   <span class="prio">优先级 #{{ inst.priority }}</span>
+                  <span class="hits">命中 {{ formatHits(ruleHitsMap[inst.id]) }}</span>
                   <el-switch :model-value="inst.enabled" size="small" @change="(v) => toggleEnabled(inst, v)" />
                 </div>
                 <div class="actions">
@@ -86,11 +88,69 @@
                   <el-button size="small" text type="danger" :disabled="inst.pending_delete" @click="handleDeleteInst(inst)">移除</el-button>
                 </div>
               </div>
+              <div class="inst-cmd">
+                <code v-for="(line, i) in buildCommandPreview(inst, customChains)" :key="i" :class="'cmd-' + line.type">{{ line.text }}</code>
+              </div>
             </div>
           </div>
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 流量预演(计划二:五元组仿真命中路径) -->
+    <el-dialog v-model="simVisible" :title="'流量预演 — ' + currentNodeLabel" width="560px">
+      <el-form label-width="90px">
+        <el-form-item label="方向">
+          <el-select v-model="simForm.direction" style="width: 100%">
+            <el-option label="入站 INPUT" value="INPUT" />
+            <el-option label="转发 FORWARD" value="FORWARD" />
+            <el-option label="出站 OUTPUT" value="OUTPUT" />
+          </el-select>
+        </el-form-item>
+        <div class="form-row">
+          <el-form-item label="源 IP" class="form-col"><el-input v-model="simForm.source_ip" placeholder="如 192.168.1.5,空=任意" /></el-form-item>
+          <el-form-item label="目的 IP" class="form-col"><el-input v-model="simForm.dest_ip" placeholder="如 10.0.0.1,空=任意" /></el-form-item>
+        </div>
+        <div class="form-row">
+          <el-form-item label="协议" class="form-col">
+            <el-select v-model="simForm.protocol" style="width: 100%">
+              <el-option label="TCP" value="tcp" />
+              <el-option label="UDP" value="udp" />
+              <el-option label="ICMP" value="icmp" />
+              <el-option label="任意" value="" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="目的端口" class="form-col"><el-input-number v-model="simForm.dst_port" :min="0" :max="65535" controls-position="right" style="width: 100%" /></el-form-item>
+        </div>
+        <div class="form-row">
+          <el-form-item label="源端口" class="form-col"><el-input-number v-model="simForm.src_port" :min="0" :max="65535" controls-position="right" style="width: 100%" /></el-form-item>
+        </div>
+        <span class="form-hint">基于该节点当前期望规则集(编译产物)做 filter 表无状态匹配;NAT/mangle 仅提示不模拟,连接状态(ESTABLISHED)不建模。</span>
+      </el-form>
+      <div v-if="simResult" class="sim-result" :class="'verdict-' + simResult.verdict.toLowerCase()">
+        <div class="sim-verdict">
+          最终判定:
+          <el-tag :type="verdictTagType(simResult.verdict)" size="large" effect="dark">{{ simResult.verdict }}</el-tag>
+        </div>
+        <div v-if="simResult.steps.length" class="sim-steps">
+          <div class="sim-steps-title">命中路径(按遍历顺序)</div>
+          <div v-for="(s, i) in simResult.steps" :key="i" class="sim-step" :class="{ 'is-hit': s.matched }">
+            <span class="sim-idx">{{ i + 1 }}</span>
+            <span class="sim-chain">{{ s.chain }}</span>
+            <span class="sim-action" :class="s.matched ? 'hit' : ''">{{ s.action }}</span>
+            <span class="sim-rule">{{ s.rule_id }}</span>
+            <el-tag v-if="s.matched" size="small" type="success">命中</el-tag>
+            <span v-if="s.note" class="sim-note">{{ s.note }}</span>
+          </div>
+        </div>
+        <div v-else class="sim-empty">无规则参与匹配</div>
+        <div v-if="simResult.note" class="sim-note-line">{{ simResult.note }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="simVisible = false">关闭</el-button>
+        <el-button type="primary" @click="handleSimulate" :loading="simLoading">预演</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 从模板实例化 -->
     <el-dialog v-model="instantiateVisible" title="从模板实例化" width="480px">
@@ -101,6 +161,14 @@
           </el-select>
         </el-form-item>
         <el-form-item label="实例名称"><el-input v-model="instantiateForm.name" placeholder="空则用模板名" /></el-form-item>
+        <el-form-item v-if="isMarkTpl" label="源地址">
+          <el-input v-model="instantiateForm.source" placeholder="白名单 IP/CIDR,如 192.168.1.5" />
+        </el-form-item>
+        <el-form-item v-if="isMarkTpl" label="源地址组">
+          <el-select v-model="instantiateForm.source_group" clearable placeholder="白名单地址组(与源地址二选一)" style="width: 100%">
+            <el-option v-for="ag in addressGroups" :key="ag.id" :label="ag.name" :value="ag.name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="立即应用"><el-switch v-model="instantiateForm.apply" /></el-form-item>
         <span class="form-hint">实例化时从模板全量复制参数,之后模板修改不影响本实例</span>
       </el-form>
@@ -191,9 +259,9 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Monitor } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
-import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, syncInstancePreview, syncAllNode, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask } from '@/api'
+import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, syncInstancePreview, syncAllNode, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask, simulateFlow, getNodeRuleHits } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 
 const route = useRoute()
@@ -205,10 +273,16 @@ const instLoading = ref(false)
 const dispatching = ref(false)
 const nodes = ref([])
 const instances = ref([])
+const ruleHitsMap = ref({}) // 规则命中率(规则活性分析):instance_id -> {packets,bytes,dead,last_seen}
+const onlyDead = ref(false) // 仅看死规则过滤
 
 // 排序:未下发(enabled && !applied)或待移除(!enabled && applied)置顶,其次按添加时间倒序(新在上)
 const sortedInstances = computed(() => {
-  return [...instances.value].sort((a, b) => {
+  let list = [...instances.value]
+  if (onlyDead.value) {
+    list = list.filter((i) => ruleHitsMap.value[i.id]?.dead)
+  }
+  return list.sort((a, b) => {
     const ap = (a.enabled && !a.applied) || (!a.enabled && a.applied) ? 0 : 1
     const bp = (b.enabled && !b.applied) || (!b.enabled && b.applied) ? 0 : 1
     if (ap !== bp) return ap - bp
@@ -229,9 +303,9 @@ const currentNodeLabel = computed(() => {
 
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '白名单拦截', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
 
-// 命令预览:根据实例表单拼接底层 iptables 命令,无感教学
-const previewCommand = computed(() => {
-  const f = instForm
+// 命令预览纯函数:根据表单/实例字段拼接底层 iptables 命令(MARK 白名单 3 条骨架,其余单条)
+// 列表项与编辑对话框共用,浏览时直观看到将生成的 iptables 命令,无感教学
+const buildCommandPreview = (f, chains = []) => {
   // MARK 动作统一走白名单拦截骨架(3条规则),参数未填处用占位符提示
   if (f.action === 'MARK') {
     const acl = f.direction === 'INPUT' ? 'MYFW-MARKACL-IN' : 'MYFW-MARKACL-FWD'
@@ -247,7 +321,7 @@ const previewCommand = computed(() => {
       { text: `iptables -t filter -A ${acl} -m mark --mark ${m} -j DROP`, type: 'drop' },
     ]
   }
-  const cc = customChains.value.find(c => c.id === f.group_id)
+  const cc = chains.find(c => c.id === f.group_id)
   const table = cc?.table || 'filter'
   const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
   const parts = ['iptables', '-t', table, '-A', chain]
@@ -269,7 +343,10 @@ const previewCommand = computed(() => {
     parts.push('-j', f.action)
   }
   return [{ text: parts.join(' '), type: 'default' }]
-})
+}
+
+// 编辑对话框命令预览:响应式跟踪 instForm 与 customChains
+const previewCommand = computed(() => buildCommandPreview(instForm, customChains.value))
 
 // 轮询 task 直到终态(confirm_wait/confirmed/failed/rolled_back)或超时(15s)。
 // 后端 dispatch 异步:Send 后 task 处于 applying,Agent 回 TaskResult 后才更新 applied。
@@ -326,11 +403,39 @@ const loadInstances = async () => {
   try {
     const d = await getNodeInstances(selectedNodeId.value)
     instances.value = d.instances || []
+    loadRuleHits() // 加载规则命中率(规则活性分析),不阻塞实例展示
   } catch {
     ElMessage.error('加载实例失败')
   } finally {
     instLoading.value = false
   }
+}
+
+// 规则活性分析:加载节点规则命中率 + 死规则标记
+const loadRuleHits = async () => {
+  if (!selectedNodeId.value) return
+  try {
+    const d = await getNodeRuleHits(selectedNodeId.value)
+    const m = {}
+    for (const h of (d.hits || [])) {
+      m[h.instance_id] = h
+    }
+    ruleHitsMap.value = m
+  } catch {
+    // 命中率加载失败不阻塞(可能 Agent 未上报)
+  }
+}
+
+// 格式化命中率显示
+const formatHits = (h) => {
+  if (!h || !h.last_seen) return '未采集'
+  return `${h.packets} 包 / ${formatBytes(h.bytes)}`
+}
+const formatBytes = (b) => {
+  if (!b) return '0 B'
+  if (b < 1024) return b + ' B'
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'
+  return (b / 1048576).toFixed(1) + ' MB'
 }
 
 const loadDeps = async () => {
@@ -350,21 +455,73 @@ const selectNode = (n) => {
   loadInstances()
 }
 
+// 流量预演(计划二):五元组仿真当前节点期望规则的命中路径
+const simVisible = ref(false)
+const simLoading = ref(false)
+const simResult = ref(null)
+const simForm = reactive({ direction: 'INPUT', source_ip: '', dest_ip: '', protocol: 'tcp', src_port: 0, dst_port: 8080 })
+
+const openSimulate = () => {
+  simForm.direction = 'INPUT'
+  simForm.source_ip = ''
+  simForm.dest_ip = ''
+  simForm.protocol = 'tcp'
+  simForm.src_port = 0
+  simForm.dst_port = 8080
+  simResult.value = null
+  simVisible.value = true
+}
+
+const verdictTagType = (v) => ({ ACCEPT: 'success', DROP: 'danger', REJECT: 'warning', PASS: 'info' }[v] || 'info')
+
+const handleSimulate = async () => {
+  if (!selectedNodeId.value) return
+  simLoading.value = true
+  simResult.value = null
+  try {
+    const d = await simulateFlow({
+      node_id: selectedNodeId.value,
+      flow: { ...simForm },
+    })
+    simResult.value = d
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '预演失败')
+  } finally {
+    simLoading.value = false
+  }
+}
+
 // 从模板实例化
 const instantiateVisible = ref(false)
 const instantiating = ref(false)
-const instantiateForm = reactive({ template_id: null, name: '', apply: true })
+const instantiateForm = reactive({ template_id: null, name: '', apply: true, source: '', source_group: '' })
+// 选中模板是否 MARK 白名单(无源骨架,实例化时需补源)
+const selectedTpl = computed(() => templates.value.find((t) => t.id === instantiateForm.template_id))
+const isMarkTpl = computed(() => selectedTpl.value?.action === 'MARK')
 const openInstantiate = () => {
   instantiateForm.template_id = null
   instantiateForm.name = ''
   instantiateForm.apply = true
+  instantiateForm.source = ''
+  instantiateForm.source_group = ''
   instantiateVisible.value = true
 }
 const handleInstantiate = async () => {
   if (!instantiateForm.template_id) { ElMessage.warning('请选模板'); return }
+  // MARK 白名单模板无源骨架,实例化时必须补源(实例层 requireMarkSource 校验)
+  if (isMarkTpl.value && !instantiateForm.source && !instantiateForm.source_group) {
+    ElMessage.warning('请填源地址或源地址组(白名单)')
+    return
+  }
   instantiating.value = true
   try {
-    await createInstance(selectedNodeId.value, { template_id: instantiateForm.template_id, name: instantiateForm.name, apply: instantiateForm.apply })
+    await createInstance(selectedNodeId.value, {
+      template_id: instantiateForm.template_id,
+      name: instantiateForm.name,
+      apply: instantiateForm.apply,
+      source: instantiateForm.source,
+      source_group: instantiateForm.source_group,
+    })
     ElMessage.success('已实例化' + (instantiateForm.apply ? '并下发' : ''))
     instantiateVisible.value = false
     loadInstances()
@@ -599,8 +756,12 @@ watch(() => route.query.node, async (nodeId) => {
 .action.reject { color: #d97706; background: #fef3c7; }
 .action.mark { color: #2563eb; background: #dbeafe; }
 .inst-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--c-bg); }
+.inst-cmd { margin-top: 8px; padding: 6px 8px; background: var(--c-bg); border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px; }
+.inst-cmd code { display: block; white-space: pre-wrap; word-break: break-all; color: var(--c-text-3); line-height: 1.6; }
 .foot-left { display: flex; align-items: center; gap: 10px; }
 .prio { font-size: 12px; color: var(--c-text-3); }
+.hits { font-size: 12px; color: var(--c-text-3); }
+.dead-filter { margin-left: 8px; }
 .cmd-preview { margin-top: 12px; }
 .cmd-preview-head { font-size: 12px; color: #64748b; margin-bottom: 6px; }
 .cmd-preview-code { background: var(--c-surface); color: var(--c-text-1); padding: 10px; border-radius: 6px; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
@@ -611,4 +772,23 @@ watch(() => route.query.node, async (nodeId) => {
 .form-row { display: flex; gap: 12px; }
 .form-col { flex: 1; }
 .form-hint { display: block; margin-top: -8px; padding-left: 90px; font-size: 12px; color: var(--c-text-3); }
+
+/* 流量预演结果 */
+.sim-result { margin-top: 12px; border: 1px solid var(--c-bg); border-radius: 6px; padding: 10px; background: var(--c-surface); }
+.sim-verdict { font-size: 13px; color: var(--c-text-1); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.sim-steps-title { font-size: 12px; color: var(--c-text-3); margin-bottom: 6px; }
+.sim-steps { max-height: 240px; overflow-y: auto; }
+.sim-step { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 4px; color: var(--c-text-3); font-family: 'Courier New', monospace; }
+.sim-step.is-hit { background: rgba(74, 222, 128, 0.08); color: var(--c-text-1); }
+.sim-idx { color: var(--c-text-3); width: 18px; flex-shrink: 0; }
+.sim-chain { color: #60a5fa; }
+.sim-action { flex-shrink: 0; }
+.sim-action.hit { color: #4ade80; font-weight: 600; }
+.sim-rule { flex: 1; }
+.sim-note { color: #fbbf24; font-size: 11px; }
+.sim-note-line { margin-top: 8px; font-size: 12px; color: var(--c-text-3); }
+.sim-empty { font-size: 12px; color: var(--c-text-3); }
+.verdict-accept { border-color: rgba(74, 222, 128, 0.5); }
+.verdict-drop { border-color: rgba(248, 113, 113, 0.5); }
+.verdict-reject { border-color: rgba(251, 191, 36, 0.5); }
 </style>

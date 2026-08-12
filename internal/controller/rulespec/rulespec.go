@@ -70,11 +70,8 @@ func (s Spec) Validate() error {
 	}
 	// match_mark:0=不匹配,任意非零 uint32 合法(标记管理已保证值有效)。
 
-	// MARK 动作只做白名单拦截:必须有源(地址或组)+端口,不存在"单纯打标"。
-	// 编译器自动生成 mangle 打标 + filter 白名单放行 + 兜底 DROP。
-	if s.Action == "MARK" && (s.Source == "" && s.SourceGroup == "") {
-		return fmt.Errorf("MARK 动作需指定源地址或源地址组(白名单拦截)")
-	}
+	// MARK 白名单端口必填:白名单拦截的核心是"拦截哪个端口",模板骨架也需指定;
+	// 源地址(白名单成员)留实例化时填,模板级不强制(实例层 requireMarkSource 校验)。
 	if s.Action == "MARK" && s.PortRange == "" {
 		return fmt.Errorf("MARK 白名单拦截需指定端口(port_range)")
 	}

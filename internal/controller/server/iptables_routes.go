@@ -133,6 +133,119 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 		c.JSON(http.StatusOK, gin.H{"message": "rules updated"})
 	})
 
+	// Agent 上报 MYFW 规则命中率(pkts/bytes + comment 反解实例 ID)。
+	// 同实例多条规则按 max 聚合,按 (node,instance) upsert RuleHitStat。
+	// 规则活性分析:Controller 据此标记死规则(启用且 packets=0 且超阈值)。
+	g.POST("/hits/:node_id", func(c *gin.Context) {
+		nodeID := c.Param("node_id")
+		var body struct {
+			Hits []struct {
+				InstanceID uint  `json:"instance_id"`
+				Packets    int64 `json:"packets"`
+				Bytes      int64 `json:"bytes"`
+			} `json:"hits"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// 按 instance_id 聚合 max(同实例多条规则:主规则+acl+drop,取最大代表是否有流量命中)
+		agg := map[uint]model.RuleHitStat{}
+		for _, h := range body.Hits {
+			if h.InstanceID == 0 {
+				continue
+			}
+			cur, ok := agg[h.InstanceID]
+			if !ok {
+				cur = model.RuleHitStat{InstanceID: h.InstanceID, Packets: h.Packets, Bytes: h.Bytes}
+			} else {
+				if h.Packets > cur.Packets {
+					cur.Packets = h.Packets
+				}
+				if h.Bytes > cur.Bytes {
+					cur.Bytes = h.Bytes
+				}
+			}
+			agg[h.InstanceID] = cur
+		}
+		now := time.Now()
+		tx := db.Begin()
+		for _, st := range agg {
+			st.NodeID = nodeID
+			st.LastSeen = now
+			var existing model.RuleHitStat
+			if err := tx.Where("node_id = ? AND instance_id = ?", nodeID, st.InstanceID).First(&existing).Error; err != nil {
+				// 不存在 -> 创建
+				if err := tx.Create(&st).Error; err != nil {
+					tx.Rollback()
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+			} else {
+				// 存在 -> 更新计数器
+				existing.Packets = st.Packets
+				existing.Bytes = st.Bytes
+				existing.LastSeen = now
+				if err := tx.Save(&existing).Error; err != nil {
+					tx.Rollback()
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+			}
+		}
+		if err := tx.Commit().Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "hits updated"})
+	})
+
+	// 查询节点规则命中率 + 死规则判定。
+	// dead = enabled=true + 有 RuleHitStat(采集过) + packets=0 + created_at 超阈值(默认 7 天)。
+	// 无 RuleHitStat 的实例 packets=0 但 dead=false(数据不足,可能尚未采集)。
+	g.GET("/rule-hits/:node_id", func(c *gin.Context) {
+		nodeID := c.Param("node_id")
+		var instances []model.NodePolicyInstance
+		if err := db.Where("node_id = ?", nodeID).Find(&instances).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		var stats []model.RuleHitStat
+		db.Where("node_id = ?", nodeID).Find(&stats)
+		statByID := map[uint]model.RuleHitStat{}
+		for i := range stats {
+			statByID[stats[i].InstanceID] = stats[i]
+		}
+		threshold := time.Now().Add(-deadRuleThresholdDays * 24 * time.Hour)
+		type hitVO struct {
+			InstanceID uint       `json:"instance_id"`
+			Name       string     `json:"name"`
+			Enabled    bool       `json:"enabled"`
+			Packets    int64      `json:"packets"`
+			Bytes      int64      `json:"bytes"`
+			LastSeen   *time.Time `json:"last_seen"`
+			Dead       bool       `json:"dead"`
+		}
+		out := make([]hitVO, 0, len(instances))
+		for _, inst := range instances {
+			st, hasStat := statByID[inst.ID]
+			dead := inst.Enabled && hasStat && st.Packets == 0 && inst.CreatedAt.Before(threshold)
+			vo := hitVO{
+				InstanceID: inst.ID,
+				Name:       inst.Name,
+				Enabled:    inst.Enabled,
+				Dead:       dead,
+			}
+			if hasStat {
+				vo.Packets = st.Packets
+				vo.Bytes = st.Bytes
+				vo.LastSeen = &st.LastSeen
+			}
+			out = append(out, vo)
+		}
+		c.JSON(http.StatusOK, gin.H{"hits": out})
+	})
+
 	// 专家模式:执行裸 iptables 命令(iptables 族白名单校验在 Agent 侧),同步等待回复。
 	// 此通道绕过 MYFW 命名空间/快照/保护期,强审计记录操作人/节点/命令/输出。
 	g.POST("/exec/:node_id", func(c *gin.Context) {
@@ -190,3 +303,7 @@ func isMYFWRule(rule string) bool {
 	return strings.HasPrefix(rule, "-A MYFW-") ||
 		strings.Contains(rule, "-j MYFW-")
 }
+
+// deadRuleThresholdDays 死规则判定阈值:实例启用且 packets=0 且创建超此天数 -> dead。
+// 首版硬编码 7 天;后续需要可配置化时迁移到 SystemSetting。
+const deadRuleThresholdDays = 7

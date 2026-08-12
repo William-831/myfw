@@ -224,7 +224,7 @@ const editingId = ref(null)
 const form = reactive(emptyForm())
 
 function emptyForm() {
-  return { name: '', group_id: null, direction: 'FORWARD', source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
+  return { id: null, name: '', group_id: null, direction: 'FORWARD', source: '', destination: '', protocol: 'ANY', port_range: '', action: 'ACCEPT', mark: 0, nat_to: '', source_group: '', destination_group: '', match_mark: 0, priority: 10, description: '', enabled: true }
 }
 
 // 动作切换时清理关联字段:MARK 白名单不归属策略组/链(落内置链),非 MARK 无流量方向

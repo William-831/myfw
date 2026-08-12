@@ -29,6 +29,8 @@ func AllModels() []any {
 		&Mark{},
 		&User{},
 		&SystemSetting{},
+		&NodeRuleRevision{},
+		&RuleHitStat{},
 	}
 }
 

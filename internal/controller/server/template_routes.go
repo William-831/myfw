@@ -57,6 +57,8 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		if !checkMarkExists(db, c, tpl.Action, tpl.Mark) {
 			return
 		}
+		// 创建时忽略前端传入的 id(问题 4:前端 form 残留 id 致主键冲突 1555)
+		tpl.ID = 0
 		// 新模板 spec 从 1 开始(漏洞 A:drift 判据改用 SpecVersion)
 		tpl.SpecVersion = 1
 		if err := db.Create(&tpl).Error; err != nil {
@@ -300,15 +302,22 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 				SyncedSpecVersion:       tpl.SpecVersion, // 实例化即快照模板 spec(漏洞 A)
 				SyncedTemplateUpdatedAt: tpl.UpdatedAt,
 			}
+			// 合并 body 覆盖(问题 2:无源 MARK 模板实例化时 body 传源,实例源=body.source)
+			if body.Source != "" {
+				inst.Source = body.Source
+			}
+			if body.SourceGroup != "" {
+				inst.SourceGroup = body.SourceGroup
+			}
 		} else {
 			// 直接新建:不依赖模板,template_id=0(无 drift/同步)
 			if body.Name == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "需填写实例名称"})
 				return
 			}
-			// MARK 白名单拦截:group_id 可空(规则落内置链);其他场景归属组必填
-			isMarkACL := rulespec.IsMarkWhitelist(body.Action, body.Source, body.SourceGroup, body.PortRange)
-			if body.GroupID == 0 && !isMarkACL {
+			// MARK 白名单拦截落内置链:group_id 可空;其他动作归属组必填
+			// (源/端口由 requireMarkSource + rulespec 校验,不再依赖 isMarkACL 判 group)
+			if body.Action != "MARK" && body.GroupID == 0 {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 				return
 			}
@@ -325,6 +334,11 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		// 非 MARK 动作 Direction 字段无意义,统一强制清空(覆盖模板实例化/直接新建两条路径)
 		if inst.Action != "MARK" {
 			inst.Direction = ""
+		}
+		// MARK 白名单源校验(问题 2):模板可无源骨架,实例必须有源(编译白名单放行规则)
+		if err := requireMarkSource(inst.Action, inst.Source, inst.SourceGroup); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
 		if err := policy.ValidateFields(fieldsFromInstance(&inst, chainTableFor(db, inst.GroupID))); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -379,9 +393,13 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 		if !checkMarkExists(db, c, body.Action, body.Mark) {
 			return
 		}
-		// MARK 白名单拦截:group_id 可空;其他场景归属组必填
-		isMarkACL := rulespec.IsMarkWhitelist(body.Action, body.Source, body.SourceGroup, body.PortRange)
-		if body.GroupID == 0 && !isMarkACL {
+		// MARK 白名单源校验(问题 2):实例必须有源
+		if err := requireMarkSource(body.Action, body.Source, body.SourceGroup); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// MARK 白名单拦截落内置链:group_id 可空;其他动作归属组必填
+		if body.Action != "MARK" && body.GroupID == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "需选择策略组"})
 			return
 		}
@@ -841,6 +859,16 @@ func checkMarkExists(db *gorm.DB, c *gin.Context, action string, mark uint32) bo
 		return false
 	}
 	return true
+}
+
+// requireMarkSource 校验实例 MARK 白名单源地址必填(问题 2 修复)。
+// 模板是可复用骨架可无源,但实例编译下发需要源(白名单放行规则),实例层强制。
+// 返回 error 供 API 层 400 响应;非 MARK 动作放行。
+func requireMarkSource(action, source, sourceGroup string) error {
+	if action == "MARK" && source == "" && sourceGroup == "" {
+		return fmt.Errorf("MARK 白名单需指定源地址或源地址组(模板可无源,实例化时必填)")
+	}
+	return nil
 }
 
 // templateSpecChanged 判断模板规则字段是否变更,决定是否递增 SpecVersion(漏洞 A 修复)。

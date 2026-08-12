@@ -39,8 +39,12 @@ type Task struct {
 	// AutoConfirm 系统自愈任务标记(drift 恢复):apply 成功后直接 confirmed,
 	// 不进 confirm_wait 保护期。修复自愈死循环——自愈是系统行为,无人工确认,
 	// 若走保护期必然超时回滚,回滚恢复快照≠expected 又触发再漂移。
-	AutoConfirm bool      `gorm:"default:false" json:"auto_confirm,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	AutoConfirm bool `gorm:"default:false" json:"auto_confirm,omitempty"`
+	// RuleSetSnapshot 回滚任务携带的历史规则集快照(protojson RuleSet)。
+	// 非空时 dispatch 直接用它下发、跳过重新编译——支撑规则库版本回滚(计划三)。
+	// 普通任务为空。
+	RuleSetSnapshot string    `gorm:"type:text" json:"rule_set_snapshot,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
@@ -88,6 +92,7 @@ const (
 	AuditSceneAutoRollback = "auto_rollback" // 超时自动回滚
 	AuditSceneRecovery     = "recovery"      // 启动恢复
 	AuditSceneSelfHeal     = "self_heal"     // 系统自愈(drift 恢复),与人工操作区分
+	AuditSceneRevisionRollback = "revision_rollback" // 规则库版本回滚(计划三):下发历史规则集,临时排障手段
 
 	AuditResultSuccess    = "success"
 	AuditResultFailed     = "failed"

@@ -27,6 +27,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
 	"iptables-tool/internal/controller/audit"
@@ -46,6 +47,10 @@ type Coordinator struct {
 	// DefaultConfirmDeadline is applied when a submit request doesn't override
 	// it. Auto-rollback fires at this age of the task after apply completes.
 	DefaultConfirmDeadline time.Duration
+
+	// ArchiveFn 在普通任务 Apply 成功(节点规则已收敛)后调用,用于归档节点规则库版本
+	// (计划三)。由 server 层注入 revision.Service.ArchiveApply;nil 表示不归档(测试)。
+	ArchiveFn func(ctx context.Context, nodeID, taskID string) error
 
 	// timers holds in-memory confirm-wait timers, keyed by task_id. Persisted
 	// deadlines in `tasks.confirm_deadline` are the source of truth — timers
@@ -268,6 +273,54 @@ func (co *Coordinator) SubmitRemoval(ctx context.Context, instanceID uint, opts 
 	return t, nil
 }
 
+// SubmitRuleSet 用给定规则集为单节点创建回滚任务(计划三:规则库版本回滚)。
+// 规则集 protojson 存 Task.RuleSetSnapshot,dispatch 时直接下发、不重新编译。
+// AutoApprove 时立即 dispatch(跳过审批,保留保护期,超时由 Agent 自身快照回退)。
+func (co *Coordinator) SubmitRuleSet(ctx context.Context, nodeID string, ruleSet *myfwv1.RuleSet, opts SubmitOpts) (*model.Task, error) {
+	if ruleSet == nil {
+		return nil, errors.New("task: empty ruleset for rollback")
+	}
+	if opts.ConfirmDeadline <= 0 {
+		opts.ConfirmDeadline = co.DefaultConfirmDeadline
+	}
+	if opts.Scene == "" {
+		opts.Scene = model.AuditSceneNormal
+	}
+	payload, err := protojson.Marshal(ruleSet)
+	if err != nil {
+		return nil, fmt.Errorf("task: marshal rollback ruleset: %w", err)
+	}
+	t := &model.Task{
+		ID:              "t_" + uuid.NewString(),
+		NodeID:          nodeID,
+		PolicyID:        0,
+		PolicyName:      "规则库版本回滚",
+		ChangeType:      "rollback",
+		Status:          model.TaskPendingApproval,
+		Version:         time.Now().Unix(),
+		RuleSetSnapshot: string(payload),
+		AutoConfirm:     opts.AutoConfirm,
+	}
+	if err := co.DB.WithContext(ctx).Create(t).Error; err != nil {
+		return nil, err
+	}
+	co.audit(ctx, opts.Author, "task.submit", opts.Scene, model.AuditResultPending, []*model.Task{t}, map[string]any{
+		"change_type": "rollback", "rules": len(ruleSet.Rules), "auto_approve": opts.AutoApprove,
+		"reason": "规则库版本回滚:下发历史规则集,节点规则将偏离当前实例定义(需重新下发收敛)",
+	})
+	if opts.AutoApprove {
+		if err := co.approveAndDispatch(ctx, t.ID, opts.Author, opts.ConfirmDeadline); err != nil {
+			co.Log.Warn("rollback auto-approve dispatch failed", "task_id", t.ID, "err", err)
+			var fresh model.Task
+			if e := co.DB.WithContext(ctx).First(&fresh, "id = ?", t.ID).Error; e == nil {
+				t = &fresh
+			}
+			return t, err
+		}
+	}
+	return t, nil
+}
+
 // Approve moves a task from PENDING_APPROVAL to APPROVED and immediately
 // dispatches it. ConfirmDeadline (optional, 0 = coordinator default) is the
 // window before auto-rollback.
@@ -427,15 +480,30 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 	co.audit(ctx, reviewer, "task.approve", apprScene, model.AuditResultPending, []*model.Task{&task}, nil)
 
 	// 2. 编译前刷新预览:审批时可能已与 Submit 时刻不同,保证展示与实际下发一致(漏洞 F' 修复)。
-	if task.PolicyID == 0 {
+	//    回滚任务(RuleSetSnapshot 非空)无基于实例的 diff 预览,跳过。
+	if task.PolicyID == 0 && task.RuleSetSnapshot == "" {
 		co.refreshNodePreview(ctx, &task)
 	}
 
-	// 3. Compile & send. compile errors mark the task FAILED.
-	rules, sets, customChains, err := co.Comp.CompileForNode(ctx, task.NodeID)
-	if err != nil {
-		co.markFailed(ctx, task.ID, "compile: "+err.Error())
-		return err
+	// 3. 回滚任务直接用历史规则集快照下发,不重新编译;普通任务按当前 DB 状态编译。
+	//    compile errors mark the task FAILED.
+	var rules []*myfwv1.CompiledRule
+	var sets []*myfwv1.AddressSet
+	var customChains []*myfwv1.CustomChainDef
+	if task.RuleSetSnapshot != "" {
+		var snap myfwv1.RuleSet
+		if err := protojson.Unmarshal([]byte(task.RuleSetSnapshot), &snap); err != nil {
+			co.markFailed(ctx, task.ID, "rollback ruleset unmarshal: "+err.Error())
+			return err
+		}
+		rules, sets, customChains = snap.Rules, snap.Sets, snap.CustomChains
+	} else {
+		var err error
+		rules, sets, customChains, err = co.Comp.CompileForNode(ctx, task.NodeID)
+		if err != nil {
+			co.markFailed(ctx, task.ID, "compile: "+err.Error())
+			return err
+		}
 	}
 	deadline := time.Now().Add(confirmDeadline)
 	msg := &myfwv1.ControllerToAgent{
@@ -511,14 +579,28 @@ func (co *Coordinator) handleResult(ctx context.Context, res *myfwv1.TaskResult)
 		co.audit(ctx, "agent", "task.apply_failed", model.AuditSceneNormal, model.AuditResultFailed, []*model.Task{&t}, map[string]any{"msg": res.Message})
 		return
 	}
-	// Agent 确认应用成功:enabled 实例 applied 置 true(本次下发生效);
-	// 手动禁用(非待删)实例 applied 置 false(节点上已被 desired-state 移除);
-	// pending_delete 实例保持不动(在它自己的移除保护期内,等 Confirm 清理或 Rollback 恢复,
-	// 漏洞 S 修复——全量 expr(enabled) 会把待删实例的 applied 误清零)。
-	co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
-		Where("node_id = ? AND enabled = ?", t.NodeID, true).Update("applied", true)
-	co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
-		Where("node_id = ? AND enabled = ? AND pending_delete = ?", t.NodeID, false, false).Update("applied", false)
+	// 回滚任务(RuleSetSnapshot 非空):规则已按历史版本收敛,与当前实例定义不一致,
+	// 实例 applied 全置 false,提示节点规则偏离当前期望(前端黄色未同步),需重新下发收敛。
+	if t.RuleSetSnapshot != "" {
+		co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+			Where("node_id = ?", t.NodeID).Update("applied", false)
+	} else {
+		// Agent 确认应用成功:enabled 实例 applied 置 true(本次下发生效);
+		// 手动禁用(非待删)实例 applied 置 false(节点上已被 desired-state 移除);
+		// pending_delete 实例保持不动(在它自己的移除保护期内,等 Confirm 清理或 Rollback 恢复,
+		// 漏洞 S 修复——全量 expr(enabled) 会把待删实例的 applied 误清零)。
+		co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+			Where("node_id = ? AND enabled = ?", t.NodeID, true).Update("applied", true)
+		co.DB.WithContext(ctx).Model(&model.NodePolicyInstance{}).
+			Where("node_id = ? AND enabled = ? AND pending_delete = ?", t.NodeID, false, false).Update("applied", false)
+	}
+	// 普通任务 Apply 成功(节点规则已收敛):归档规则库版本(计划三)。
+	// 回滚任务不自动归档——路由层已在回滚前手动归档当前版本(便于撤销回滚)。
+	if t.RuleSetSnapshot == "" && co.ArchiveFn != nil {
+		if err := co.ArchiveFn(ctx, t.NodeID, t.ID); err != nil {
+			co.Log.Warn("archive node revision", "node_id", t.NodeID, "task_id", t.ID, "err", err)
+		}
+	}
 
 	// 自愈任务(AutoConfirm):apply 成功即确认,跳过 confirm_wait 保护期。
 	// 这是修复 drift 自愈死循环的核心——自愈是系统行为,无人工确认,若走保护期

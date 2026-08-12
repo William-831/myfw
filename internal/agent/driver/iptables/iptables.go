@@ -686,6 +686,11 @@ func compileRule(r *myfwv1.CompiledRule, chain string) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("rule %q: unsupported action %v", r.Id, r.Action)
 	}
+	// comment 标识(编码规则 Id),供 Agent 采集命中率时反解到实例 ID。
+	// 加在 target 之后,保证 iptables -S 输出位置稳定(hash 稳定)。
+	if r.Id != "" {
+		args = append(args, "-m", "comment", "--comment", "myfw:"+r.Id)
+	}
 	return args, nil
 }
 

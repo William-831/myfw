@@ -118,4 +118,14 @@ export const syncInstancePreview = (id) => service.post(`/v1/instances/${id}/syn
 export const syncAllNode = (nodeId) => service.post(`/v1/nodes/${nodeId}/sync-all`)
 export const dispatchNode = (nodeId, data) => service.post(`/v1/nodes/${nodeId}/dispatch`, data || {})
 
+// 规则库版本档案(计划三:长期快照 + 任意时间点回滚)
+export const getNodeRevisions = (nodeId) => service.get(`/v1/nodes/${nodeId}/revisions`)
+export const rollbackRevision = (nodeId, revNo) => service.post(`/v1/nodes/${nodeId}/revisions/${revNo}/rollback`)
+
+// 流量仿真预演(计划二:输入五元组,预演规则命中路径与最终判定)
+export const simulateFlow = (data) => service.post('/v1/simulate', data)
+
+// 规则活性分析:节点规则命中率(含死规则标记)
+export const getNodeRuleHits = (nodeId) => service.get(`/v1/iptables/rule-hits/${nodeId}`)
+
 export default service
