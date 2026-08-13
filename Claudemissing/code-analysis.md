@@ -63,7 +63,7 @@
 │   ├── router/index.js     # 路由配置
 │   ├── views/              # 12 个页面组件
 │   ├── components/         # 4 个通用组件
-│   ├── composables/        # 3 个 composable（图表/格式化/iptables 解析）
+│   ├── composables/        # 4 个 composable（图表/格式化/iptables 解析/命令预览 buildCommandPreview 模板库与实例列表共用）
 │   ├── stores/             # Pinia 状态管理
 │   └── layout/             # 布局组件
 ├── configs/                # 配置文件
@@ -135,7 +135,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | registerTaskRoutes | task_routes.go:18 | 任务列表/详情 |
 | registerTaskLifecycleRoutes | task_lifecycle_routes.go:16 | 任务审批/确认/回滚 |
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
-| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性);v1.5 POST /templates 忽略前端 id(主键冲突修复)+ requireMarkSource(实例 MARK 源必填,模板可无源骨架)+ 实例化合并 body.source 覆盖 |
+| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性);v1.5 POST /templates 忽略前端 id(主键冲突修复)+ requireMarkSource(实例 MARK 源必填,模板可无源骨架)+ 实例化合并 body.source 覆盖;v1.6 同步保留实例非空定制(orKeepString 模板空值不清空实例有值字段,如源 IP)+ syncOverrideFields(sync-preview 只展示实际覆盖字段) |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
 | registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
 | registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查;v1.4 规则活性分析(计划一):POST /iptables/hits/:node_id(Agent 上报命中率,同实例 max 聚合 upsert RuleHitStat)+ GET /iptables/rule-hits/:node_id(命中率列表+死规则判定,dead=enabled+有统计+packets=0+超 7 天) |

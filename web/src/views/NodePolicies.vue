@@ -277,6 +277,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, VideoPlay } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
 import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, syncInstancePreview, syncAllNode, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask, simulateFlow, getNodeRuleHits } from '@/api'
+import { buildCommandPreview } from '@/composables/useCommandPreview'
 import { useGuardStore } from '@/stores/guard'
 
 const route = useRoute()
@@ -317,48 +318,6 @@ const currentNodeLabel = computed(() => {
 })
 
 const getActionLabel = (a) => ({ ACCEPT: '允许', DROP: '丢弃', REJECT: '拒绝', MARK: '白名单拦截', DNAT: 'DNAT', SNAT: 'SNAT' }[a] || a || '-')
-
-// 命令预览纯函数:根据表单/实例字段拼接底层 iptables 命令(MARK 白名单 3 条骨架,其余单条)
-// 列表项与编辑对话框共用,浏览时直观看到将生成的 iptables 命令,无感教学
-const buildCommandPreview = (f, chains = []) => {
-  // MARK 动作统一走白名单拦截骨架(3条规则),参数未填处用占位符提示
-  if (f.action === 'MARK') {
-    const acl = f.direction === 'INPUT' ? 'MYFW-MARKACL-IN' : 'MYFW-MARKACL-FWD'
-    const pp = f.port_range
-      ? (f.protocol && f.protocol !== 'ANY' ? `-p ${f.protocol.toLowerCase()} --dport ${f.port_range}` : `--dport ${f.port_range}`)
-      : '<请填端口>'
-    const m = f.mark ? String(f.mark) : '<选标记值>'
-    const src = f.source ? `-s ${f.source}`
-      : (f.source_group ? `-m set --match-set MYFW-${f.source_group} src` : '<请填源地址/组>')
-    return [
-      { text: `iptables -t mangle -A MYFW-MARKMANGLE ${pp} -j MARK --set-mark ${m}`, type: 'mark' },
-      { text: `iptables -t filter -A ${acl} ${src} -m mark --mark ${m} -j ACCEPT`, type: 'accept' },
-      { text: `iptables -t filter -A ${acl} -m mark --mark ${m} -j DROP`, type: 'drop' },
-    ]
-  }
-  const cc = chains.find(c => c.id === f.group_id)
-  const table = cc?.table || 'filter'
-  const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
-  const parts = ['iptables', '-t', table, '-A', chain]
-  if (f.source) parts.push('-s', f.source)
-  if (f.destination) parts.push('-d', f.destination)
-  if (f.source_group) parts.push('-m', 'set', '--match-set', 'MYFW-' + f.source_group, 'src')
-  if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
-  if (f.protocol && f.protocol !== 'ANY') {
-    parts.push('-p', f.protocol.toLowerCase())
-    if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)
-  }
-  if (f.action === 'MARK') {
-    parts.push('-j', 'MARK', '--set-mark', String(f.mark || 0))
-  } else if (f.action === 'DNAT') {
-    parts.push('-j', 'DNAT', ...(f.nat_to ? ['--to-destination', f.nat_to] : []))
-  } else if (f.action === 'SNAT') {
-    parts.push('-j', 'SNAT', ...(f.nat_to ? ['--to-source', f.nat_to] : []))
-  } else if (f.action) {
-    parts.push('-j', f.action)
-  }
-  return [{ text: parts.join(' '), type: 'default' }]
-}
 
 // 编辑对话框命令预览:响应式跟踪 instForm 与 customChains
 const previewCommand = computed(() => buildCommandPreview(instForm, customChains.value))
@@ -665,14 +624,14 @@ const saveInst = async () => {
 const handleSync = async (inst) => {
   try {
     // 先调预览接口拿字段级 diff,展示"将覆盖什么"再确认(降低手动同步认知负担)
-    let diffText = '将用模板最新参数覆盖此实例'
+    let diffText = '将同步模板最新参数'
     try {
       const p = await syncInstancePreview(inst.id)
       const fields = p.fields || []
       if (fields.length) {
         diffText = '将覆盖以下字段:<br>' + fields
           .map((f) => `· ${f.label}: ${f.current || '(空)'} → ${f.template || '(空)'}`)
-          .join('<br>')
+          .join('<br>') + '<br><span style="color:#909399">模板空值字段保留实例当前值(如源 IP),不被覆盖</span>'
       } else {
         diffText = '实例与模板当前参数一致,无需同步'
       }

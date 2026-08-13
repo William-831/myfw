@@ -202,6 +202,7 @@ import {
   getMarks, createMark, updateMark, deleteMark,
   exportTemplates, importTemplates
 } from '@/api'
+import { buildCommandPreview } from '@/composables/useCommandPreview'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -261,45 +262,19 @@ const groupedTemplates = computed(() => {
   return groups
 })
 
-// 规则预览:MARK 白名单展示意图描述(实际自动编译 3 条:打标+白名单放行+兜底 DROP),
-// 与后端 compiler 行为一致;其余动作展示底层命令。
+// 规则预览:共用 buildCommandPreview(与实例列表一致,DRY)。
+// MARK 白名单输出真实 3 条 iptables 命令(打标→白名单放行→兜底 DROP),顶部保留意图说明;
+// 其余动作输出单条底层命令。地址组 ipset 名带 MYFW- 前缀(与 driver compileRule 一致)。
 const previewCommand = computed(() => {
   const f = form
+  const lines = buildCommandPreview(f, customChains.value)
   if (f.action === 'MARK') {
-    const pp = f.port_range
-      ? (f.protocol && f.protocol !== 'ANY' ? `${f.protocol} 端口 ${f.port_range}` : `端口 ${f.port_range}`)
-      : '<请填端口>'
-    const m = f.mark ? String(f.mark) : '<选标记值>'
-    const src = f.source ? `源 ${f.source}`
-      : (f.source_group ? `源地址组 ${f.source_group}` : '<请填源地址/组>')
-    const dir = f.direction === 'INPUT' ? '主机入站(INPUT)' : '容器转发(FORWARD)'
     return [
-      { text: `① 打标(平台内置链): 到 ${pp} 的流量盖标记 ${m}`, type: 'mark' },
-      { text: `② 白名单放行: ${src} 且带标记 ${m} -> 允许`, type: 'accept' },
-      { text: `③ 兜底拒绝: 带标记 ${m} 的其余流量 -> 丢弃`, type: 'drop' },
-      { text: `流量方向: ${dir}`, type: 'default' },
+      { text: 'MARK 白名单 = 打标 → 白名单放行 → 兜底 DROP(模板骨架,实例化时补源地址/标记值)', type: 'default' },
+      ...lines,
     ]
   }
-  const cc = customChains.value.find((c) => c.id === f.group_id)
-  const table = cc?.table || 'filter'
-  const chain = cc ? `MYFW-${cc.name}` : 'MYFW-INPUT'
-  const parts = ['iptables', '-t', table, '-A', chain]
-  if (f.source) parts.push('-s', f.source)
-  if (f.destination) parts.push('-d', f.destination)
-  if (f.source_group) parts.push('-m', 'set', '--match-set', f.source_group, 'src')
-  if (f.destination_group) parts.push('-m', 'set', '--match-set', f.destination_group, 'dst')
-  if (f.protocol && f.protocol !== 'ANY') {
-    parts.push('-p', f.protocol.toLowerCase())
-    if (f.port_range && f.protocol !== 'ICMP') parts.push('--dport', f.port_range)
-  }
-  if (f.action === 'DNAT') {
-    parts.push('-j', 'DNAT', ...(f.nat_to ? ['--to-destination', f.nat_to] : []))
-  } else if (f.action === 'SNAT') {
-    parts.push('-j', 'SNAT', ...(f.nat_to ? ['--to-source', f.nat_to] : []))
-  } else if (f.action) {
-    parts.push('-j', f.action)
-  }
-  return [{ text: parts.join(' '), type: 'default' }]
+  return lines
 })
 
 const loadTemplates = async () => {

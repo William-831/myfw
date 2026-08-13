@@ -478,8 +478,9 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
 			return
 		}
+		// 只展示 sync 实际会覆盖的字段(模板空值保留实例值的字段不出现,避免误导)
 		fields := make([]gin.H, 0)
-		for _, f := range instanceDiffFields(&inst, &tpl) {
+		for _, f := range syncOverrideFields(&inst, &tpl) {
 			fields = append(fields, gin.H{
 				"field":    f,
 				"label":    instFieldLabel(f),
@@ -653,27 +654,83 @@ func instanceDeviated(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate)
 	return len(instanceDiffFields(inst, tpl)) > 0
 }
 
-// applyTemplateToInstance 用模板最新参数全量覆盖实例规则字段(漏洞 E 修复语义)。
+// applyTemplateToInstance 用模板最新参数覆盖实例规则字段(保留实例非空定制语义)。
+// 字符串字段模板非空才覆盖(orKeepString:模板空值保留实例特化值,如源 IP,不被清空);
+// 数值字段(group_id/mark/match_mark/priority)与 action 模板值直接覆盖。
 // 实例名/启用/删除流程状态是实例特有保留;applied 置 false 待下发;spec 快照更新到模板最新。
 // sync(单条)与 sync-all(批量)共用,避免同步逻辑分叉。
 func applyTemplateToInstance(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) {
 	inst.GroupID = tpl.GroupID
-	inst.Direction = tpl.Direction
-	inst.Source = tpl.Source
-	inst.Destination = tpl.Destination
-	inst.Protocol = tpl.Protocol
-	inst.PortRange = tpl.PortRange
+	inst.Direction = orKeepString(inst.Direction, tpl.Direction)
+	inst.Source = orKeepString(inst.Source, tpl.Source)
+	inst.Destination = orKeepString(inst.Destination, tpl.Destination)
+	inst.Protocol = orKeepString(inst.Protocol, tpl.Protocol)
+	inst.PortRange = orKeepString(inst.PortRange, tpl.PortRange)
 	inst.Action = tpl.Action
 	inst.Mark = tpl.Mark
-	inst.NatTo = tpl.NatTo
-	inst.SourceGroup = tpl.SourceGroup
-	inst.DestinationGroup = tpl.DestinationGroup
+	inst.NatTo = orKeepString(inst.NatTo, tpl.NatTo)
+	inst.SourceGroup = orKeepString(inst.SourceGroup, tpl.SourceGroup)
+	inst.DestinationGroup = orKeepString(inst.DestinationGroup, tpl.DestinationGroup)
 	inst.MatchMark = tpl.MatchMark
 	inst.Priority = tpl.Priority
-	inst.Description = tpl.Description
+	inst.Description = orKeepString(inst.Description, tpl.Description)
 	inst.Applied = false
 	inst.SyncedSpecVersion = tpl.SpecVersion
 	inst.SyncedTemplateUpdatedAt = tpl.UpdatedAt
+}
+
+// orKeepString 模板值非空才覆盖,否则保留实例当前值。
+// 有意回调漏洞 E 的"模板字段清空传播到实例":实例特化值(源 IP/端口等)优先于模板空值,
+// 避免同步模板覆盖掉实例应用到节点的定制内容。
+func orKeepString(cur, tpl string) string {
+	if tpl != "" {
+		return tpl
+	}
+	return cur
+}
+
+// syncOverrideFields 返回 sync 时将实际被模板覆盖的字段(供 sync-preview 展示真实"将覆盖"清单)。
+// 与 applyTemplateToInstance 覆盖语义一致:字符串字段模板非空且与实例不一致才算覆盖
+// (模板空值保留实例值,不出现在预览);数值字段直接比不等。避免预览展示"将覆盖"但实际保留的误导。
+func syncOverrideFields(inst *model.NodePolicyInstance, tpl *model.PolicyTemplate) []string {
+	var fields []string
+	if inst.GroupID != tpl.GroupID {
+		fields = append(fields, "group_id")
+	}
+	if tpl.Direction != "" && inst.Direction != tpl.Direction {
+		fields = append(fields, "direction")
+	}
+	if tpl.Source != "" && inst.Source != tpl.Source {
+		fields = append(fields, "source")
+	}
+	if tpl.Destination != "" && inst.Destination != tpl.Destination {
+		fields = append(fields, "destination")
+	}
+	if tpl.Protocol != "" && inst.Protocol != tpl.Protocol {
+		fields = append(fields, "protocol")
+	}
+	if tpl.PortRange != "" && inst.PortRange != tpl.PortRange {
+		fields = append(fields, "port_range")
+	}
+	if inst.Mark != tpl.Mark {
+		fields = append(fields, "mark")
+	}
+	if tpl.NatTo != "" && inst.NatTo != tpl.NatTo {
+		fields = append(fields, "nat_to")
+	}
+	if tpl.SourceGroup != "" && inst.SourceGroup != tpl.SourceGroup {
+		fields = append(fields, "source_group")
+	}
+	if tpl.DestinationGroup != "" && inst.DestinationGroup != tpl.DestinationGroup {
+		fields = append(fields, "destination_group")
+	}
+	if inst.MatchMark != tpl.MatchMark {
+		fields = append(fields, "match_mark")
+	}
+	if inst.Priority != tpl.Priority {
+		fields = append(fields, "priority")
+	}
+	return fields
 }
 
 // instFieldLabel 规则字段中文名(sync 预览/偏离 tooltip 展示用)。

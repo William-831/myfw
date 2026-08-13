@@ -175,8 +175,8 @@ func TestInstanceDriftSpecVersion(t *testing.T) {
 	}
 }
 
-// TestSyncInstanceFullOverwrite 验证 sync 全量覆盖实例规则字段(漏洞 E 修复):
-// 模板字段清空也能传播到实例,不再是"非空才覆盖"造成的假同步;
+// TestSyncInstanceFullOverwrite 验证 sync 覆盖语义(模板空值保留实例非空字段):
+// 模板 Source 为空时实例 Source 保留节点特化值(如 IP),不被模板清空;
 // 实例名/启用状态保留,applied 置 false 待下发,sync 版本快照更新。
 func TestSyncInstanceFullOverwrite(t *testing.T) {
 	gdb, err := db.Open(db.Config{
@@ -197,7 +197,7 @@ func TestSyncInstanceFullOverwrite(t *testing.T) {
 		ID: 1, Name: "tpl", GroupID: 5, Source: "", Protocol: "TCP",
 		Action: "ACCEPT", SpecVersion: 2,
 	})
-	// 实例:Source 保留旧值(节点特有,旧版 sync 不覆盖),SyncedSpecVersion=1(旧)
+	// 实例:Source 有节点特化值(如 IP),SyncedSpecVersion=1(旧)
 	gdb.Create(&model.NodePolicyInstance{
 		ID: 1, NodeID: "n1", TemplateID: 1, Name: "inst",
 		Source: "1.1.1.1", Protocol: "TCP", Action: "ACCEPT",
@@ -216,8 +216,8 @@ func TestSyncInstanceFullOverwrite(t *testing.T) {
 	if err := gdb.First(&inst, 1).Error; err != nil {
 		t.Fatalf("查实例: %v", err)
 	}
-	if inst.Source != "" {
-		t.Fatalf("sync 应全量覆盖,模板 Source 为空则实例 Source 应为空, got %q", inst.Source)
+	if inst.Source != "1.1.1.1" {
+		t.Fatalf("模板 Source 为空应保留实例非空字段, got %q", inst.Source)
 	}
 	if inst.SyncedSpecVersion != 2 {
 		t.Fatalf("sync 后 SyncedSpecVersion 应=模板 SpecVersion(2), got %d", inst.SyncedSpecVersion)
@@ -227,6 +227,70 @@ func TestSyncInstanceFullOverwrite(t *testing.T) {
 	}
 	if inst.Name != "inst" || !inst.Enabled {
 		t.Fatal("sync 不应改实例名/启用状态")
+	}
+}
+
+// TestSyncKeepsInstanceNonEmptyWhenTemplateEmpty 验证同步覆盖语义的字段级行为:
+// 字符串字段模板空值保留实例值(source/port_range),模板非空覆盖(action),
+// 数值字段模板值直接覆盖(mark/priority)。
+func TestSyncKeepsInstanceNonEmptyWhenTemplateEmpty(t *testing.T) {
+	gdb, err := db.Open(db.Config{
+		Driver:       db.DriverSQLite,
+		DSN:          "file::memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+		LogLevel:     gormlogger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Migrate(gdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// 模板:source/port_range 为空(骨架),action=DROP 非空,mark=15/priority=20 数值权威
+	gdb.Create(&model.PolicyTemplate{
+		ID: 2, Name: "tpl2", GroupID: 5, Source: "", PortRange: "", Action: "DROP",
+		Mark: 15, Priority: 20, SpecVersion: 2,
+	})
+	// 实例:source/port_range 有节点特化值(IP/端口),action 旧值,mark/priority 旧值
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 2, NodeID: "n1", TemplateID: 2, Name: "inst2",
+		Source: "192.168.1.0/24", PortRange: "22", Action: "ACCEPT",
+		Mark: 5, Priority: 10, Enabled: true, Applied: true, SyncedSpecVersion: 1,
+	})
+	h := BuildWebHandler(gdb, time.Minute)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/2/sync", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var inst model.NodePolicyInstance
+	if err := gdb.First(&inst, 2).Error; err != nil {
+		t.Fatalf("查实例: %v", err)
+	}
+	if inst.Source != "192.168.1.0/24" {
+		t.Fatalf("模板 source 为空应保留实例值, got %q", inst.Source)
+	}
+	if inst.PortRange != "22" {
+		t.Fatalf("模板 port_range 为空应保留实例值, got %q", inst.PortRange)
+	}
+	if inst.Action != "DROP" {
+		t.Fatalf("模板 action 非空应覆盖, got %q", inst.Action)
+	}
+	if inst.Mark != 15 {
+		t.Fatalf("模板 mark 数值应直接覆盖, got %d", inst.Mark)
+	}
+	if inst.Priority != 20 {
+		t.Fatalf("模板 priority 数值应直接覆盖, got %d", inst.Priority)
+	}
+	if inst.Applied {
+		t.Fatal("sync 后 applied 应置 false 待下发")
+	}
+	if inst.SyncedSpecVersion != 2 {
+		t.Fatalf("sync 后 SyncedSpecVersion 应=2, got %d", inst.SyncedSpecVersion)
 	}
 }
 
