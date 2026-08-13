@@ -44,7 +44,6 @@
                 <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
                 <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点(全量对齐)</el-button>
                 <el-button size="small" type="warning" @click="handleSyncAll" :disabled="!selectedNodeId || !driftInstanceCount" :loading="syncingAll">同步全部漂移({{ driftInstanceCount }})</el-button>
-                <el-button size="small" type="info" @click="openSimulate" :disabled="!selectedNodeId"><el-icon><Monitor /></el-icon>流量预演</el-button>
                 <el-checkbox v-model="onlyDead" size="small" class="dead-filter">仅看死规则</el-checkbox>
               </div>
             </div>
@@ -83,6 +82,7 @@
                   <el-switch :model-value="inst.enabled" size="small" @change="(v) => toggleEnabled(inst, v)" />
                 </div>
                 <div class="actions">
+                  <el-button size="small" text type="primary" @click="openInstSimulate(inst)"><el-icon><VideoPlay /></el-icon>预演</el-button>
                   <el-button size="small" text type="warning" @click="openEditInst(inst)">编辑参数</el-button>
                   <el-button v-if="inst.drift" size="small" text type="primary" @click="handleSync(inst)">同步模板</el-button>
                   <el-button size="small" text type="danger" :disabled="inst.pending_delete" @click="handleDeleteInst(inst)">移除</el-button>
@@ -97,60 +97,75 @@
       </el-col>
     </el-row>
 
-    <!-- 流量预演(计划二:五元组仿真命中路径) -->
-    <el-dialog v-model="simVisible" :title="'流量预演 — ' + currentNodeLabel" width="560px">
-      <el-form label-width="90px">
-        <el-form-item label="方向">
-          <el-select v-model="simForm.direction" style="width: 100%">
-            <el-option label="入站 INPUT" value="INPUT" />
-            <el-option label="转发 FORWARD" value="FORWARD" />
-            <el-option label="出站 OUTPUT" value="OUTPUT" />
-          </el-select>
-        </el-form-item>
-        <div class="form-row">
-          <el-form-item label="源 IP" class="form-col"><el-input v-model="simForm.source_ip" placeholder="如 192.168.1.5,空=任意" /></el-form-item>
-          <el-form-item label="目的 IP" class="form-col"><el-input v-model="simForm.dest_ip" placeholder="如 10.0.0.1,空=任意" /></el-form-item>
-        </div>
-        <div class="form-row">
-          <el-form-item label="协议" class="form-col">
-            <el-select v-model="simForm.protocol" style="width: 100%">
+    <!-- 单条策略流量预演(计划二):预期目标 vs 实际模拟通道 -->
+    <el-drawer v-model="simVisible" :title="'流量预演 - ' + (simInst?.name || '')" size="68%" direction="rtl" destroy-on-close>
+      <div class="sim-layout">
+        <div class="sim-form-bar">
+          <div class="sim-fields">
+            <el-select v-model="simForm.direction" style="width: 112px">
+              <el-option label="入站 INPUT" value="INPUT" />
+              <el-option label="转发 FORWARD" value="FORWARD" />
+              <el-option label="出站 OUTPUT" value="OUTPUT" />
+            </el-select>
+            <el-input v-model="simForm.source_ip" placeholder="源 IP,空=任意" clearable style="width: 132px" />
+            <el-input v-model="simForm.dest_ip" placeholder="目的 IP,空=任意" clearable style="width: 132px" />
+            <el-select v-model="simForm.protocol" style="width: 96px">
               <el-option label="TCP" value="tcp" />
               <el-option label="UDP" value="udp" />
               <el-option label="ICMP" value="icmp" />
               <el-option label="任意" value="" />
             </el-select>
-          </el-form-item>
-          <el-form-item label="目的端口" class="form-col"><el-input-number v-model="simForm.dst_port" :min="0" :max="65535" controls-position="right" style="width: 100%" /></el-form-item>
-        </div>
-        <div class="form-row">
-          <el-form-item label="源端口" class="form-col"><el-input-number v-model="simForm.src_port" :min="0" :max="65535" controls-position="right" style="width: 100%" /></el-form-item>
-        </div>
-        <span class="form-hint">基于该节点当前期望规则集(编译产物)做 filter 表无状态匹配;NAT/mangle 仅提示不模拟,连接状态(ESTABLISHED)不建模。</span>
-      </el-form>
-      <div v-if="simResult" class="sim-result" :class="'verdict-' + simResult.verdict.toLowerCase()">
-        <div class="sim-verdict">
-          最终判定:
-          <el-tag :type="verdictTagType(simResult.verdict)" size="large" effect="dark">{{ simResult.verdict }}</el-tag>
-        </div>
-        <div v-if="simResult.steps.length" class="sim-steps">
-          <div class="sim-steps-title">命中路径(按遍历顺序)</div>
-          <div v-for="(s, i) in simResult.steps" :key="i" class="sim-step" :class="{ 'is-hit': s.matched }">
-            <span class="sim-idx">{{ i + 1 }}</span>
-            <span class="sim-chain">{{ s.chain }}</span>
-            <span class="sim-action" :class="s.matched ? 'hit' : ''">{{ s.action }}</span>
-            <span class="sim-rule">{{ s.rule_id }}</span>
-            <el-tag v-if="s.matched" size="small" type="success">命中</el-tag>
-            <span v-if="s.note" class="sim-note">{{ s.note }}</span>
+            <el-input-number v-model="simForm.dst_port" :min="0" :max="65535" controls-position="right" style="width: 110px" placeholder="目的端口" />
+            <el-button type="primary" @click="handleSimulate" :loading="simLoading">预演</el-button>
           </div>
+          <div class="sim-form-hint">按该节点当前期望规则集做 filter 表无状态匹配;方向已按策略所在链推断,可改;NAT/mangle 仅提示不模拟。</div>
         </div>
-        <div v-else class="sim-empty">无规则参与匹配</div>
-        <div v-if="simResult.note" class="sim-note-line">{{ simResult.note }}</div>
+        <el-row :gutter="16" class="sim-body">
+          <el-col :span="9">
+            <div class="sim-panel sim-expected">
+              <div class="sim-panel-title">你的预期目标</div>
+              <div v-if="simInst" class="expected-detail">
+                <div class="exp-row"><span class="exp-lbl">实例</span>{{ simInst.name }}</div>
+                <div class="exp-row"><span class="exp-lbl">协议</span>{{ (simInst.protocol || 'ANY').toUpperCase() }}</div>
+                <div class="exp-row"><span class="exp-lbl">端口</span>{{ simInst.port_range || '任意' }}</div>
+                <div class="exp-row"><span class="exp-lbl">源</span>{{ simInst.source_group || simInst.source || '任意' }}</div>
+                <div class="exp-row"><span class="exp-lbl">目的</span>{{ simInst.destination || '任意' }}</div>
+                <div class="exp-row"><span class="exp-lbl">动作</span><span class="exp-action" :class="(simInst.action || '').toLowerCase()">{{ getActionLabel(simInst.action) }}</span></div>
+                <div class="expected-verdict">预期: {{ expectedText(simInst) }}</div>
+              </div>
+            </div>
+          </el-col>
+          <el-col :span="15">
+            <div class="sim-panel sim-actual">
+              <div class="sim-panel-title">实际模拟过程和结果</div>
+              <div v-if="simResult" :class="['sim-channel', 'channel-' + simResult.verdict.toLowerCase()]" :style="{ '--hit-x': hitX }">
+                <div class="channel-track">
+                  <div class="channel-enter">入口</div>
+                  <template v-for="(s, i) in simResult.steps" :key="i">
+                    <div class="channel-arrow">→</div>
+                    <div class="sim-node" :class="{ matched: s.matched, terminal: isTerminalStep(i) }">
+                      <div class="node-chain">{{ s.chain }}</div>
+                      <div class="node-action" :class="s.action.toLowerCase()">{{ s.action }}</div>
+                      <div class="node-rule">{{ s.rule_id }}</div>
+                      <el-tag v-if="s.matched" size="small" :type="nodeTagType(s)">{{ s.action === 'MARK' ? '打标' : '命中' }}</el-tag>
+                      <div v-if="s.note" class="node-note">{{ s.note }}</div>
+                    </div>
+                  </template>
+                  <div class="channel-arrow">→</div>
+                  <div class="sim-node terminal end" :class="'end-' + simResult.verdict.toLowerCase()">
+                    <div class="node-verdict">{{ simResult.verdict }}</div>
+                  </div>
+                </div>
+                <div v-if="simResult.steps.length" class="sim-pulse" />
+                <div v-if="!simResult.steps.length" class="sim-empty">无规则参与匹配</div>
+                <div v-if="simResult.note" class="sim-note-line">{{ simResult.note }}</div>
+              </div>
+              <div v-else class="sim-actual-empty">预填了该策略的五元组,点击"预演"查看流量在节点规则集内的实际走向</div>
+            </div>
+          </el-col>
+        </el-row>
       </div>
-      <template #footer>
-        <el-button @click="simVisible = false">关闭</el-button>
-        <el-button type="primary" @click="handleSimulate" :loading="simLoading">预演</el-button>
-      </template>
-    </el-dialog>
+    </el-drawer>
 
     <!-- 从模板实例化 -->
     <el-dialog v-model="instantiateVisible" title="从模板实例化" width="480px">
@@ -259,7 +274,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Monitor } from '@element-plus/icons-vue'
+import { Plus, VideoPlay } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
 import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, syncInstancePreview, syncAllNode, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask, simulateFlow, getNodeRuleHits } from '@/api'
 import { useGuardStore } from '@/stores/guard'
@@ -455,24 +470,78 @@ const selectNode = (n) => {
   loadInstances()
 }
 
-// 流量预演(计划二):五元组仿真当前节点期望规则的命中路径
+// 单条策略流量预演(计划二):五元组仿真,预期目标 vs 实际命中路径
 const simVisible = ref(false)
 const simLoading = ref(false)
 const simResult = ref(null)
-const simForm = reactive({ direction: 'INPUT', source_ip: '', dest_ip: '', protocol: 'tcp', src_port: 0, dst_port: 8080 })
+const simInst = ref(null)
+const simForm = reactive({ direction: 'FORWARD', source_ip: '', dest_ip: '', protocol: 'tcp', src_port: 0, dst_port: 0, mark: 0 })
 
-const openSimulate = () => {
-  simForm.direction = 'INPUT'
-  simForm.source_ip = ''
-  simForm.dest_ip = ''
-  simForm.protocol = 'tcp'
+// 从实例反推五元组:CIDR 取首个 IP / 端口区间取最小值
+const pickFirstIp = (cidr) => (cidr ? cidr.split('/')[0] : '')
+const parseFirstPort = (range) => {
+  if (!range) return 0
+  const p = parseInt(range.split('-')[0], 10)
+  return Number.isNaN(p) ? 0 : p
+}
+
+// 推断方向:按实例所属组链挂载(parent)推断,兜底 FORWARD
+const inferDirection = (inst) => {
+  const cc = customChains.value.find((c) => String(c.id) === String(inst.group_id))
+  const mounts = cc?.mount_list || cc?.mounts || []
+  const candidates = [...mounts.map((m) => m.parent), cc?.parent].filter(Boolean)
+  for (const p of candidates) {
+    const up = String(p).toUpperCase()
+    if (up.includes('INPUT')) return 'INPUT'
+    if (up.includes('FORWARD')) return 'FORWARD'
+    if (up.includes('OUTPUT')) return 'OUTPUT'
+  }
+  return 'FORWARD'
+}
+
+const openInstSimulate = (inst) => {
+  simInst.value = inst
+  simForm.direction = inferDirection(inst)
+  simForm.source_ip = inst.source_group ? '' : pickFirstIp(inst.source)
+  simForm.dest_ip = inst.destination || ''
+  simForm.protocol = (inst.protocol || 'tcp').toLowerCase()
+  simForm.dst_port = parseFirstPort(inst.port_range)
   simForm.src_port = 0
-  simForm.dst_port = 8080
+  simForm.mark = 0
   simResult.value = null
   simVisible.value = true
 }
 
-const verdictTagType = (v) => ({ ACCEPT: 'success', DROP: 'danger', REJECT: 'warning', PASS: 'info' }[v] || 'info')
+// 预期目标文案(左侧"你的预期目标")
+const expectedText = (inst) => {
+  const a = (inst.action || '').toUpperCase()
+  if (a === 'MARK') return '打标后由 MARKACL 白名单链放行;非白名单源将兜底 DROP'
+  if (a === 'ACCEPT') return '该流量将被放行(ACCEPT)'
+  if (a === 'DROP') return '该流量将被拦截(DROP)'
+  if (a === 'REJECT') return '该流量将被拒绝(REJECT)'
+  return a || '—'
+}
+
+// 命中终止的 step 索引(DROP/REJECT 光点停止位置)
+const hitStopIndex = computed(() => {
+  if (!simResult.value?.steps?.length) return -1
+  let idx = -1
+  simResult.value.steps.forEach((s, i) => { if (s.matched) idx = i })
+  return idx
+})
+const hitX = computed(() => {
+  const v = simResult.value?.verdict
+  if ((v === 'DROP' || v === 'REJECT') && hitStopIndex.value >= 0) {
+    const n = simResult.value.steps.length
+    return `${Math.min(100, Math.round(((hitStopIndex.value + 1) / n) * 100))}%`
+  }
+  return '92%' // ACCEPT/PASS 光点走到底
+})
+const isTerminalStep = (i) => {
+  const v = simResult.value?.verdict
+  return (v === 'DROP' || v === 'REJECT') && i === hitStopIndex.value
+}
+const nodeTagType = (s) => ({ MARK: 'info', ACCEPT: 'success', DROP: 'danger', REJECT: 'warning' }[s.action] || 'info')
 
 const handleSimulate = async () => {
   if (!selectedNodeId.value) return
@@ -773,22 +842,102 @@ watch(() => route.query.node, async (nodeId) => {
 .form-col { flex: 1; }
 .form-hint { display: block; margin-top: -8px; padding-left: 90px; font-size: 12px; color: var(--c-text-3); }
 
-/* 流量预演结果 */
-.sim-result { margin-top: 12px; border: 1px solid var(--c-bg); border-radius: 6px; padding: 10px; background: var(--c-surface); }
-.sim-verdict { font-size: 13px; color: var(--c-text-1); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-.sim-steps-title { font-size: 12px; color: var(--c-text-3); margin-bottom: 6px; }
-.sim-steps { max-height: 240px; overflow-y: auto; }
-.sim-step { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 4px; color: var(--c-text-3); font-family: 'Courier New', monospace; }
-.sim-step.is-hit { background: rgba(74, 222, 128, 0.08); color: var(--c-text-1); }
-.sim-idx { color: var(--c-text-3); width: 18px; flex-shrink: 0; }
-.sim-chain { color: #60a5fa; }
-.sim-action { flex-shrink: 0; }
-.sim-action.hit { color: #4ade80; font-weight: 600; }
-.sim-rule { flex: 1; }
-.sim-note { color: #fbbf24; font-size: 11px; }
-.sim-note-line { margin-top: 8px; font-size: 12px; color: var(--c-text-3); }
-.sim-empty { font-size: 12px; color: var(--c-text-3); }
-.verdict-accept { border-color: rgba(74, 222, 128, 0.5); }
-.verdict-drop { border-color: rgba(248, 113, 113, 0.5); }
-.verdict-reject { border-color: rgba(251, 191, 36, 0.5); }
+/* 单条策略流量预演:抽屉布局 + 通道流程图 */
+.sim-layout { display: flex; flex-direction: column; gap: 14px; height: 100%; }
+.sim-form-bar { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--c-surface); }
+.sim-fields { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sim-form-hint { font-size: 12px; color: var(--c-text-3); }
+.sim-body { flex: 1; min-height: 0; margin-top: 0 !important; }
+.sim-panel { height: 100%; border: 1px solid var(--el-border-color-light); border-radius: 8px; padding: 14px; background: var(--c-surface); }
+.sim-panel-title { font-size: 13px; font-weight: 600; color: var(--c-text-1); margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--el-border-color-lighter); }
+
+/* 左侧:预期目标 */
+.expected-detail { font-size: 13px; color: var(--c-text-2); }
+.exp-row { display: flex; gap: 8px; margin-bottom: 6px; }
+.exp-lbl { width: 42px; color: var(--c-text-3); flex-shrink: 0; }
+.exp-action { font-weight: 600; }
+.exp-action.accept { color: #16a34a; }
+.exp-action.drop { color: #dc2626; }
+.exp-action.reject { color: #d97706; }
+.exp-action.mark { color: #2563eb; }
+.expected-verdict { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: var(--c-bg); font-size: 12px; color: var(--c-text-2); line-height: 1.6; }
+
+/* 右侧:实际模拟通道(浅灰网格底纹 + 光点动画) */
+.sim-actual-empty { font-size: 13px; color: var(--c-text-3); text-align: center; padding: 40px 0; }
+.sim-channel {
+  position: relative;
+  background: #f5f7fa;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.045) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(90deg, rgba(0,0,0,.045) 0 1px, transparent 1px 26px);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  padding: 22px 14px 16px;
+  overflow: hidden;
+  --stop-x: 92%;
+  --pulse-color: #909399;
+}
+.channel-accept { --pulse-color: #67c23a; border-color: rgba(103,194,58,.55); }
+.channel-drop { --stop-x: var(--hit-x); --pulse-color: #f56c6c; border-color: rgba(245,108,108,.55); }
+.channel-reject { --stop-x: var(--hit-x); --pulse-color: #e6a23c; border-color: rgba(230,162,60,.55); }
+
+.channel-track { display: flex; align-items: stretch; gap: 6px; min-height: 96px; }
+.channel-enter { align-self: center; font-size: 11px; color: var(--c-text-3); border: 1px dashed var(--el-border-color); border-radius: 10px; padding: 10px 5px; writing-mode: vertical-lr; letter-spacing: 2px; flex-shrink: 0; }
+.channel-arrow { align-self: center; color: var(--c-text-3); font-size: 14px; flex-shrink: 0; }
+
+.sim-node {
+  flex: 1;
+  min-width: 84px;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 11px;
+  color: var(--c-text-3);
+  opacity: .82;
+  justify-content: center;
+  transition: all .25s;
+}
+.sim-node .node-chain { color: #94a3b8; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'Courier New', monospace; }
+.sim-node .node-action { font-weight: 700; font-size: 12px; }
+.sim-node .node-rule { font-family: 'Courier New', monospace; }
+.sim-node .node-note { font-size: 10px; color: #f59e0b; }
+.sim-node.matched { opacity: 1; border-color: #60a5fa; background: #eff6ff; box-shadow: 0 0 0 1px #60a5fa inset; }
+.sim-node.matched .node-action.accept { color: #16a34a; }
+.sim-node.matched .node-action.drop { color: #dc2626; }
+.sim-node.matched .node-action.reject { color: #d97706; }
+.sim-node.matched .node-action.mark { color: #2563eb; }
+.sim-node.terminal { border-width: 2px; }
+
+.sim-node.end { background: #fff; text-align: center; }
+.sim-node.end .node-verdict { font-weight: 800; font-size: 15px; }
+.end-accept { border-color: #67c23a; background: #f0f9eb !important; }
+.end-accept .node-verdict { color: #16a34a; }
+.end-drop { border-color: #f56c6c; background: #fef0f0 !important; }
+.end-drop .node-verdict { color: #dc2626; }
+.end-reject { border-color: #e6a23c; background: #fdf6ec !important; }
+.end-reject .node-verdict { color: #d97706; }
+.end-pass { border-color: var(--el-border-color); }
+.end-pass .node-verdict { color: var(--c-text-3); }
+
+/* 光点:从左到右穿过通道;遇拦截(DROP/REJECT)停在命中位置,遇放行到终点 */
+.sim-pulse {
+  position: absolute;
+  top: 50%; left: 0;
+  width: 13px; height: 13px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--pulse-color);
+  box-shadow: 0 0 12px 4px var(--pulse-color);
+  animation: flow-run 2.2s cubic-bezier(.4,0,.2,1) forwards;
+  pointer-events: none;
+}
+@keyframes flow-run {
+  from { left: 6px; }
+  to   { left: var(--stop-x); }
+}
+
+.sim-empty { font-size: 12px; color: var(--c-text-3); margin-top: 10px; }
+.sim-note-line { margin-top: 10px; font-size: 12px; color: var(--c-text-3); line-height: 1.6; }
 </style>

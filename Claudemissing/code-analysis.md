@@ -263,7 +263,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | /nodes | Nodes.vue | 节点管理（列表/添加/编辑/删除/审批/规则查看） |
 | /policies | NodePolicies.vue | 策略管理 |
 | /templates | TemplateLibrary.vue | 策略模板库 |
-| /node-policies | NodePolicies.vue | 节点策略实例(含流量预演面板:五元组仿真命中路径,计划二) |
+| /node-policies | NodePolicies.vue | 节点策略实例(含单条策略预演抽屉:预期目标 vs 实际模拟通道流程图,五元组仿真命中路径,计划二) |
 | /address-groups | AddressGroups.vue | 地址组 |
 | /custom-chains | CustomChains.vue | 自定义链 |
 | /approve | Approve.vue | 审批任务 |
