@@ -26,6 +26,12 @@ type Compiler struct {
 
 func New(db *gorm.DB) *Compiler { return &Compiler{DB: db} }
 
+// markAclDropOffset 是 MARK 白名单兜底 DROP 规则相对实例 priority 的远偏移量,
+// 确保兜底 DROP 在所有白名单 ACCEPT 之后评估。同端口多实例(不同源组、不同 mark)
+// 时,实例 A 的兜底 DROP 不会误杀实例 B 的白名单成员--B 的 ACCEPT(priority 较小)
+// 在前已放行。偏移足够大以覆盖单节点合理的实例规模,避免跨实例 priority 交错。
+const markAclDropOffset = 1 << 20
+
 // CompileForNode returns the ordered list of CompiledRule that apply to
 // nodeID, plus the AddressSets and CustomChains referenced, derived from every
 // ENABLED policy whose targets include the node. All slices are stable
@@ -375,22 +381,22 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent, ch
 	rules := []*myfwv1.CompiledRule{main}
 
 	// MARK 白名单拦截:填了源地址组+端口,自动生成完整拦截链(对用户透明,落平台内置链):
-	//   1. 打标(内置 mangle 链 MARKMANGLE):只匹配目的端口,给所有源打标--清空 source/
-	//      source_group,否则非白名单不打标,兜底 DROP 匹配不到,拦截失效。DNAT 前 dport
-	//      仍是宿主端口。实现"端口标识"。
-	//   2. 白名单+标 -> ACCEPT(内置 filter 链,优先级 P):源地址组控制放行,实现"源IP管控"。
-	//   3. 标 -> DROP 兜底(优先级 P+1,白名单先匹配,其余带标包拒绝)。
+	//   1. 打标(内置 mangle 链 MARKMANGLE):按目的端口+源(白名单源)打标--保留
+	//      source/source_group 作为匹配条件,使同端口多实例(不同源组、不同 mark)互不覆盖:
+	//      每条打标规则只给本实例白名单源打本实例 mark。清空 destination/match_mark
+	//      (打标不匹配目的、不匹配已打标)。DNAT 前 dport 仍是宿主端口。
+	//   2. 白名单+标 -> ACCEPT(内置 filter 链,优先级 P):源 + mark 双重校验放行。
+	//   3. 兜底 DROP(优先级 P+offset,带端口、不带 mark):在所有白名单 ACCEPT 之后,
+	//      拦截"访问该端口但未命中任何白名单"的流量。priority 远偏移确保跨实例时
+	//      实例 A 的兜底 DROP 不会误杀实例 B 的白名单成员(B 的 ACCEPT 在前已放行)。
 	// 流量方向决定过滤链落点:FORWARD(容器转发)->MARKACL-FWD,INPUT(主机入站)->MARKACL-IN。
 	if rulespec.IsMarkWhitelist(inst.Action, inst.Source, inst.SourceGroup, inst.PortRange) {
-		// 打标只匹配目的端口:清空 source/source_group/destination/match_mark,
-		// 否则旧数据残留(如 destination/match_mark)会让打标规则带额外条件,
-		// 非白名单不打标,兜底 DROP 匹配不到,拦截失效。
-		main.Source = ""
-		main.SourceGroup = ""
+		// 打标保留 source/source_group(只给白名单源打标,多实例不覆盖);
+		// 清空 destination/match_mark(打标不匹配目的、不匹配已打标)。
 		main.Destination = ""
 		main.MatchMark = 0
 		main.Chain = "MARKMANGLE"
-		main.Description = inst.Description + " (白名单打标:按端口)"
+		main.Description = inst.Description + " (白名单打标:按端口+源)"
 		aclChain := "MARKACL-FWD"
 		aclDir := myfwv1.Direction_DIRECTION_FORWARD
 		if inst.Direction == "INPUT" {
@@ -413,10 +419,10 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent, ch
 			&myfwv1.CompiledRule{
 				Id:          base + "-drop",
 				Direction:   aclDir,
-				MatchMark:   inst.Mark,
+				PortRange:   inst.PortRange,
 				Action:      myfwv1.Action_ACTION_DROP,
 				Chain:       aclChain,
-				Priority:    int32(inst.Priority) + 1,
+				Priority:    int32(inst.Priority) + markAclDropOffset,
 				Description: "白名单兜底拒绝: " + inst.Description,
 			},
 		)

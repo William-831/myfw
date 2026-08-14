@@ -145,7 +145,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
 | registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
 | registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查;v1.4 规则活性分析(计划一):POST /iptables/hits/:node_id(Agent 上报命中率,同实例 max 聚合 upsert RuleHitStat)+ GET /iptables/rule-hits/:node_id(命中率列表+死规则判定,dead=enabled+有统计+packets=0+超 3 天,阈值 deadRuleThresholdDays 2026-08-13 由 7 改 3) |
-| registerAddressGroupRoutes | address_group_routes.go:19 | 地址组 CRUD |
+| registerAddressGroupRoutes | address_group_routes.go:19 | 地址组 CRUD;2026-08-14 members 支持 IP 范围语法(IP1-IP2,写入时 rangeToCIDRs 展开为 CIDR 存储,validate 校验同族/start<=end;cidr_range.go 新增 rangeToCIDRs 纯算法) |
 | registerCustomChainRoutes | custom_chain_routes.go:18 | 自定义链 CRUD;v1.3 多挂载(mounts 权威+Parent/Priority 镜像回退,返回 mount_list)+ 禁用链审计 chain.disabled(含 affected_instances) |
 | registerMarkRoutes | mark_routes.go:18 | 标记 CRUD |
 | registerSystemRoutes | system_routes.go:16 | 系统设置（保留策略/清理） |
@@ -183,7 +183,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 
 **策略/模板**（internal/controller/policy/ + compiler/ + rulespec/）：
 - `policy.Service`：策略 CRUD
-- `compiler.Compiler`：策略编译为 iptables 规则;v1.2 MARK 白名单实例不消费组链(compileInstances 预加载组跳过 isMarkACL 的 GroupID,组不存在不整条失效);v1.3 组即落点(compileInstances 用 GroupID 查链),loadCustomChains 按链×挂载展开同名多条 CustomChainDef(多钩子,零 proto),compileInstance 传 chainTable 做 DNAT/SNAT 表一致性校验
+- `compiler.Compiler`：策略编译为 iptables 规则;v1.2 MARK 白名单实例不消费组链(compileInstances 预加载组跳过 isMarkACL 的 GroupID,组不存在不整条失效);v1.3 组即落点(compileInstances 用 GroupID 查链),loadCustomChains 按链×挂载展开同名多条 CustomChainDef(多钩子,零 proto),compileInstance 传 chainTable 做 DNAT/SNAT 表一致性校验;v1.4 MARK 白名单打标保留 source/source_group(只给本实例白名单源打标,同端口多实例不同 mark 互不覆盖),兜底 DROP 改带 PortRange+priority 远偏移 markAclDropOffset(1<<20,确保在全部白名单 ACCEPT 之后),修复同端口多实例 mark 覆盖冲突(compiler.go markAclDropOffset 常量 + compileInstance 白名单分支)
 - `rulespec.Spec.Validate`：规则字段唯一校验权威(API 入口/编译器/Agent driver 三层复用,无 DB);v1.2 MARK 打标值非零即合法(不再硬编码 15/255),引用完整性(标记必须存在于 Mark 表)由 API 层 `checkMarkExists` 承担;v1.3 加 ChainTable 字段,DNAT/SNAT 须 nat 表链(动作-链表一致性);v1.5 MARK 源校验移除(模板可无源骨架,源校验移至实例层 requireMarkSource)
 - 配置侧漂移治理(template_routes.go)：`instanceDrift`(模板 SpecVersion 判据)+ `instanceDiffFields`/`instanceDeviated`(实例参数 vs 模板当前参数,不依赖 SpecVersion)+ `applyTemplateToInstance`(sync 单条与 sync-all 批量共用的全量覆盖)+ `instFieldLabel/instFieldValue/tplFieldValue`(diff 预览中文字段名);`GET /instances/:id` 返回 drift_fields/deviated/deviated_fields;v1.3 `chain_unavailable` 标记(P2 组生命周期显式化)+ `chainTableFor`(组链表 table,表一致性)
 
