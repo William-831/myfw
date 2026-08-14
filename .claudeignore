@@ -1,0 +1,9 @@
+# .claudeignore
+package-lock.json
+yarn.lock
+*.min.js
+*.bundle.js
+*.map
+dist/
+build/
+node_modules/

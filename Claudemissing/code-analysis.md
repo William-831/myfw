@@ -63,7 +63,9 @@
 │   ├── router/index.js     # 路由配置
 │   ├── views/              # 12 个页面组件
 │   ├── components/         # 4 个通用组件
-│   ├── composables/        # 4 个 composable（图表/格式化/iptables 解析/命令预览 buildCommandPreview 模板库与实例列表共用）
+│   ├── composables/        # 6 个 composable（usePolling 轮询防重入/useNodeList 节点复用/useStatusLabels 状态映射 + 图表/格式化/iptables 解析/命令预览）
+│   ├── api/cache.js        # createGetCache 只读 GET TTL 缓存(单飞+前缀失效);api/index.js 包装 getNodes(5s)/静态字典(30s),写后失效
+│   ├── __tests__/          # Vitest 测试(vitest+@vue/test-utils+jsdom,23 用例:usePolling/toggleEnabled/apiCache/useNodeList)
 │   ├── stores/             # Pinia 状态管理
 │   └── layout/             # 布局组件
 ├── configs/                # 配置文件
@@ -100,7 +102,7 @@
 | PolicyTemplate | policy_template.go:7 | 策略模板（Policy 迁移后的产物）;v1.2 加 SpecVersion(规则字段单调版本,drift 判据,改描述不递增) |
 | NodePolicyInstance | policy_template.go:33 | 节点策略实例（模板下发到具体节点）;v1.2 加 SyncedSpecVersion(同步时模板 spec 快照) |
 | CustomChain | custom_chain.go:7 | 自定义子链(策略组);v1.3 加 Mounts(JSON []ChainMount 权威挂载列表)+ ChainMount 类型 + MountList()(空回退 Parent/Priority 单挂载,多钩子 P1b) |
-| Task | task.go:21 | 任务（Apply/Confirm/Rollback）;v1.2 加 AutoConfirm 字段(自愈任务 apply 成功即确认,跳过保护期) |
+| Task | task.go:21 | 任务（Apply/Confirm/Rollback）;v1.2 加 AutoConfirm 字段(自愈任务 apply 成功即确认,跳过保护期);v1.7 加 TaskSuperseded 终态(被新动作接管,不再回滚,保护期动作合并接管);2026-08-13 复合索引 idx_task_node_status(node_id,status) + AuditLog idx_audit_node_created(node_id,created_at)(B1) |
 | Approval | task.go:44 | 审批记录 |
 | Snapshot | task.go:55 | 规则快照（Rollback 用） |
 | AuditLog | task.go:67 | 审计日志 |
@@ -124,8 +126,12 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 **Server 组装**（internal/controller/server/server.go）
 - `Server` 结构体（第 42 行）：持有 cfg, db, ca, stream, policy, comp, co, sec, http, grpc
 - `New()`（第 57 行）：构建所有依赖并组装 gRPC + HTTP 服务器
-- `newWebHandler()`（第 328 行）：注册 12 组 Gin 路由 + 静态文件服务
+- `newWebHandler()`（第 328 行）：注册 12 组 Gin 路由 + 静态文件服务;2026-08-13 增加 readCache(B2)、requestLogger 挂载(B4)、cfg 注入设置 policyCfg(B5)
 - `Run()`（第 390 行）：启动 gRPC + HTTP 双服务器
+- **B2 readcache.go**：`ReadCache` TTL 内存缓存(GetOrCompute 单飞/DeletePrefix 前缀失效/错误不缓存);dashboard/stats 与 nodes/list 接 5s 缓存(nodes/list online 实时覆盖不进缓存,节点 PUT/DELETE 失效);`computeDashboardStats`/`computeNodesList` 为缓存计算函数
+- **B4 middleware.go**：`requestLogger(logger)` 结构化请求日志(method/path/status/ms/user,可注入便于测试),newWebHandler 挂载;`policyCfg` 包级只读策略阈值(newWebHandler 启动时从 cfg 写入)
+- **B5 配置化**：config.go 增 `PolicyConfig`(DeadRuleThresholdDays=3/ConfirmDeadlineDefault=5m/ApplyWaitTimeout=8s,默认=现状);三处硬编码改读 policyCfg:iptables_routes deadRuleThresholdDays、task_routes applyWaitTimeout、policy_routes ConfirmDeadline
+- **B3 异步降级**：applyNow 等待上限 policyCfg.ApplyWaitTimeout(默认 8s 超时返回 accepted);sync-all 按节点防重入(nodeSyncLock 互斥,并发返回 409)
 
 **Gin 路由注册函数**（12 个，均在 internal/controller/server/）：
 
@@ -135,16 +141,16 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | registerTaskRoutes | task_routes.go:18 | 任务列表/详情 |
 | registerTaskLifecycleRoutes | task_lifecycle_routes.go:16 | 任务审批/确认/回滚 |
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
-| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性);v1.5 POST /templates 忽略前端 id(主键冲突修复)+ requireMarkSource(实例 MARK 源必填,模板可无源骨架)+ 实例化合并 body.source 覆盖;v1.6 同步保留实例非空定制(orKeepString 模板空值不清空实例有值字段,如源 IP)+ syncOverrideFields(sync-preview 只展示实际覆盖字段) |
+| registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性);v1.5 POST /templates 忽略前端 id(主键冲突修复)+ requireMarkSource(实例 MARK 源必填,模板可无源骨架)+ 实例化合并 body.source 覆盖;v1.6 同步保留实例非空定制(orKeepString 模板空值不清空实例有值字段,如源 IP)+ syncOverrideFields(sync-preview 只展示实际覆盖字段);v1.7 dispatch 与 DELETE 移除在节点有 dispatching/applying 任务时 errors.Is(task.ErrNodeBusy) 映射 409("节点有任务执行中,请稍候再试") |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
 | registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
-| registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查;v1.4 规则活性分析(计划一):POST /iptables/hits/:node_id(Agent 上报命中率,同实例 max 聚合 upsert RuleHitStat)+ GET /iptables/rule-hits/:node_id(命中率列表+死规则判定,dead=enabled+有统计+packets=0+超 7 天) |
+| registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查;v1.4 规则活性分析(计划一):POST /iptables/hits/:node_id(Agent 上报命中率,同实例 max 聚合 upsert RuleHitStat)+ GET /iptables/rule-hits/:node_id(命中率列表+死规则判定,dead=enabled+有统计+packets=0+超 3 天,阈值 deadRuleThresholdDays 2026-08-13 由 7 改 3) |
 | registerAddressGroupRoutes | address_group_routes.go:19 | 地址组 CRUD |
 | registerCustomChainRoutes | custom_chain_routes.go:18 | 自定义链 CRUD;v1.3 多挂载(mounts 权威+Parent/Priority 镜像回退,返回 mount_list)+ 禁用链审计 chain.disabled(含 affected_instances) |
 | registerMarkRoutes | mark_routes.go:18 | 标记 CRUD |
 | registerSystemRoutes | system_routes.go:16 | 系统设置（保留策略/清理） |
 | registerRevisionRoutes | revision_routes.go:18 | 规则库版本档案(计划三):GET /nodes/:id/revisions 历史列表 + POST /revisions/:no/rollback 回滚(先归档当前版本再下发历史 RuleSet,走保护期) |
-| registerSimulateRoutes | simulate_routes.go:12 | 流量仿真预演(计划二):POST /api/v1/simulate,入参 node_id + flow 五元组(收敛到节点级:基于该节点 CompileForNode 编译的 CompiledRule 推演,不接受外部规则集内联),返回 verdict/steps/note |
+| registerSimulateRoutes | simulate_routes.go:12 | 流量仿真预演(计划二):POST /api/v1/simulate,入参 node_id + flow 五元组(收敛到节点级:基于该节点 CompileForNode 编译的 CompiledRule 推演,不接受外部规则集内联),返回 verdict/steps/note/conclusion |
 
 **节点管理 REST API**（internal/controller/asset/asset.go）：
 - `POST /api/v1/nodes/bootstrap` — 创建 bootstrap token（第 64 行）
@@ -185,7 +191,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 - `simulator.Flow`(direction/source_ip/dest_ip/protocol/src_port/dst_port/mark,均带 JSON tag)
 - `simulator.Evaluate(flow, rules, chains, sets) *Result`：纯函数无副作用。语义对齐 driver.Apply——所有规则落子链 MYFW-<chain>,父链 MYFW-INPUT/FORWARD/OUTPUT 仅 conntrack+子链 jump;INPUT/FORWARD 先 mangle 打标预遍(挂 MYFW-MANGLE 的 mangle 链仅 MARK 生效,支撑 MARK 白名单主场景),再按链定义顺序(compiler priority 升序)进各 filter 子链,链内按 priority 升序、次按 id 线性匹配;ACCEPT/DROP/REJECT 终止,MARK 打标继续(后续 match_mark 命中),DNAT/SNAT 提示不支持继续;无命中返回 PASS(默认策略放行)
 - 支持源/目的 IP/CIDR、地址组(set 成员 ipset 语义)、协议、端口区间("22"/"1000-2000")、match_mark;首版无状态匹配,仅 filter 终止判定 + mangle 打标,其余表/动作跳过;tcp/udp 流未指定 dst_port 不命中带端口规则
-- `Result{verdict, steps[], note}`：steps 记录逐条规则匹配结果(chain/rule_id/action/mark/matched/note)
+- `Result{verdict, steps[], note, conclusion}`：steps 记录逐条规则匹配结果(chain/rule_id/action/mark/matched/command/note);`command`=该规则 iptables 命令预览(formatCommand,对齐 driver compileRule);`conclusion`=自然语言结论(buildConclusion,按五元组+最终判定拼接,含 MARK→ACCEPT 两段式);纯函数 `formatCommand(r,table)` / `buildConclusion(flow,res)` / `terminatingStep(res)`
 
 **任务协调器**（internal/controller/task/coordinator.go）：
 - `Coordinator`：Apply → 审批 → 确认/回滚 状态机
@@ -193,7 +199,12 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 - 计划三回滚链路：Task 加 `RuleSetSnapshot`(protojson RuleSet,回滚任务专用)；`SubmitRuleSet`(给定规则集建回滚任务,dispatch 时快照非空跳过编译直接用历史规则集)；handleResult 回滚任务成功后实例 applied 全置 false(规则已偏离当前定义)；`ArchiveFn` 回调普通任务 Apply 成功归档(revision.Service 注入)
 - `HasInFlight(nodeID)`：OnSync 去重(节点有 pending_approval/dispatching/applying/confirm_wait 任务时跳过)
 - `SubmitRemoval(instanceID,opts)`：移除实例保护期任务,事务内原子创建 task+标记 pending_delete 并关联 task_id(漏洞 G 修复)
-- `refreshNodePreview`：审批 dispatch 时用最新实例刷新 diff 预览,排除 pending_delete(漏洞 F' 修复)
+- `cleanOrphanPendingDelete`：Start 启动时清理孤儿待删除标记(实例 pending_delete=true 但关联任务已终态非 confirm_wait):confirmed 补删 / rolled_back 恢复实例 / 任务缺失仅清标记 / confirm_wait 不动。修复历史遗留(任务 rolled_back 后标记残留致前端"移除"按钮永久禁用,249 实例3 即此例)
+- **`SupersedeInFlight(nodeID,newTaskID,reviewer,reason)`(保护期动作合并接管,2026-08-13)**:新动作 dispatch 前作废节点可作废在途任务(confirm_wait/pending_approval)——置 `TaskSuperseded` 终态+cancelTimer+sendConfirmToAgent 释放 Agent 旧快照+restorePendingDelete 恢复旧移除实例+审计 task.superseded(superseded_by=新任务);节点有 dispatching/applying 任务返回 `ErrNodeBusy`,调用方映射 409;挂载在 `approveAndDispatch` 编译成功后、Send 前(所有 dispatch 路径统一接管);v1.8 改 CAS 条件更新(WHERE status IN confirm_wait/pending_approval,与 autoRollback 竞争时终态唯一,不覆盖已回滚任务)
+- `ErrNodeBusy`：sentinel 错误,节点有 dispatching/applying 任务执行中不可接管,server 层 errors.Is 映射 HTTP 409
+- **P1 修复(2026-08-13 走查发现)**:`approveAndDispatch` 接管后重新编译——SupersedeInFlight 返回非空且为普通任务(RuleSetSnapshot=="")时,`compile` 闭包重跑 `CompileForNode` 再 Send。原实现编译在接管前,restorePendingDelete 恢复的实例不进入新任务规则集(DB 显示已下发、节点实际无规则)。`autoRollback` 同步改 CAS(仅 confirm_wait 可转移为 rolled_back,不再覆盖已 superseded 任务)
+- `refreshNodePreview`：审批 dispatch 时用最新实例刷新 diff 预览,排除 pending_delete(漏洞 F' 修复);2026-08-14 识别移除任务(pending_delete_task_id=t.ID 存在实例)走 `fillRemovalPreview`(实例名/disable/-D 命令),不落入通用分支(通用分支 change_type 会被误覆盖为 dispatch)
+- `fillRemovalPreview`：填充移除任务(SubmitRemoval)预览:policy_name=实例名、change_type=disable、diff_after=-D 命令(编译实例生成);SubmitRemoval 创建时即填实例名+disable(不再写死"节点策略移除")
 - `handleResult`：AutoConfirm 任务 apply 成功直接 confirmed(发 Confirm 释放 Agent 快照,审计 scene=self_heal);失败仅回退 enabled 实例 applied、成功不动 pending_delete 实例(漏洞 J/S 修复)
 
 **安全层**（internal/security/）：
@@ -263,7 +274,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | /nodes | Nodes.vue | 节点管理（列表/添加/编辑/删除/审批/规则查看） |
 | /policies | NodePolicies.vue | 策略管理 |
 | /templates | TemplateLibrary.vue | 策略模板库 |
-| /node-policies | NodePolicies.vue | 节点策略实例(含单条策略预演抽屉:预期目标 vs 实际模拟通道流程图,五元组仿真命中路径,计划二) |
+| /node-policies | NodePolicies.vue | 节点策略实例(含单条策略预演抽屉:预期目标 vs 实际模拟通道流程图,五元组仿真命中路径,计划二);v1.7 保护期动作合并接管 UI:inflightTasks 轮询(confirm_wait/dispatching/applying/superseded)+ nodeInGuard(有 confirm_wait)/nodeBusy(有执行中)计算属性 + 状态标签"⏳ 保护期接管中"(未确认前不显示已禁用)+ banner 接管提示(旧任务已被新动作接管,保护期已重置)+ nodeBusy 时全部操作按钮禁用;2026-08-14 保护期待确认意图化:实例条目标签由 pendingConfirmIntents(Map<id,dispatch|remove>)驱动(启动→"⏳ 下发待确认"/禁用/移除→"⏳ 移除待确认"),不再依赖可变 enabled 值;顶部 guardTask banner 显示策略名+diff_after 命令预览 |
 | /address-groups | AddressGroups.vue | 地址组 |
 | /custom-chains | CustomChains.vue | 自定义链 |
 | /approve | Approve.vue | 审批任务 |
@@ -276,7 +287,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 
 ### 组件
 - `AuditFeed.vue` — 审计实时推送
-- `ConfirmGuard.vue` — 保护期确认弹窗
+- `ConfirmGuard.vue` — 保护期确认弹窗(2026-08-14 卡片顶部显示 policy_name 策略名 + 变更类型标签,节点 IP 移至第二行)
 - `StatCard.vue` — 统计卡片
 - `StatusPanel.vue` — 状态面板
 

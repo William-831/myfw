@@ -96,6 +96,11 @@ func (co *Coordinator) Start(ctx context.Context) {
 		co.Log.Warn("task recovery on start failed", "err", err)
 	}
 
+	// 清理孤儿待删除标记(移除任务已终态但实例 pending_delete 残留),修复历史遗留。
+	if err := co.cleanOrphanPendingDelete(ctx); err != nil {
+		co.Log.Warn("orphan pending_delete cleanup failed", "err", err)
+	}
+
 	go co.resultLoop(ctx)
 }
 
@@ -236,7 +241,11 @@ func (co *Coordinator) SubmitRemoval(ctx context.Context, instanceID uint, opts 
 	taskID := "t_" + uuid.NewString()
 	t := &model.Task{
 		ID: taskID, NodeID: inst.NodeID, PolicyID: 0,
-		PolicyName:  "节点策略移除",
+		// 2026-08-14:填实例名与禁用语义,不再写死"节点策略移除"。保护期面板据此显示
+		// 具体策略名 + "禁用待确认"标签;diff_after(-D 命令)由 approveAndDispatch 的
+		// refreshNodePreview 在 dispatch 前填充(需编译)。
+		PolicyName:  inst.Name,
+		ChangeType:  "disable",
 		Status:      model.TaskPendingApproval,
 		Version:     time.Now().Unix(),
 		AutoConfirm: opts.AutoConfirm,
@@ -486,22 +495,46 @@ func (co *Coordinator) approveAndDispatch(ctx context.Context, taskID, reviewer 
 	}
 
 	// 3. 回滚任务直接用历史规则集快照下发,不重新编译;普通任务按当前 DB 状态编译。
-	//    compile errors mark the task FAILED.
+	//    compile errors mark the task FAILED。
+	//    compile 封装为闭包:接管可能改变实例状态(恢复被移除实例),需要时可重新编译(P1 修复)。
 	var rules []*myfwv1.CompiledRule
 	var sets []*myfwv1.AddressSet
 	var customChains []*myfwv1.CustomChainDef
-	if task.RuleSetSnapshot != "" {
-		var snap myfwv1.RuleSet
-		if err := protojson.Unmarshal([]byte(task.RuleSetSnapshot), &snap); err != nil {
-			co.markFailed(ctx, task.ID, "rollback ruleset unmarshal: "+err.Error())
-			return err
+	compile := func() error {
+		if task.RuleSetSnapshot != "" {
+			var snap myfwv1.RuleSet
+			if err := protojson.Unmarshal([]byte(task.RuleSetSnapshot), &snap); err != nil {
+				co.markFailed(ctx, task.ID, "rollback ruleset unmarshal: "+err.Error())
+				return err
+			}
+			rules, sets, customChains = snap.Rules, snap.Sets, snap.CustomChains
+			return nil
 		}
-		rules, sets, customChains = snap.Rules, snap.Sets, snap.CustomChains
-	} else {
 		var err error
 		rules, sets, customChains, err = co.Comp.CompileForNode(ctx, task.NodeID)
 		if err != nil {
 			co.markFailed(ctx, task.ID, "compile: "+err.Error())
+			return err
+		}
+		return nil
+	}
+	if err := compile(); err != nil {
+		return err
+	}
+	// 4. 保护期动作合并接管(2026-08-12):dispatch 前作废节点在途的可作废任务
+	//    (confirm_wait/pending_approval),为新任务让路;节点有 dispatching/applying
+	//    任务(执行中)则拒绝,避免 Agent 快照串台。编译成功后才接管,编译失败不动旧任务。
+	superseded, err := co.SupersedeInFlight(ctx, task.NodeID, task.ID, reviewer, "新动作合并接管保护期")
+	if err != nil {
+		co.markFailed(ctx, task.ID, "supersede: "+err.Error())
+		return err
+	}
+	// 接管发生:旧移除任务的实例可能被 restorePendingDelete 恢复为 enabled=true,
+	// 规则集必须基于接管后状态重新编译,否则下发不含恢复实例(DB 显示已下发、节点实际
+	// 无规则,确定性不一致,走查 P1,2026-08-13)。回滚任务规则集来自历史快照,
+	// 不随实例状态变化,无需重编。
+	if len(superseded) > 0 && task.RuleSetSnapshot == "" {
+		if err := compile(); err != nil {
 			return err
 		}
 	}
@@ -682,13 +715,24 @@ func (co *Coordinator) autoRollback(taskID string) {
 		return
 	}
 	if t.Status != model.TaskConfirmWait {
-		return // already confirmed / rolled back
+		return // already confirmed / rolled back / superseded
+	}
+	// CAS:只有仍是 confirm_wait 才转移为 rolled_back。与 SupersedeInFlight 并发时,
+	// 若旧任务已被接管置 superseded,本次更新 RowsAffected=0,不再发送 Rollback
+	// (避免恢复旧快照冲掉新动作结果,终态唯一,走查 P2,2026-08-13)。
+	res := co.DB.WithContext(ctx).Model(&model.Task{}).
+		Where("id = ? AND status = ?", taskID, model.TaskConfirmWait).
+		Updates(map[string]any{
+			"status":  model.TaskRolledBack,
+			"message": "auto-rollback: confirm-wait deadline expired",
+		})
+	if res.Error != nil {
+		return
+	}
+	if res.RowsAffected == 0 {
+		return // 已被接管(superseded)或已确认,不再回滚
 	}
 	co.sendRollbackToAgent(ctx, &t)
-
-	t.Status = model.TaskRolledBack
-	t.Message = "auto-rollback: confirm-wait deadline expired"
-	_ = co.DB.WithContext(ctx).Save(&t).Error
 	// 超时自动回滚同手动回滚:恢复待删除实例(Agent 恢复快照,规则回来)
 	co.restorePendingDelete(co.DB.WithContext(ctx), taskID)
 	co.audit(ctx, "system", "task.auto_rollback", model.AuditSceneAutoRollback, model.AuditResultRolledBack, []*model.Task{&t}, nil)
@@ -767,6 +811,121 @@ func (co *Coordinator) sendRollbackToAgent(ctx context.Context, t *model.Task) {
 			Rollback: &myfwv1.RollbackTask{TaskId: t.ID},
 		},
 	})
+}
+
+// SupersedeInFlight 作废目标节点所有可安全作废的在途任务(confirm_wait/pending_approval),
+// 为新动作让路(保护期动作合并接管,2026-08-12)。对每个旧任务:
+//   - 置 superseded 终态 + 记录接管者(reviewer/reason/message)
+//   - cancelTimer:取消旧任务回滚定时器,不再超时回滚
+//   - sendConfirmToAgent:经 Confirm 语义通知 Agent 释放其保留的快照(旧变更保留不回滚,
+//     避免旧 task 回滚用旧快照覆盖新动作结果)
+//   - restorePendingDelete:旧移除任务作废时,关联的 pending_delete 实例恢复启用
+//     (新动作重新决定其去留)
+//
+// 节点存在 dispatching/applying 任务(Agent 正在执行 Apply,不可作废)时返回 error,
+// 调用方应拒绝新动作(409)。返回被作废的任务列表,供审计串联。
+func (co *Coordinator) SupersedeInFlight(ctx context.Context, nodeID, newTaskID, reviewer, reason string) ([]*model.Task, error) {
+	var inFlight []model.Task
+	if err := co.DB.WithContext(ctx).
+		Where("node_id = ? AND status IN ? AND id != ?", nodeID,
+			[]string{string(model.TaskPendingApproval), string(model.TaskDispatching), string(model.TaskApplying), string(model.TaskConfirmWait)},
+			newTaskID).
+		Find(&inFlight).Error; err != nil {
+		return nil, err
+	}
+	if len(inFlight) == 0 {
+		return nil, nil
+	}
+	// 执行中的任务不可作废:Agent 正在 Apply,作废会破坏快照/结果回收,拒绝接管。
+	for i := range inFlight {
+		if inFlight[i].Status == model.TaskDispatching || inFlight[i].Status == model.TaskApplying {
+			return nil, fmt.Errorf("%w: node %s has task %s in flight (status=%s)", ErrNodeBusy, nodeID, inFlight[i].ID, inFlight[i].Status)
+		}
+	}
+	superseded := make([]*model.Task, 0, len(inFlight))
+	for i := range inFlight {
+		old := &inFlight[i]
+		// CAS:只有仍处于可作废状态才置 superseded。与 autoRollback 并发时,若定时器
+		// 已先把任务转移为 rolled_back,本次更新 RowsAffected=0,跳过(终态唯一,
+		// 避免竞争覆盖,走查 P2,2026-08-13)。
+		res := co.DB.WithContext(ctx).Model(&model.Task{}).
+			Where("id = ? AND status IN ?", old.ID,
+				[]string{string(model.TaskPendingApproval), string(model.TaskConfirmWait)}).
+			Updates(map[string]any{
+				"status":   model.TaskSuperseded,
+				"reviewer": reviewer,
+				"message":  "superseded by " + newTaskID + ": " + reason,
+			})
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected == 0 {
+			continue // 已被其他流程转移(如 autoRollback),跳过
+		}
+		old.Status = model.TaskSuperseded
+		old.Reviewer = reviewer
+		old.Message = "superseded by " + newTaskID + ": " + reason
+		co.cancelTimer(old.ID)
+		co.sendConfirmToAgent(ctx, old)
+		co.restorePendingDelete(co.DB.WithContext(ctx), old.ID)
+		co.audit(ctx, reviewer, "task.superseded", model.AuditSceneNormal, model.AuditResultPending,
+			[]*model.Task{old}, map[string]any{"superseded_by": newTaskID, "reason": reason})
+		superseded = append(superseded, old)
+	}
+	return superseded, nil
+}
+
+// cleanOrphanPendingDelete 启动时清理孤儿待删除标记:实例 pending_delete=true 但关联
+// 任务已处于终态(非 confirm_wait)。历史遗留场景:移除任务 rolled_back 后实例标记未清,
+// 前端"移除"按钮因 pending_delete 禁用导致实例无法再操作。按任务终态兜底:
+//   - confirmed: 用户已确认移除但 DB 未清(理论罕见) -> 补删实例
+//   - rolled_back: 移除被回滚,节点规则已恢复 -> 恢复实例(启用+已下发+清标记)
+//   - 任务不存在/其他终态: 保守仅清标记,保持 enabled 现值,可重新操作
+//
+// confirm_wait(保护期内)不动,等待 Confirm/Rollback 正常流转。
+func (co *Coordinator) cleanOrphanPendingDelete(ctx context.Context) error {
+	var insts []model.NodePolicyInstance
+	if err := co.DB.WithContext(ctx).
+		Where("pending_delete = ? AND pending_delete_task_id != ?", true, "").
+		Find(&insts).Error; err != nil {
+		return err
+	}
+	for i := range insts {
+		inst := &insts[i]
+		var t model.Task
+		if err := co.DB.WithContext(ctx).Where("id = ?", inst.PendingDeleteTaskID).First(&t).Error; err != nil {
+			// 任务已不存在:纯孤儿,仅清标记(保持 enabled 现值)。
+			co.Log.Warn("cleanup: orphan pending_delete, task missing", "instance_id", inst.ID, "task_id", inst.PendingDeleteTaskID)
+			inst.PendingDelete = false
+			inst.PendingDeleteTaskID = ""
+			if err := co.DB.Save(inst).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		if t.Status == model.TaskConfirmWait {
+			continue // 保护期内,等待 Confirm/Rollback,不动
+		}
+		switch t.Status {
+		case model.TaskConfirmed:
+			co.Log.Warn("cleanup: purge instance left by confirmed removal", "instance_id", inst.ID, "task_id", inst.PendingDeleteTaskID)
+			if err := co.purgePendingDelete(co.DB.WithContext(ctx), inst.PendingDeleteTaskID); err != nil {
+				return err
+			}
+		case model.TaskRolledBack:
+			co.Log.Warn("cleanup: restore instance after rolled_back removal", "instance_id", inst.ID, "task_id", inst.PendingDeleteTaskID)
+			co.restorePendingDelete(co.DB.WithContext(ctx), inst.PendingDeleteTaskID)
+		default:
+			// failed/rejected 等:状态不确定,保守仅清标记(保持 enabled 现值),可重新操作。
+			co.Log.Warn("cleanup: clear pending_delete from terminal task", "instance_id", inst.ID, "task_id", inst.PendingDeleteTaskID, "status", t.Status)
+			inst.PendingDelete = false
+			inst.PendingDeleteTaskID = ""
+			if err := co.DB.Save(inst).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // purgePendingDelete 物理删除与 taskID 关联的待删除实例:Confirm 时调用。
@@ -861,6 +1020,10 @@ func (co *Coordinator) audit(ctx context.Context, actor, action, scene, result s
 
 var ErrNotFound = errors.New("task: not found")
 
+// ErrNodeBusy 节点有 dispatching/applying 任务执行中,新动作不可接管(执行中任务不可作废)。
+// 由 SupersedeInFlight 返回,server 层映射 HTTP 409。
+var ErrNodeBusy = errors.New("task: node busy with task in flight")
+
 func errNotFoundOr(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound
@@ -907,7 +1070,17 @@ func (co *Coordinator) fillNodeDispatchPreviewBatch(ctx context.Context, tasks [
 // refreshNodePreview 用节点最新实例状态重算单 task 的 policy_name/change_type/diff_after。
 // Submit 时生成的预览可能因审批期间实例被编辑而过时;审批(dispatch)时刷新为下发真值,
 // 保证保护期面板展示与实际下发一致(漏洞 F' 修复)。
+// 移除任务(SubmitRemoval)单独处理:其实例已置 pending_delete=true 且关联本任务,
+// 用该实例生成移除预览(实例名/disable/-D 命令),不落入通用分支——通用分支的
+// disabling 查询排除 pending_delete,若走通用分支 change_type 会被 fillNodeDispatchPreviewFromCache
+// 的 default 分支误覆盖为 "dispatch"(2026-08-14 修复:移除任务应显示禁用语义)。
 func (co *Coordinator) refreshNodePreview(ctx context.Context, t *model.Task) {
+	var removal model.NodePolicyInstance
+	if err := co.DB.WithContext(ctx).
+		Where("pending_delete_task_id = ?", t.ID).First(&removal).Error; err == nil {
+		co.fillRemovalPreview(ctx, t, &removal)
+		return
+	}
 	var pending, disabling []model.NodePolicyInstance
 	co.DB.WithContext(ctx).
 		Where("node_id = ? AND enabled = ? AND applied = ?", t.NodeID, true, false).Find(&pending)
@@ -915,6 +1088,26 @@ func (co *Coordinator) refreshNodePreview(ctx context.Context, t *model.Task) {
 		Where("node_id = ? AND enabled = ? AND applied = ? AND pending_delete = ?",
 			t.NodeID, false, true, false).Find(&disabling)
 	co.fillNodeDispatchPreviewFromCache(ctx, t, pending, disabling)
+}
+
+// fillRemovalPreview 填充移除任务(SubmitRemoval)的保护期预览:
+// policy_name=实例名、change_type=disable、diff_after=-D 移除命令(编译实例生成)。
+// 让保护期面板显示具体策略名与命令,与实际"移除"语义一致。
+func (co *Coordinator) fillRemovalPreview(ctx context.Context, t *model.Task, inst *model.NodePolicyInstance) {
+	t.PolicyName = inst.Name
+	t.ChangeType = "disable"
+	var lines []string
+	if rules, c2t, err := co.Comp.CompileInstances(ctx, []model.NodePolicyInstance{*inst}); err == nil {
+		lines = formatRuleLines(rules, c2t, "D")
+	}
+	if len(lines) > 0 {
+		t.DiffAfter = strings.Join(lines, "\n")
+	}
+	co.DB.WithContext(ctx).Model(&model.Task{}).Where("id = ?", t.ID).Updates(map[string]any{
+		"policy_name": t.PolicyName,
+		"change_type": t.ChangeType,
+		"diff_after":  t.DiffAfter,
+	})
 }
 
 // fillNodeDispatchPreviewFromCache 用预查的实例切片填充单个 task 预览(不再查 DB)。

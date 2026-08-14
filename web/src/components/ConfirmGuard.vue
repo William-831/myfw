@@ -11,9 +11,10 @@
         <div v-if="!tasks.length && !loading" class="empty">暂无保护期内任务</div>
         <div v-for="t in tasks" :key="t.id" class="guard-card" :class="{ 'card-disable': t.change_type === 'disable', 'card-mixed': t.change_type === 'mixed' }" @click="openDetail(t)">
           <div class="card-top">
-            <span class="card-node">🖥 {{ nodeIP(t.node_id) }}</span>
+            <span class="card-policy" :title="t.policy_name">📄 {{ t.policy_name || '节点全量变更' }}</span>
             <el-tag size="small" :type="changeTagType(t.change_type)" effect="dark">{{ changeLabel(t.change_type) }}</el-tag>
           </div>
+          <div class="card-node">🖥 {{ nodeIP(t.node_id) }}</div>
           <div class="card-meta">操作者 {{ t.reviewer || '-' }} · {{ formatTime(t.created_at) }}</div>
           <div v-if="t.diff_after" class="card-diff"><pre class="diff-text">{{ diffSummary(t.diff_after) }}</pre></div>
           <el-progress
@@ -68,32 +69,29 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Clock } from '@element-plus/icons-vue'
-import { getTasks, confirmTask, rollbackTask, getNodes } from '@/api'
+import { getTasks, confirmTask, rollbackTask } from '@/api'
 import { useGuardStore } from '@/stores/guard'
+import { usePolling } from '@/composables/usePolling'
+import { useNodeList } from '@/composables/useNodeList'
 
 const router = useRouter()
 const guard = useGuardStore()
+const { nodes, loadNodes, nodeIP } = useNodeList()
 watch(() => guard.refreshTick, () => loadTasks())
 const GUARD_SECONDS = 300
 const URGENT_SECONDS = 60
 
 const loading = ref(false)
 const tasks = ref([])
-const nodes = ref([])
 const now = ref(Date.now())
 const detailVisible = ref(false)
 const detailTask = reactive({ id: '', node_id: '', policy_name: '', reviewer: '', created_at: '', diff_after: '', confirm_deadline: '', change_type: '' })
 
-let pollTimer = null
 let tickTimer = null
 
 const count = computed(() => tasks.value.length)
 const hasUrgent = computed(() => tasks.value.some((t) => remainSec(t) > 0 && remainSec(t) <= URGENT_SECONDS))
 
-const nodeIP = (id) => {
-  const n = nodes.value.find((x) => x.id === id)
-  return n ? (n.ip || n.hostname || id.slice(0, 12)) : id.slice(0, 12)
-}
 // 变更类型标签:禁用任务红色显著标注,混合橙色,下发绿色
 const changeLabel = (ct) => ({ disable: '禁用待确认', mixed: '混合变更', dispatch: '下发待确认' }[ct] || '保护期')
 const changeTagType = (ct) => ({ disable: 'danger', mixed: 'warning', dispatch: 'success' }[ct] || 'warning')
@@ -136,13 +134,6 @@ const loadTasks = async () => {
     tasks.value = data.tasks || []
   } catch { } finally { loading.value = false }
 }
-const loadNodes = async () => {
-  try {
-    const data = await getNodes()
-    nodes.value = data.nodes || []
-  } catch { }
-}
-
 const handleConfirm = async (t) => {
   try {
     await ElMessageBox.confirm(
@@ -173,14 +164,16 @@ const handleRollback = async (t) => {
   }
 }
 
+// 轮询保护期任务:挂载自动启动、卸载自动清理、防重入。
+// ⚠️ 必须放 setup 顶层而非 onMounted 内:usePolling 内部注册的 onMounted
+// 在回调内调用时组件已挂载,生命周期钩子不会触发,轮询将永不启动(待确认区不自动刷新)。
+usePolling(loadTasks, 5000)
 onMounted(() => {
   loadNodes()
   loadTasks()
-  pollTimer = setInterval(loadTasks, 5000)
   tickTimer = setInterval(() => { now.value = Date.now() }, 1000)
 })
 onUnmounted(() => {
-  clearInterval(pollTimer)
   clearInterval(tickTimer)
 })
 </script>
@@ -206,7 +199,8 @@ onUnmounted(() => {
 .guard-card.card-disable:hover { box-shadow: 0 6px 20px rgba(245,108,108,.2); }
 .guard-card.card-mixed { border-color: #e6a23c; background: #fdf6ec; }
 .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.card-node { font-weight: 600; font-size: 14px; color: #1e293b; font-family: 'Courier New', monospace; }
+.card-policy { font-weight: 600; font-size: 14px; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+.card-node { font-weight: 500; font-size: 12px; color: var(--c-text-3); font-family: 'Courier New', monospace; margin-bottom: 6px; }
 .card-meta { font-size: 12px; color: var(--c-text-3); margin-bottom: 8px; }
 .card-diff { margin-bottom: 10px; }
 .diff-text { margin: 0; padding: 8px; background: var(--c-surface); color: var(--c-text-1); border-radius: 6px; font-size: 11px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; max-height: 100px; overflow: auto; }

@@ -58,6 +58,77 @@ func makeConfirmWaitTask(t *testing.T, gdb *gorm.DB, nodeID string) string {
 	return taskID
 }
 
+// TestCleanOrphanPendingDelete 验证启动孤儿清理:实例 pending_delete=true 但关联任务
+// 已处于终态(非 confirm_wait)时按任务终态兜底——rolled_back 恢复实例 / confirmed 补删 /
+// 任务缺失仅清标记;confirm_wait(保护期内)不动。
+func TestCleanOrphanPendingDelete(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+
+	// 场景1:任务 rolled_back(移除被回滚,规则已恢复) -> 实例恢复启用并清标记
+	gdb.Create(&model.Task{ID: "t_rolled", NodeID: "n1", Status: model.TaskRolledBack, Version: time.Now().Unix()})
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 1, NodeID: "n1", Name: "rolled", Enabled: false, Applied: false,
+		PendingDelete: true, PendingDeleteTaskID: "t_rolled",
+	})
+
+	// 场景2:任务 confirmed(用户已确认移除但 DB 未清) -> 实例补删
+	gdb.Create(&model.Task{ID: "t_confirmed", NodeID: "n1", Status: model.TaskConfirmed, Version: time.Now().Unix()})
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 2, NodeID: "n1", Name: "confirmed", Enabled: false, Applied: false,
+		PendingDelete: true, PendingDeleteTaskID: "t_confirmed",
+	})
+
+	// 场景3:任务不存在(孤儿) -> 仅清标记,enabled 保持现值
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 3, NodeID: "n1", Name: "missing-task", Enabled: false, Applied: true,
+		PendingDelete: true, PendingDeleteTaskID: "t_gone",
+	})
+
+	// 场景4:任务 confirm_wait(保护期内) -> 不动
+	taskID := makeConfirmWaitTask(t, gdb, "n1")
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 4, NodeID: "n1", Name: "in-flight", Enabled: false, Applied: false,
+		PendingDelete: true, PendingDeleteTaskID: taskID,
+	})
+
+	if err := co.cleanOrphanPendingDelete(ctx); err != nil {
+		t.Fatalf("clean orphan: %v", err)
+	}
+
+	// 场景1:恢复启用 + 清标记
+	var inst1 model.NodePolicyInstance
+	if err := gdb.First(&inst1, 1).Error; err != nil {
+		t.Fatalf("实例1应保留: %v", err)
+	}
+	if !inst1.Enabled || !inst1.Applied || inst1.PendingDelete || inst1.PendingDeleteTaskID != "" {
+		t.Fatalf("实例1(rolled_back)应恢复启用清标记, got %+v", inst1)
+	}
+
+	// 场景2:补删
+	if err := gdb.First(&model.NodePolicyInstance{}, 2).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("实例2(confirmed)应被删除, got err=%v", err)
+	}
+
+	// 场景3:清标记,enabled 保持 false
+	var inst3 model.NodePolicyInstance
+	if err := gdb.First(&inst3, 3).Error; err != nil {
+		t.Fatalf("实例3应保留: %v", err)
+	}
+	if inst3.PendingDelete || inst3.PendingDeleteTaskID != "" || inst3.Enabled {
+		t.Fatalf("实例3(任务缺失)应仅清标记且保持 enabled=false, got %+v", inst3)
+	}
+
+	// 场景4:不动
+	var inst4 model.NodePolicyInstance
+	if err := gdb.First(&inst4, 4).Error; err != nil {
+		t.Fatalf("实例4应保留: %v", err)
+	}
+	if !inst4.PendingDelete || inst4.PendingDeleteTaskID != taskID {
+		t.Fatalf("实例4(confirm_wait)不应被清理, got %+v", inst4)
+	}
+}
+
 // TestConfirmClearsPendingDelete 验证 Confirm 只清理关联本 task 的 pending_delete 实例,
 // 不误伤同节点关联其他 task 的 pending_delete 实例。
 func TestConfirmClearsPendingDelete(t *testing.T) {
@@ -149,7 +220,247 @@ func TestAutoRollbackRestoresPendingDelete(t *testing.T) {
 	}
 }
 
-// TestHandleResultAutoConfirmSkipsConfirmWait 验证 AutoConfirm 任务(系统自愈)在
+// --- 保护期动作合并接管(2026-08-12)-------------------------------------------
+
+// TestSupersedeInFlight_ConfirmWaitTask 验证接管 confirm_wait 任务:
+// 旧任务置 superseded + message 记录接管者 + 旧任务不再在途(HasInFlight=false)。
+func TestSupersedeInFlight_ConfirmWaitTask(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	co.Audit = audit.New(gdb)
+	ctx := context.Background()
+	oldID := makeConfirmWaitTask(t, gdb, "n1")
+
+	superseded, err := co.SupersedeInFlight(ctx, "n1", "t_new", "admin", "开关切换接管")
+	if err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if len(superseded) != 1 || superseded[0].ID != oldID {
+		t.Fatalf("want 1 superseded task %s, got %+v", oldID, superseded)
+	}
+	var tk model.Task
+	if err := gdb.First(&tk, "id = ?", oldID).Error; err != nil {
+		t.Fatalf("查旧 task: %v", err)
+	}
+	if tk.Status != model.TaskSuperseded {
+		t.Fatalf("旧任务应为 superseded, got %s", tk.Status)
+	}
+	if !strings.Contains(tk.Message, "t_new") {
+		t.Fatalf("message 应记录接管者, got %q", tk.Message)
+	}
+	if co.HasInFlight("n1") {
+		t.Fatal("superseded 为终态,节点不应再在途")
+	}
+	// 审计串联:应有 task.superseded 记录
+	var logs []model.AuditLog
+	gdb.Where("task_id = ? AND action = ?", oldID, "task.superseded").Find(&logs)
+	if len(logs) == 0 {
+		t.Fatal("缺少 task.superseded 审计记录")
+	}
+}
+
+// TestSupersedeInFlight_ConfirmWaitRemovalRestoresInstance 验证接管的是移除任务时,
+// 其关联的 pending_delete 实例恢复启用(新动作重新决定其去留)。
+func TestSupersedeInFlight_ConfirmWaitRemovalRestoresInstance(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	oldID := makeConfirmWaitTask(t, gdb, "n1")
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 1, NodeID: "n1", Name: "rm", Enabled: false, Applied: false,
+		PendingDelete: true, PendingDeleteTaskID: oldID,
+	})
+
+	if _, err := co.SupersedeInFlight(ctx, "n1", "t_new", "admin", "接管"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	var inst model.NodePolicyInstance
+	if err := gdb.First(&inst, 1).Error; err != nil {
+		t.Fatalf("实例应保留(恢复): %v", err)
+	}
+	if !inst.Enabled || inst.PendingDelete || inst.PendingDeleteTaskID != "" {
+		t.Fatalf("旧移除实例应恢复启用清标记, got %+v", inst)
+	}
+}
+
+// TestSupersedeInFlight_PendingApprovalTask 验证接管 pending_approval 任务(未下发,无 Agent 快照)。
+func TestSupersedeInFlight_PendingApprovalTask(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	oldID := "t_pend_old"
+	if err := gdb.Create(&model.Task{
+		ID: oldID, NodeID: "n1", Status: model.TaskPendingApproval, Version: time.Now().Unix(),
+	}).Error; err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := co.SupersedeInFlight(ctx, "n1", "t_new", "admin", "接管"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	var tk model.Task
+	if err := gdb.First(&tk, "id = ?", oldID).Error; err != nil {
+		t.Fatalf("查旧 task: %v", err)
+	}
+	if tk.Status != model.TaskSuperseded {
+		t.Fatalf("pending_approval 旧任务应为 superseded, got %s", tk.Status)
+	}
+}
+
+// TestSupersedeInFlight_DispatchingRejected 验证节点有 dispatching/applying 任务(执行中)
+// 时拒绝接管,新动作应返回错误由调用方转 409。
+func TestSupersedeInFlight_DispatchingRejected(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	for _, st := range []model.TaskStatus{model.TaskDispatching, model.TaskApplying} {
+		gdb.Create(&model.Task{ID: "t_" + string(st), NodeID: "n1", Status: st, Version: time.Now().Unix()})
+	}
+	if _, err := co.SupersedeInFlight(ctx, "n1", "t_new", "admin", "接管"); err == nil {
+		t.Fatal("节点有 dispatching/applying 任务时应拒绝接管")
+	}
+	// 在途任务应保持原状态(未被误作废)
+	var tk model.Task
+	gdb.First(&tk, "id = ?", "t_"+string(model.TaskDispatching))
+	if tk.Status != model.TaskDispatching {
+		t.Fatalf("dispatching 任务不应被改动, got %s", tk.Status)
+	}
+}
+
+// TestSupersedeInFlight_NoInflightNoop 验证节点无在途任务时为空操作(不报错、不产生任务)。
+func TestSupersedeInFlight_NoInflightNoop(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	_ = gdb
+	ctx := context.Background()
+	superseded, err := co.SupersedeInFlight(ctx, "n_idle", "t_new", "admin", "接管")
+	if err != nil {
+		t.Fatalf("无在途不应报错: %v", err)
+	}
+	if len(superseded) != 0 {
+		t.Fatalf("无在途应返回空列表, got %+v", superseded)
+	}
+}
+
+// TestApproveDispatch_SupersedesConfirmWait 集成:节点已有 confirm_wait 任务时,
+// 新任务 AutoApprove dispatch(approveAndDispatch)前置接管旧任务——旧任务 superseded,
+// 新任务因测试环境节点未连接而 failed(失败可审计重试,旧任务已让路)。
+func TestApproveDispatch_SupersedesConfirmWait(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	co.Audit = audit.New(gdb)
+	ctx := context.Background()
+	oldID := makeConfirmWaitTask(t, gdb, "n1")
+
+	// 新移除任务(与旧任务同节点)AutoApprove:dispatch 前应接管旧 confirm_wait
+	gdb.Create(&model.NodePolicyInstance{ID: 1, NodeID: "n1", Name: "inst", Enabled: true, Applied: true})
+	tsk, err := co.SubmitRemoval(ctx, 1, SubmitOpts{Author: "admin", AutoApprove: true})
+	if err == nil {
+		t.Fatal("测试环境节点未连接,dispatch 应失败(预期,验证旧任务已接管)")
+	}
+	if tsk == nil {
+		t.Fatal("失败也应返回 task")
+	}
+	var old model.Task
+	if err := gdb.First(&old, "id = ?", oldID).Error; err != nil {
+		t.Fatalf("查旧 task: %v", err)
+	}
+	if old.Status != model.TaskSuperseded {
+		t.Fatalf("旧 confirm_wait 任务应在新 dispatch 前被接管为 superseded, got %s", old.Status)
+	}
+}
+
+// TestApproveDispatch_RecompilesRestoredInstance 验证 P1(2026-08-13 走查发现):
+// 接管恢复的实例必须进入新任务的下发规则集。旧 confirm_wait 移除任务被接管时,
+// restorePendingDelete 把实例 X 恢复为 enabled=true;若新 dispatch 的规则集基于接管前
+// 状态编译(不含 X),DB 显示 X 已下发但节点实际无规则——确定性状态不一致。
+// 修复:approveAndDispatch 在 SupersedeInFlight 后重新编译。
+func TestApproveDispatch_RecompilesRestoredInstance(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	// 节点 + 启用组链(编译合法实例必需)
+	if err := gdb.Create(&model.Node{ID: "n1", Status: model.NodeStatusActive, Hostname: "n1"}).Error; err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	ch := model.CustomChain{Name: "acl-fwd", Parent: "MYFW-FORWARD", Table: "filter", Priority: 1, Enabled: true}
+	if err := gdb.Create(&ch).Error; err != nil {
+		t.Fatalf("create chain: %v", err)
+	}
+	gid := ch.ID
+	// 旧 confirm_wait 移除任务 t_A,关联实例 X(pending_delete,节点上规则已被 -D)
+	oldID := makeConfirmWaitTask(t, gdb, "n1")
+	if err := gdb.Create(&model.NodePolicyInstance{
+		ID: 1, NodeID: "n1", Name: "rm-x", GroupID: gid,
+		Source: "10.1.0.0/24", Protocol: "TCP", PortRange: "80", Action: "DROP",
+		Enabled: false, Applied: false, PendingDelete: true, PendingDeleteTaskID: oldID,
+	}).Error; err != nil {
+		t.Fatalf("create pending-delete instance: %v", err)
+	}
+	// Y:节点其他已启用实例(保证节点有可下发内容)
+	if err := gdb.Create(&model.NodePolicyInstance{
+		ID: 2, NodeID: "n1", Name: "keep-y", GroupID: gid,
+		Source: "10.2.0.0/24", Protocol: "TCP", PortRange: "443", Action: "ACCEPT",
+		Enabled: true, Applied: true,
+	}).Error; err != nil {
+		t.Fatalf("create enabled instance: %v", err)
+	}
+	// 注册节点连接,捕获下发消息
+	send := make(chan *myfwv1.ControllerToAgent, 16)
+	co.Stream.Reg.Register("n1", send)
+
+	// 新 dispatch 接管旧移除任务
+	if _, err := co.Submit(ctx, 0, []string{"n1"}, SubmitOpts{Author: "admin", AutoApprove: true}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	// 从 send 通道收集 Apply 消息(SupersedeInFlight 先发旧任务 Confirm,再发新任务 Apply)
+	var apply *myfwv1.ApplyTask
+	end := time.Now().Add(2 * time.Second)
+	for time.Now().Before(end) {
+		select {
+		case m := <-send:
+			if a := m.GetApply(); a != nil {
+				apply = a
+			}
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if apply == nil {
+		t.Fatal("未收到新任务 Apply 消息")
+	}
+	hasX, hasY := false, false
+	for _, r := range apply.RuleSet.Rules {
+		if r.Action == myfwv1.Action_ACTION_DROP && r.Source == "10.1.0.0/24" {
+			hasX = true
+		}
+		if r.Action == myfwv1.Action_ACTION_ACCEPT && r.Source == "10.2.0.0/24" {
+			hasY = true
+		}
+	}
+	if !hasY {
+		t.Fatalf("已启用实例 Y 应在新任务规则集")
+	}
+	if !hasX {
+		t.Fatalf("P1:接管恢复的实例 X 必须进入新任务下发规则集(当前编译基于接管前状态,节点将缺 X 规则)")
+	}
+}
+
+// TestAutoRollback_LeavesSupersededUntouched 回归防护:任务已被接管(superseded)后,
+// 定时器兜底 autoRollback 不得覆盖终态(防止旧任务回滚冲掉新动作结果)。CAS 条件更新
+// 重构后仍须保持:autoRollback 只允许从 confirm_wait 转移。
+func TestAutoRollback_LeavesSupersededUntouched(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	oldID := makeConfirmWaitTask(t, gdb, "n1")
+	// 先接管
+	if _, err := co.SupersedeInFlight(ctx, "n1", "t_new", "admin", "接管"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	co.autoRollback(oldID)
+	var tk model.Task
+	if err := gdb.First(&tk, "id = ?", oldID).Error; err != nil {
+		t.Fatalf("查旧 task: %v", err)
+	}
+	if tk.Status != model.TaskSuperseded {
+		t.Fatalf("autoRollback 不得覆盖已 superseded 任务, got %s", tk.Status)
+	}
+}
+
+
 // apply 成功后直接 confirmed:不进入 confirm_wait、不 armRollbackTimer,
 // 审计 scene 标记为 self_heal。这是修复 drift 自愈死循环的核心:
 // 自愈任务不再走 5 分钟保护期,避免"自愈→超时回滚→再漂移"循环。
@@ -430,6 +741,45 @@ func TestSubmitRemovalAutoApproveFailureRestores(t *testing.T) {
 	}
 	if tk.Status != model.TaskFailed {
 		t.Fatalf("task 应为 failed, got %s", tk.Status)
+	}
+}
+
+// TestSubmitRemoval_PreviewFilled 验证移除任务的保护期预览被完整填充:
+// policy_name=实例名、change_type=disable、diff_after 含 -D 移除命令。
+// 修复前:SubmitRemoval 创建任务只写死 policy_name="节点策略移除",change_type/diff_after 为空;
+// approveAndDispatch 的 refreshNodePreview 走通用分支查 disabling(排除 pending_delete)
+// 查不到本实例,change_type 被 fillNodeDispatchPreviewFromCache 的 default 分支覆盖为 "dispatch"
+// —— 保护期面板显示"节点策略移除 + 下发待确认 + 无命令",与实际"移除"语义不符。
+func TestSubmitRemoval_PreviewFilled(t *testing.T) {
+	co, gdb := newTestCoordinator(t)
+	ctx := context.Background()
+	// MARK 白名单实例(源+端口+MARK)不需归属组链即可编译,便于断言 -D 命令生成
+	gdb.Create(&model.NodePolicyInstance{
+		ID: 12, NodeID: "n1", Name: "myrule",
+		Source: "192.168.80.174", Destination: "192.168.80.248",
+		Protocol: "TCP", PortRange: "222", Action: "MARK", Mark: 222,
+		Priority: 10, Enabled: true, Applied: true,
+	})
+
+	tsk, err := co.SubmitRemoval(ctx, 12, SubmitOpts{Author: "tester", AutoApprove: true})
+	if err == nil {
+		t.Fatal("测试环境节点未连接 dispatch 应失败(预期,preview 已在 Send 前写入)")
+	}
+	if tsk == nil {
+		t.Fatal("失败也应返回 task")
+	}
+	var tk model.Task
+	if err := gdb.First(&tk, "id = ?", tsk.ID).Error; err != nil {
+		t.Fatalf("查 task: %v", err)
+	}
+	if !strings.Contains(tk.PolicyName, "myrule") {
+		t.Fatalf("policy_name 应含实例名(而非写死'节点策略移除'), got %q", tk.PolicyName)
+	}
+	if tk.ChangeType != "disable" {
+		t.Fatalf("移除任务 change_type 应为 disable(不被误覆盖为 dispatch), got %q", tk.ChangeType)
+	}
+	if !strings.Contains(tk.DiffAfter, "-D") {
+		t.Fatalf("diff_after 应含 -D 移除命令, got %q", tk.DiffAfter)
 	}
 }
 
