@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -10,31 +11,55 @@ import (
 	"iptables-tool/internal/model"
 )
 
-func registerDashboardRoutes(r gin.IRouter, db *gorm.DB) {
+// computeDashboardStats 聚合仪表盘统计(B2 缓存的计算函数)。
+func computeDashboardStats(db *gorm.DB) (any, error) {
+	var nodeCount, activeNodeCount, pendingNodeCount, abnormalNodeCount int64
+	var policyCount, activePolicyCount int64
+	var pendingTaskCount int64
+
+	if err := db.Model(&model.Node{}).Count(&nodeCount).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Model(&model.Node{}).Where("status = ?", model.NodeStatusActive).Count(&activeNodeCount).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Model(&model.Node{}).Where("status = ?", model.NodeStatusPending).Count(&pendingNodeCount).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Model(&model.Node{}).Where("status = ?", model.NodeStatusAbnormal).Count(&abnormalNodeCount).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Model(&model.Policy{}).Count(&policyCount).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Model(&model.Policy{}).Where("enabled = ?", true).Count(&activePolicyCount).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Model(&model.Task{}).Where("status = ?", model.TaskPendingApproval).Count(&pendingTaskCount).Error; err != nil {
+		return nil, err
+	}
+	return gin.H{
+		"node_count":          nodeCount,
+		"active_node_count":   activeNodeCount,
+		"pending_node_count":  pendingNodeCount,
+		"abnormal_node_count": abnormalNodeCount,
+		"policy_count":        policyCount,
+		"active_policy_count": activePolicyCount,
+		"pending_task_count":  pendingTaskCount,
+	}, nil
+}
+
+func registerDashboardRoutes(r gin.IRouter, db *gorm.DB, rc *ReadCache) {
 	r.GET("/api/v1/dashboard/stats", func(c *gin.Context) {
-		var nodeCount, activeNodeCount, pendingNodeCount, abnormalNodeCount int64
-		var policyCount, activePolicyCount int64
-		var pendingTaskCount int64
-
-		db.Model(&model.Node{}).Count(&nodeCount)
-		db.Model(&model.Node{}).Where("status = ?", model.NodeStatusActive).Count(&activeNodeCount)
-		db.Model(&model.Node{}).Where("status = ?", model.NodeStatusPending).Count(&pendingNodeCount)
-		db.Model(&model.Node{}).Where("status = ?", model.NodeStatusAbnormal).Count(&abnormalNodeCount)
-
-		db.Model(&model.Policy{}).Count(&policyCount)
-		db.Model(&model.Policy{}).Where("enabled = ?", true).Count(&activePolicyCount)
-
-		db.Model(&model.Task{}).Where("status = ?", model.TaskPendingApproval).Count(&pendingTaskCount)
-
-		c.JSON(http.StatusOK, gin.H{
-			"node_count":          nodeCount,
-			"active_node_count":   activeNodeCount,
-			"pending_node_count":  pendingNodeCount,
-			"abnormal_node_count": abnormalNodeCount,
-			"policy_count":        policyCount,
-			"active_policy_count": activePolicyCount,
-			"pending_task_count":  pendingTaskCount,
+		// B2:统计 7 次独立 COUNT 属高频只读聚合,5s TTL 缓存复用。
+		stats, err := rc.GetOrCompute("dashboard:stats", 5*time.Second, func() (any, error) {
+			return computeDashboardStats(db)
 		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, stats)
 	})
 
 	// 配置漂移统计:各节点"模板已更新但实例未跟"(模板 SpecVersion > 实例快照)的实例数。

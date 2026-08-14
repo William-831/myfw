@@ -12,80 +12,29 @@ import (
 	"iptables-tool/internal/model"
 )
 
-func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
+func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service, rc *ReadCache) {
 	g := r.Group("/api/v1/nodes")
 
 	g.GET("/list", func(c *gin.Context) {
-		var nodes []model.Node
-		if err := db.Preload("Capability").Find(&nodes).Error; err != nil {
+		// B2:节点列表聚合(全量 instances/templates/certs)是最高频只读接口,5s TTL 缓存复用。
+		// 注意:online 字段来自 Registry 实时状态,不进缓存,每次实时覆盖。
+		v, err := rc.GetOrCompute("nodes:list", 5*time.Second, func() (any, error) {
+			return computeNodesList(db)
+		})
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// 聚合每节点 drift 实例数(实例参数 vs 模板当前参数),供节点列表角标提示
-		var instances []model.NodePolicyInstance
-		db.Find(&instances)
-		tplIDs := map[uint]struct{}{}
-		for i := range instances {
-			if instances[i].TemplateID != 0 {
-				tplIDs[instances[i].TemplateID] = struct{}{}
-			}
-		}
-		templates := map[uint]*model.PolicyTemplate{}
-		if len(tplIDs) > 0 {
-			ids := make([]uint, 0, len(tplIDs))
-			for id := range tplIDs {
-				ids = append(ids, id)
-			}
-			var tpls []model.PolicyTemplate
-			db.Where("id IN ?", ids).Find(&tpls)
-			for i := range tpls {
-				templates[tpls[i].ID] = &tpls[i]
-			}
-		}
-		driftCount := map[string]int{}
-		for i := range instances {
-			if instances[i].TemplateID == 0 {
-				continue
-			}
-			if tpl, ok := templates[instances[i].TemplateID]; ok {
-				if instanceDrift(&instances[i], tpl) {
-					driftCount[instances[i].NodeID]++
-				}
-			}
+		nodes := v.([]model.Node)
+		// 实时覆盖 online(缓存只聚合 drift/证书,连接状态必须实时)
+		connected := make(map[string]struct{}, 16)
+		for _, id := range streamSvc.Reg.Connected() {
+			connected[id] = struct{}{}
 		}
 		for i := range nodes {
-			nodes[i].DriftCount = driftCount[nodes[i].ID]
+			_, nodes[i].Online = connected[nodes[i].ID]
 		}
-		// 聚合各节点当前有效证书过期时间(revoked=false 中 not_after 最大)
-		if len(nodes) > 0 {
-			ids := make([]string, 0, len(nodes))
-			for i := range nodes {
-				ids = append(ids, nodes[i].ID)
-			}
-			var certs []model.Certificate
-			db.Where("node_id IN ? AND revoked = ?", ids, false).Find(&certs)
-			certMap := make(map[string]time.Time, len(certs))
-			for _, c := range certs {
-				if t, ok := certMap[c.NodeID]; !ok || c.NotAfter.After(t) {
-					certMap[c.NodeID] = c.NotAfter
-				}
-			}
-			for i := range nodes {
-				if t, ok := certMap[nodes[i].ID]; ok {
-					nt := t
-					nodes[i].CertNotAfter = &nt
-				}
-			}
-		}
-			// 查询 Registry 实时连接状态,populate online 字段。
-			connected := make(map[string]struct{}, 16)
-			for _, id := range streamSvc.Reg.Connected() {
-				connected[id] = struct{}{}
-			}
-			for i := range nodes {
-				_, nodes[i].Online = connected[nodes[i].ID]
-			}
-			c.JSON(http.StatusOK, gin.H{"nodes": nodes})
+		c.JSON(http.StatusOK, gin.H{"nodes": nodes})
 	})
 
 	g.GET("/:id", func(c *gin.Context) {
@@ -103,6 +52,9 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 		}
 		c.JSON(http.StatusOK, node)
 	})
+
+	// 节点/实例变更后失效列表缓存(写操作调用,保证一致性)
+	invalidateNodesList := func() { rc.DeletePrefix("nodes") }
 
 	g.PUT("/:id", func(c *gin.Context) {
 		id := c.Param("id")
@@ -137,6 +89,7 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		invalidateNodesList() // 节点信息变更后失效列表缓存
 
 		var node model.Node
 		db.Preload("Capability").Where("id = ?", id).First(&node)
@@ -175,6 +128,7 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		invalidateNodesList() // 节点删除后失效列表缓存
 		c.Status(http.StatusNoContent)
 	})
 
@@ -187,4 +141,76 @@ func registerNodeRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Service) {
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "续签指令已下发"})
 	})
+}
+
+// computeNodesList 聚合节点列表(B2 缓存的计算函数):Preload 能力 + 每节点 drift 实例数
+// + 当前有效证书过期时间。online 字段不在内,由路由层用 Registry 实时覆盖。
+func computeNodesList(db *gorm.DB) (any, error) {
+	var nodes []model.Node
+	if err := db.Preload("Capability").Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	// 聚合每节点 drift 实例数(实例参数 vs 模板当前参数),供节点列表角标提示
+	var instances []model.NodePolicyInstance
+	if err := db.Find(&instances).Error; err != nil {
+		return nil, err
+	}
+	tplIDs := map[uint]struct{}{}
+	for i := range instances {
+		if instances[i].TemplateID != 0 {
+			tplIDs[instances[i].TemplateID] = struct{}{}
+		}
+	}
+	templates := map[uint]*model.PolicyTemplate{}
+	if len(tplIDs) > 0 {
+		ids := make([]uint, 0, len(tplIDs))
+		for id := range tplIDs {
+			ids = append(ids, id)
+		}
+		var tpls []model.PolicyTemplate
+		if err := db.Where("id IN ?", ids).Find(&tpls).Error; err != nil {
+			return nil, err
+		}
+		for i := range tpls {
+			templates[tpls[i].ID] = &tpls[i]
+		}
+	}
+	driftCount := map[string]int{}
+	for i := range instances {
+		if instances[i].TemplateID == 0 {
+			continue
+		}
+		if tpl, ok := templates[instances[i].TemplateID]; ok {
+			if instanceDrift(&instances[i], tpl) {
+				driftCount[instances[i].NodeID]++
+			}
+		}
+	}
+	for i := range nodes {
+		nodes[i].DriftCount = driftCount[nodes[i].ID]
+	}
+	// 聚合各节点当前有效证书过期时间(revoked=false 中 not_after 最大)
+	if len(nodes) > 0 {
+		ids := make([]string, 0, len(nodes))
+		for i := range nodes {
+			ids = append(ids, nodes[i].ID)
+		}
+		var certs []model.Certificate
+		if err := db.Where("node_id IN ? AND revoked = ?", ids, false).Find(&certs).Error; err != nil {
+			return nil, err
+		}
+		certMap := make(map[string]time.Time, len(certs))
+		for _, c := range certs {
+			if t, ok := certMap[c.NodeID]; !ok || c.NotAfter.After(t) {
+				certMap[c.NodeID] = c.NotAfter
+			}
+		}
+		for i := range nodes {
+			if t, ok := certMap[nodes[i].ID]; ok {
+				nt := t
+				nodes[i].CertNotAfter = &nt
+			}
+		}
+	}
+	return nodes, nil
 }

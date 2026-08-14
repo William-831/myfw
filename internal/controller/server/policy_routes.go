@@ -273,7 +273,7 @@ func approvePolicyVersion(c *gin.Context, svc *policy.Service, co *task.Coordina
 		t, err := co.Submit(c.Request.Context(), p.ID, nodeIDs, task.SubmitOpts{
 			Author:          actor(c),
 			AutoApprove:     false,
-			ConfirmDeadline: 5 * time.Minute,
+			ConfirmDeadline: policyCfg.ConfirmDeadlineDefault, // B5:保护期默认时长(默认 5m,可 YAML 调整)
 		})
 		if err == nil {
 			for _, tk := range t {

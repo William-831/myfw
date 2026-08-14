@@ -9,6 +9,11 @@ export default defineConfig({
       '@': resolve(__dirname, 'src')
     }
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    include: ['src/__tests__/**/*.test.js']
+  },
   server: {
     port: 5173,
     proxy: {

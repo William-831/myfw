@@ -82,38 +82,21 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getTasks, approveTask, rejectTask, confirmTask, rollbackTask, getNodes } from '@/api'
+import { getTasks, approveTask, rejectTask, confirmTask, rollbackTask } from '@/api'
+import { useNodeList } from '@/composables/useNodeList'
+import { LABELS as STATUS_LABELS, TYPES as STATUS_TYPES } from '@/composables/useStatusLabels'
 
 const loading = ref(false)
 const filterStatus = ref('pending_approval')
 const tasks = ref([])
-const nodes = ref([])
+const { nodes, loadNodes, nodeIP } = useNodeList()
 
 const viewDialogVisible = ref(false)
 const viewTask = reactive({ id: '', node_id: '', policy_name: '', status: '', message: '', reviewer: '', created_at: '', updated_at: '' })
 
-// 简化状态:对外只显 待审批/已通过/已拒绝/已回滚,中间态统一"处理中"
-const getStatusLabel = (status) => ({
-  pending_approval: '待审批',
-  confirm_wait: '待确认',
-  confirmed: '已通过',
-  failed: '已拒绝',
-  rolled_back: '已回滚',
-  approved: '处理中', dispatching: '处理中', applying: '处理中'
-}[status] || status)
-
-const getStatusType = (status) => ({
-  pending_approval: 'warning',
-  confirmed: 'success',
-  failed: 'danger',
-  rolled_back: 'danger',
-  approved: 'info', dispatching: 'info', applying: 'info', confirm_wait: 'info'
-}[status] || 'info')
-
-const nodeIP = (id) => {
-  const n = nodes.value.find(x => x.id === id)
-  return n ? (n.ip || n.hostname || id.slice(0, 12)) : id.slice(0, 12)
-}
+// 简化状态标签/类型集中到 useStatusLabels(LABELS/TYPES),此处仅薄包装保持调用点不变
+const getStatusLabel = (status) => STATUS_LABELS[status] || status
+const getStatusType = (status) => STATUS_TYPES[status] || 'info'
 
 const formatTime = (time) => {
   if (!time) return '-'
@@ -131,13 +114,6 @@ const loadTasks = async () => {
   } finally {
     loading.value = false
   }
-}
-
-const loadNodes = async () => {
-  try {
-    const data = await getNodes()
-    nodes.value = data.nodes || []
-  } catch {}
 }
 
 const handleView = (row) => {

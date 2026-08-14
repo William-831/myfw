@@ -1,9 +1,24 @@
 import axios from 'axios'
+import { createGetCache } from './cache'
 
 const service = axios.create({
   baseURL: '/api',
   timeout: 15000
 })
+
+// F3 只读 GET 缓存:无参只读接口(节点列表/静态字典)在 TTL 内复用,写操作后主动失效。
+// 节点列表 5s、静态字典 30s——低频变更数据,切换页面不重复拉取。
+const readCaches = {
+  nodes: createGetCache({ ttl: 5000 }),
+  dicts: createGetCache({ ttl: 30000 }),
+}
+// 写操作统一失效:任意节点/模板/组/地址组/标记变更后清空对应前缀缓存
+const invalidateAfterWrite = (type) => {
+  if (type === 'nodes') readCaches.nodes.invalidatePrefix('nodes')
+  else readCaches.dicts.invalidatePrefix('dicts')
+}
+// 带 URL 的缓存 GET:同一 URL 在 TTL 内只发一次请求
+const cachedGet = (cache, url) => () => cache.get(url, () => service.get(url))
 
 service.interceptors.request.use(
   (config) => {
@@ -37,36 +52,36 @@ export const login = (data) => service.post('/v1/auth/login', data)
 export const changePassword = (data) => service.post('/v1/auth/change-password', data)
 
 // 节点管理
-export const getNodes = () => service.get('/v1/nodes/list')
+export const getNodes = cachedGet(readCaches.nodes, '/v1/nodes/list')
 export const getNode = (id) => service.get(`/v1/nodes/${id}`)
-export const updateNode = (id, data) => service.put(`/v1/nodes/${id}`, data)
-export const deleteNode = (id) => service.delete(`/v1/nodes/${id}`)
+export const updateNode = (id, data) => service.put(`/v1/nodes/${id}`, data).then((r) => { invalidateAfterWrite('nodes'); return r })
+export const deleteNode = (id) => service.delete(`/v1/nodes/${id}`).then((r) => { invalidateAfterWrite('nodes'); return r })
 export const createBootstrapToken = (data) => service.post('/v1/nodes/bootstrap', data)
-export const approveNode = (id) => service.post(`/v1/nodes/${id}/approve`)
-export const rejectNode = (id) => service.post(`/v1/nodes/${id}/reject`)
-export const renewNodeCert = (id) => service.post(`/v1/nodes/${id}/renew-cert`)
+export const approveNode = (id) => service.post(`/v1/nodes/${id}/approve`).then((r) => { invalidateAfterWrite('nodes'); return r })
+export const rejectNode = (id) => service.post(`/v1/nodes/${id}/reject`).then((r) => { invalidateAfterWrite('nodes'); return r })
+export const renewNodeCert = (id) => service.post(`/v1/nodes/${id}/renew-cert`).then((r) => { invalidateAfterWrite('nodes'); return r })
 
 // 策略管理(C 档):见下方 templates/instances API。旧 Policy CRUD 已废弃。
 
 // 地址组(白/黑名单 IP 段集合)
-export const getAddressGroups = () => service.get('/v1/address-groups')
+export const getAddressGroups = cachedGet(readCaches.dicts, '/v1/address-groups')
 export const getAddressGroup = (id) => service.get(`/v1/address-groups/${id}`)
-export const createAddressGroup = (data) => service.post('/v1/address-groups', data)
-export const updateAddressGroup = (id, data) => service.put(`/v1/address-groups/${id}`, data)
-export const deleteAddressGroup = (id) => service.delete(`/v1/address-groups/${id}`)
+export const createAddressGroup = (data) => service.post('/v1/address-groups', data).then((r) => { invalidateAfterWrite(); return r })
+export const updateAddressGroup = (id, data) => service.put(`/v1/address-groups/${id}`, data).then((r) => { invalidateAfterWrite(); return r })
+export const deleteAddressGroup = (id) => service.delete(`/v1/address-groups/${id}`).then((r) => { invalidateAfterWrite(); return r })
 
-export const getMarks = () => service.get('/v1/marks')
+export const getMarks = cachedGet(readCaches.dicts, '/v1/marks')
 export const getMark = (id) => service.get(`/v1/marks/${id}`)
-export const createMark = (data) => service.post('/v1/marks', data)
-export const updateMark = (id, data) => service.put(`/v1/marks/${id}`, data)
-export const deleteMark = (id) => service.delete(`/v1/marks/${id}`)
+export const createMark = (data) => service.post('/v1/marks', data).then((r) => { invalidateAfterWrite(); return r })
+export const updateMark = (id, data) => service.put(`/v1/marks/${id}`, data).then((r) => { invalidateAfterWrite(); return r })
+export const deleteMark = (id) => service.delete(`/v1/marks/${id}`).then((r) => { invalidateAfterWrite(); return r })
 
 // 自定义链(业务子链 MYFW-<name>)
-export const getCustomChains = () => service.get('/v1/custom-chains')
+export const getCustomChains = cachedGet(readCaches.dicts, '/v1/custom-chains')
 export const getCustomChain = (id) => service.get(`/v1/custom-chains/${id}`)
-export const createCustomChain = (data) => service.post('/v1/custom-chains', data)
-export const updateCustomChain = (id, data) => service.put(`/v1/custom-chains/${id}`, data)
-export const deleteCustomChain = (id) => service.delete(`/v1/custom-chains/${id}`)
+export const createCustomChain = (data) => service.post('/v1/custom-chains', data).then((r) => { invalidateAfterWrite(); return r })
+export const updateCustomChain = (id, data) => service.put(`/v1/custom-chains/${id}`, data).then((r) => { invalidateAfterWrite(); return r })
+export const deleteCustomChain = (id) => service.delete(`/v1/custom-chains/${id}`).then((r) => { invalidateAfterWrite(); return r })
 
 // 任务 / 审批管理
 export const getTasks = (params) => service.get('/v1/tasks', { params })
@@ -103,12 +118,12 @@ export const execIptables = (nodeId, command) => service.post(`/v1/iptables/exec
 export const getConnectedNodes = () => service.get('/v1/nodes/connected')
 
 // 策略模板库 + 节点策略实例 (C 档:模板/实例分离)
-export const getTemplates = () => service.get('/v1/templates')
-export const createTemplate = (data) => service.post('/v1/templates', data)
-export const updateTemplate = (id, data) => service.put(`/v1/templates/${id}`, data)
-export const deleteTemplate = (id) => service.delete(`/v1/templates/${id}`)
+export const getTemplates = cachedGet(readCaches.dicts, '/v1/templates')
+export const createTemplate = (data) => service.post('/v1/templates', data).then((r) => { invalidateAfterWrite(); return r })
+export const updateTemplate = (id, data) => service.put(`/v1/templates/${id}`, data).then((r) => { invalidateAfterWrite(); return r })
+export const deleteTemplate = (id) => service.delete(`/v1/templates/${id}`).then((r) => { invalidateAfterWrite(); return r })
 export const exportTemplates = () => service.get('/v1/templates/export')
-export const importTemplates = (data) => service.post('/v1/templates/import', data)
+export const importTemplates = (data) => service.post('/v1/templates/import', data).then((r) => { invalidateAfterWrite(); return r })
 export const getNodeInstances = (nodeId) => service.get(`/v1/nodes/${nodeId}/instances`)
 export const createInstance = (nodeId, data) => service.post(`/v1/nodes/${nodeId}/instances`, data)
 export const updateInstance = (id, data) => service.put(`/v1/instances/${id}`, data)

@@ -87,7 +87,8 @@ func applyNow(c *gin.Context, s *stream.Service) {
 	}
 
 	// Wait for THIS specific task_id, ignoring other results that arrive.
-	deadlineCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	// B3:超时 10s→8s 返回 accepted(HTTP 长阻塞降级,后续终态由前端轮询收敛)
+	deadlineCtx, cancel := context.WithTimeout(c.Request.Context(), applyWaitTimeout)
 	defer cancel()
 	for {
 		select {
@@ -171,6 +172,10 @@ func compileWireRule(id, dir, src, dst, proto, port, action string, mark uint32,
 		Priority:    prio,
 	}, nil
 }
+
+// applyWaitTimeout applyNow 同步等待 Agent 结果的上限(B3:降级,超时返回 accepted)。
+// B5:值迁移到 policyCfg.ApplyWaitTimeout(默认 8s),运维可 YAML 调整。
+var applyWaitTimeout = policyCfg.ApplyWaitTimeout
 
 func defaultConfirmDeadline(seconds int64) time.Duration {
 	if seconds <= 0 {

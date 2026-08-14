@@ -175,7 +175,7 @@ func New(cfg config.Config, log *slog.Logger, db *gorm.DB) (*Server, error) {
 
 	// Web (Gin) REST 路由
 	assetH := asset.New(db, auditSink, cfg.Bootstrap.TokenTTL)
-	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink, revSvc)
+	webHandler := newWebHandler(db, assetH, streamSvc, policySvc, co, comp, auditSink, revSvc, cfg)
 
 	s := &Server{
 		cfg:    cfg,
@@ -372,10 +372,13 @@ func autoReregister(ctx context.Context, db *gorm.DB, cert *x509.Certificate, no
 }
 
 // newWebHandler 构建 Gin 引擎。
-func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service, policySvc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink, revSvc *revision.Service) http.Handler {
+func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service, policySvc *policy.Service, co *task.Coordinator, comp *compiler.Compiler, auditSink *audit.Sink, revSvc *revision.Service, cfg config.Config) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
+	// B5:启动时一次性写入策略阈值(运行时只读),默认值=现状,运维可 YAML 调整
+	policyCfg = cfg.Policy
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(requestLogger(slog.Default())) // B4:全量请求结构化日志(method/path/status/ms/user)
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -386,13 +389,16 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 	authH := auth.New(db)
 	authH.Register(r)
 
+	// B2:只读高频聚合缓存(dashboard/stats、nodes/list 5s TTL 复用)
+	readCache := NewReadCache()
+
 	assets.Register(r)
-	registerNodeRoutes(r, db, streamSvc)
+	registerNodeRoutes(r, db, streamSvc, readCache)
 	registerTaskRoutes(r, streamSvc)
 	registerTaskLifecycleRoutes(r, co)
 	registerPolicyRoutes(r, policySvc, co, comp, auditSink)
 	registerAuditRoutes(r, auditSink)
-	registerDashboardRoutes(r, db)
+	registerDashboardRoutes(r, db, readCache)
 	registerIptablesRoutes(r, db, streamSvc, comp, auditSink)
 	registerTemplateRoutes(r, db, co, auditSink, streamSvc)
 	registerAddressGroupRoutes(r, db)
@@ -426,7 +432,7 @@ func BuildWebHandler(db *gorm.DB, tokenTTL time.Duration) http.Handler {
 	co.ArchiveFn = func(ctx context.Context, nodeID, taskID string) error {
 		return revSvc.ArchiveApply(ctx, nodeID, taskID)
 	}
-	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink, revSvc)
+	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink, revSvc, config.Default())
 }
 
 // BuildWebHandlerWithStream 测试辅助：注入共享的 stream.Service。
@@ -440,7 +446,7 @@ func BuildWebHandlerWithStream(db *gorm.DB, tokenTTL time.Duration, streamSvc *s
 	co.ArchiveFn = func(ctx context.Context, nodeID, taskID string) error {
 		return revSvc.ArchiveApply(ctx, nodeID, taskID)
 	}
-	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink, revSvc)
+	return newWebHandler(db, assets, streamSvc, policySvc, co, comp, auditSink, revSvc, config.Default())
 }
 
 // Run 启动两个服务器并阻塞直到 ctx 取消。

@@ -216,7 +216,7 @@ func registerIptablesRoutes(r gin.IRouter, db *gorm.DB, streamSvc *stream.Servic
 		for i := range stats {
 			statByID[stats[i].InstanceID] = stats[i]
 		}
-		threshold := time.Now().Add(-deadRuleThresholdDays * 24 * time.Hour)
+		threshold := time.Now().Add(-time.Duration(deadRuleThresholdDays) * 24 * time.Hour)
 		type hitVO struct {
 			InstanceID uint       `json:"instance_id"`
 			Name       string     `json:"name"`
@@ -304,6 +304,6 @@ func isMYFWRule(rule string) bool {
 		strings.Contains(rule, "-j MYFW-")
 }
 
-// deadRuleThresholdDays 死规则判定阈值:实例启用且 packets=0 且创建超此天数 -> dead。
-// 首版硬编码 7 天;后续需要可配置化时迁移到 SystemSetting。
-const deadRuleThresholdDays = 7
+// deadRuleThresholdDays 已迁移到 policyCfg.DeadRuleThresholdDays(B5:config 收纳)。
+// 默认 3 天(用户决策 2026-08-13:7 天改 3 天),运维可在 YAML policy.dead_rule_threshold_days 调整。
+var deadRuleThresholdDays = policyCfg.DeadRuleThresholdDays

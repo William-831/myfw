@@ -20,6 +20,14 @@ type Config struct {
 	Audit     AuditConfig     `yaml:"audit"`
 	Log       LogConfig       `yaml:"log"`
 	Security  SecurityConfig  `yaml:"security"`
+	Policy    PolicyConfig    `yaml:"policy"`
+}
+
+// PolicyConfig 策略/规则相关业务阈值(B5:原散落各文件的硬编码统一收纳,默认值=现状不变)。
+type PolicyConfig struct {
+	DeadRuleThresholdDays    int           `yaml:"dead_rule_threshold_days"` // 死规则判定阈值:实例启用且 packets=0 且创建超此天数(原 iptables_routes.go const=3)
+	ConfirmDeadlineDefault   time.Duration `yaml:"confirm_deadline_default"`  // 保护期默认时长:未指定 deadline 时的兜底(原 policy_routes.go 5*time.Minute)
+	ApplyWaitTimeout         time.Duration `yaml:"apply_wait_timeout"`        // applyNow 同步等待 Agent 结果上限,超时返回 accepted(原 task_routes.go const=8s)
 }
 
 type ServerConfig struct {
@@ -97,6 +105,12 @@ func Default() Config {
 		Audit:     AuditConfig{RetentionDays: 365},
 		Log:       LogConfig{Level: "info", Format: "text"},
 		Security:  SecurityConfig{AutoReregister: true},
+		// B5:默认值与现状硬编码一致(3 天 / 5 分钟 / 8 秒),行为零变化,运维可 YAML 调整
+		Policy: PolicyConfig{
+			DeadRuleThresholdDays:  3,
+			ConfirmDeadlineDefault: 5 * time.Minute,
+			ApplyWaitTimeout:       8 * time.Second,
+		},
 	}
 }
 

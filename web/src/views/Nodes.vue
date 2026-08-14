@@ -429,11 +429,11 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom, CircleCheck } from '@element-plus/icons-vue'
-import { getNodes, getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks, approveNode, getNodeRevisions, rollbackRevision } from '@/api'
+import { getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks, approveNode, getNodeRevisions, rollbackRevision } from '@/api'
 import { useGuardStore } from '@/stores/guard'
+import { useNodeList } from '@/composables/useNodeList'
 
 const loading = ref(false)
-const nodes = ref([])
 const guard = useGuardStore()
 const guardNodeIds = ref(new Set())
 const hasGuard = (nodeId) => guardNodeIds.value.has(nodeId)
@@ -445,6 +445,11 @@ const loadGuardTasks = async () => {
     // 保护期任务加载失败不影响节点列表展示
   }
 }
+// 节点列表复用 useNodeList(加载 + 缓存 + onLoaded 钩子;loadGuardTasks 已声明在上方)
+const { nodes, loadNodes } = useNodeList({
+  onLoaded: loadGuardTasks,
+  onError: () => ElMessage.error('加载节点列表失败'),
+})
 const addDialogVisible = ref(false)
 const editDialogVisible = ref(false)
 const detailDialogVisible = ref(false)
@@ -651,18 +656,10 @@ const handleApprove = async (row) => {
   }
 }
 
-// 加载节点列表
-const loadNodes = async () => {
+// 加载节点列表(附加 loading 状态;保护期任务联动已在 useNodeList onLoaded 钩子)
+const loadNodesWithLoading = async () => {
   loading.value = true
-  try {
-    const data = await getNodes()
-    nodes.value = data.nodes || []
-    loadGuardTasks()
-  } catch {
-    ElMessage.error('加载节点列表失败')
-  } finally {
-    loading.value = false
-  }
+  try { await loadNodes() } finally { loading.value = false }
 }
 
 // 添加节点
@@ -1018,7 +1015,7 @@ const handleDelete = async (row) => {
   }
 }
 
-onMounted(loadNodes)
+onMounted(loadNodesWithLoading)
 </script>
 
 <style scoped>
