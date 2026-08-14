@@ -1,6 +1,7 @@
 package simulator
 
 import (
+	"strings"
 	"testing"
 
 	myfwv1 "iptables-tool/api/myfw/v1"
@@ -472,4 +473,231 @@ func TestEvaluate_ICMP(t *testing.T) {
 	}
 	assertVerdict(t, got, VerdictAccept)
 	assertMatchedRule(t, got, "i-icmp")
+}
+
+// assertResultMeta 断言仿真产物的完整度:每步带命令预览、整体带自然语言结论。
+func assertResultMeta(t *testing.T, res *Result) {
+	t.Helper()
+	if res.Conclusion == "" {
+		t.Fatalf("结论为空:verdict=%q steps=%+v note=%q", res.Verdict, res.Steps, res.Note)
+	}
+	for _, s := range res.Steps {
+		if s.Command == "" {
+			t.Fatalf("步骤 %q(chain=%s action=%s)缺少命令预览", s.RuleID, s.Chain, s.Action)
+		}
+	}
+}
+
+// TestEvaluate_ProducesMeta: Evaluate 端到端保证——每个步骤带命令预览、结果带结论。
+func TestEvaluate_ProducesMeta(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i5", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "22"
+			r.Mark = 15
+		}),
+		rule("i5-acl", "MARKACL-IN", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Source = "192.168.1.0/24"
+			r.MatchMark = 15
+		}),
+		rule("i5-drop", "MARKACL-IN", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+			r.MatchMark = 15
+			r.Priority = 1
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{
+		chain("MARKMANGLE", "MYFW-MANGLE", "mangle"),
+		chain("MARKACL-IN", "MYFW-INPUT", "filter"),
+	}
+
+	// 命中场景:打标步 + 白名单放行步都应有命令预览。
+	got, err := Evaluate(tcpFlow("INPUT", "192.168.1.5", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	assertResultMeta(t, got)
+	assertMatchedRule(t, got, "i5-acl")
+
+	// 未命中场景:所有步骤(未命中)也应有命令预览。
+	got, err = Evaluate(tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictDrop)
+	assertResultMeta(t, got)
+}
+
+// TestEvaluate_StepActionPlain: Step.Action 应为简洁动作名(去 ACTION_ 枚举前缀),
+// 供 terminatingStep/buildConclusion 的字符串比较与前端 class 使用。
+func TestEvaluate_StepActionPlain(t *testing.T) {
+	rules := []*myfwv1.CompiledRule{
+		rule("i5", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+			r.PortRange = "22"
+			r.Mark = 15
+		}),
+		rule("i5-acl", "MARKACL-IN", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.Source = "192.168.1.0/24"
+			r.MatchMark = 15
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{
+		chain("MARKMANGLE", "MYFW-MANGLE", "mangle"),
+		chain("MARKACL-IN", "MYFW-INPUT", "filter"),
+	}
+
+	got, err := Evaluate(tcpFlow("INPUT", "192.168.1.5", "10.0.0.1", 30000, 22), rules, chains, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	// MARK→ACCEPT 两段式:打标步 + 白名单放行步,结论应含"打标"且含"放行"。
+	for _, s := range got.Steps {
+		if strings.HasPrefix(s.Action, "ACTION_") {
+			t.Errorf("step %q action 应去枚举前缀,got %q", s.RuleID, s.Action)
+		}
+	}
+	if !strings.Contains(got.Conclusion, "打标") || !strings.Contains(got.Conclusion, "放行") {
+		t.Errorf("MARK→ACCEPT 两段式结论缺失,got %q", got.Conclusion)
+	}
+}
+
+// TestFormatCommand: 命令预览对齐 driver compileRule 输出。
+func TestFormatCommand(t *testing.T) {
+	cases := []struct {
+		name  string
+		rule  *myfwv1.CompiledRule
+		table string
+		want  []string // 命令中必须包含的片段
+	}{
+		{
+			name: "ACCEPT",
+			rule: rule("i1", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+				r.Source = "192.168.1.0/24"
+				r.PortRange = "22"
+			}),
+			table: "filter",
+			want:  []string{"iptables", "-A", "MYFW-business-input", "-s", "192.168.1.0/24", "-p", "tcp", "--dport", "22", "-j", "ACCEPT"},
+		},
+		{
+			name: "DROP",
+			rule: rule("i2", "acl-fwd", myfwv1.Action_ACTION_DROP, func(r *myfwv1.CompiledRule) {
+				r.PortRange = "443"
+			}),
+			table: "filter",
+			want:  []string{"iptables", "-A", "MYFW-acl-fwd", "-j", "DROP"},
+		},
+		{
+			name: "MARK_带mangle表",
+			rule: rule("i3", "MARKMANGLE", myfwv1.Action_ACTION_MARK, func(r *myfwv1.CompiledRule) {
+				r.Mark = 15
+			}),
+			table: "mangle",
+			want:  []string{"iptables", "-t", "mangle", "-A", "MYFW-MARKMANGLE", "-j", "MARK", "--set-mark", "15"},
+		},
+		{
+			name: "match_mark条件",
+			rule: rule("i4", "MARKACL-IN", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+				r.MatchMark = 15
+			}),
+			table: "filter",
+			want:  []string{"-m", "mark", "--mark", "15", "-j", "ACCEPT"},
+		},
+		{
+			name: "地址组源匹配",
+			rule: rule("i5", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+				r.SourceGroup = "internal"
+			}),
+			table: "filter",
+			want:  []string{"-m", "set", "--match-set", "MYFW-internal", "src", "-j", "ACCEPT"},
+		},
+		{
+			name: "DNAT",
+			rule: rule("i6", "nat-pre", myfwv1.Action_ACTION_DNAT, func(r *myfwv1.CompiledRule) {
+				r.NatTo = "10.0.0.9:8080"
+			}),
+			table: "nat",
+			want:  []string{"iptables", "-t", "nat", "-j", "DNAT", "--to-destination", "10.0.0.9:8080"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatCommand(tc.rule, tc.table)
+			for _, frag := range tc.want {
+				if !strings.Contains(got, frag) {
+					t.Errorf("命令 %q 缺少片段 %q", got, frag)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildConclusion: 自然语言结论覆盖五类最终判定。
+func TestBuildConclusion(t *testing.T) {
+	cases := []struct {
+		name string
+		flow Flow
+		res  *Result
+		want []string // 结论中必须包含的片段
+	}{
+		{
+			name: "ACCEPT",
+			flow: tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 40000, 443),
+			res: &Result{
+				Verdict: VerdictAccept,
+				Steps: []Step{
+					{Chain: "MYFW-business-input", RuleID: "i-http", Action: "ACCEPT", Matched: true},
+				},
+			},
+			want: []string{"源 1.2.3.4", "443", "MYFW-business-input", "i-http", "放行"},
+		},
+		{
+			name: "DROP",
+			flow: tcpFlow("FORWARD", "10.0.0.2", "172.16.0.1", 40000, 443),
+			res: &Result{
+				Verdict: VerdictDrop,
+				Steps: []Step{
+					{Chain: "MYFW-acl-fwd", RuleID: "i-drop", Action: "DROP", Matched: true},
+				},
+			},
+			want: []string{"172.16.0.1", "MYFW-acl-fwd", "i-drop", "拦截"},
+		},
+		{
+			name: "REJECT",
+			flow: tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 40000, 3389),
+			res: &Result{
+				Verdict: VerdictReject,
+				Steps: []Step{
+					{Chain: "MYFW-business-input", RuleID: "i-rej", Action: "REJECT", Matched: true},
+				},
+			},
+			want: []string{"3389", "i-rej", "拒绝"},
+		},
+		{
+			name: "PASS",
+			flow: tcpFlow("INPUT", "1.2.3.4", "10.0.0.1", 40000, 22),
+			res:  &Result{Verdict: VerdictPass, Steps: nil},
+			want: []string{"未命中任何终止规则", "PASS"},
+		},
+		{
+			name: "MARK后ACCEPT_两段式",
+			flow: tcpFlow("INPUT", "192.168.1.5", "10.0.0.1", 30000, 22),
+			res: &Result{
+				Verdict: VerdictAccept,
+				Steps: []Step{
+					{Chain: "MYFW-MARKMANGLE", RuleID: "i5", Action: "MARK", Matched: true, Mark: 15},
+					{Chain: "MYFW-MARKACL-IN", RuleID: "i5-acl", Action: "ACCEPT", Matched: true},
+				},
+			},
+			want: []string{"打标", "15", "i5-acl", "放行"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildConclusion(tc.flow, tc.res)
+			for _, frag := range tc.want {
+				if !strings.Contains(got, frag) {
+					t.Errorf("结论 %q 缺少片段 %q", got, frag)
+				}
+			}
+		})
+	}
 }

@@ -10,6 +10,8 @@
       </div>
     </div>
     <ExpertMode v-if="expertMode" />
+    <!-- 保护期是节点级:顶部仅保留整体待确认提示(点击跳转面板确认);具体到实例的
+         接管/待确认定位由各实例条目的"⏳ 新状态待确认"标签承载,不再单独出接管 banner -->
     <el-alert
       v-if="guardTask"
       type="warning"
@@ -17,9 +19,10 @@
       class="guard-banner"
       @click="guard.open()"
     >
-      <span>⏰ 该节点有保护期待确认任务 — 操作者 {{ guardTask.reviewer || '-' }}，{{ guardTask.policy_name || '节点策略' }}，点击前往确认</span>
+      <div class="guard-banner-main">⏰ 该节点有保护期待确认任务 — 操作者 {{ guardTask.reviewer || '-' }}，{{ guardTask.policy_name || '节点全量变更' }}，点击前往确认<template v-if="recentSuperseded">；旧任务 {{ recentSuperseded.id }} 已被新动作接管,保护期已重置</template></div>
+      <pre v-if="guardTask.diff_after" class="guard-banner-diff">{{ guardTask.diff_after }}</pre>
     </el-alert>
-    <el-row v-else :gutter="14" class="np-body">
+    <el-row :gutter="14" class="np-body">
       <!-- 左:节点列表 -->
       <el-col :span="6">
         <el-card class="node-card" v-loading="nodesLoading">
@@ -40,11 +43,21 @@
             <div class="inst-head">
               <span>{{ currentNodeLabel }} 的策略实例 ({{ instances.length }})</span>
               <div class="inst-actions">
-                <el-button size="small" type="primary" @click="openCreate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>新建策略</el-button>
-                <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId"><el-icon><Plus /></el-icon>从模板实例化</el-button>
-                <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length" :loading="dispatching">下发节点(全量对齐)</el-button>
-                <el-button size="small" type="warning" @click="handleSyncAll" :disabled="!selectedNodeId || !driftInstanceCount" :loading="syncingAll">同步全部漂移({{ driftInstanceCount }})</el-button>
-                <el-checkbox v-model="onlyDead" size="small" class="dead-filter">仅看死规则</el-checkbox>
+                <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '点击创建一条新的策略实例(手动填写五元组与动作)'" placement="top">
+                  <el-button size="small" type="primary" @click="openCreate" :disabled="!selectedNodeId || nodeBusy"><el-icon><Plus /></el-icon>新建策略</el-button>
+                </el-tooltip>
+                <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '从模板库实例化一条策略,自动填充模板参数,可按节点特化源 IP 等字段'" placement="top">
+                  <el-button size="small" @click="openInstantiate" :disabled="!selectedNodeId || nodeBusy"><el-icon><Plus /></el-icon>从模板实例化</el-button>
+                </el-tooltip>
+                <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '将该节点全部已启用实例编译下发到节点,并删除不在期望态中的多余规则(全量对齐);保护期内新动作将接管旧任务并重置保护期'" placement="top">
+                  <el-button size="small" type="success" @click="handleDispatch" :disabled="!selectedNodeId || !instances.length || nodeBusy" :loading="dispatching">下发节点(全量对齐)</el-button>
+                </el-tooltip>
+                <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '将漂移实例一键同步到模板最新参数;模板空值字段保留实例当前特化值'" placement="top">
+                  <el-button size="small" type="warning" @click="handleSyncAll" :disabled="!selectedNodeId || !driftInstanceCount || nodeBusy" :loading="syncingAll">同步全部漂移({{ driftInstanceCount }})</el-button>
+                </el-tooltip>
+                <el-tooltip content="仅显示死规则:启用+已采集命中统计+packets=0+创建超3天,建议移除" placement="top">
+                  <el-checkbox v-model="onlyDead" size="small" class="dead-filter">仅看死规则</el-checkbox>
+                </el-tooltip>
               </div>
             </div>
           </template>
@@ -54,17 +67,39 @@
             <div v-for="inst in sortedInstances" :key="inst.id" class="inst-item" :class="{ disabled: !inst.enabled, drift: inst.drift, 'not-applied': inst.enabled && !inst.applied }">
               <div class="inst-top">
                 <span class="inst-name">{{ inst.name }}</span>
-                <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
+                <el-tooltip content="该实例所属的策略模板" placement="top">
+                  <el-tag size="small" type="info">模板: {{ inst.template_name || '-' }}</el-tag>
+                </el-tooltip>
                 <el-tooltip v-if="inst.drift" :content="driftFieldsText(inst)" placement="top">
                   <el-tag type="warning" size="small" effect="dark">⚠ 模板已更新({{ inst.deviated_fields?.length || 0 }}字段)</el-tag>
                 </el-tooltip>
-                <el-tag v-if="inst.pending_delete" size="small" type="warning" effect="dark">待确认移除</el-tag>
-                <el-tag v-else-if="inst.chain_unavailable" size="small" type="danger" effect="dark">⚠ 链不可用</el-tag>
-                <el-tag v-else-if="inst.enabled && !inst.applied" size="small" type="warning" effect="dark">未下发</el-tag>
-                <el-tag v-else-if="inst.enabled && inst.applied" size="small" type="success" effect="plain">已下发</el-tag>
-                <el-tag v-else-if="!inst.enabled && inst.applied" size="small" type="danger" effect="dark">待移除</el-tag>
-                <el-tag v-if="ruleHitsMap[inst.id]?.dead" size="small" type="info" effect="dark">死规则</el-tag>
-                <el-tag :type="inst.enabled ? 'success' : 'info'" size="small">{{ inst.enabled ? '启用' : '禁用' }}</el-tag>
+                <el-tooltip v-if="inst.pending_delete" content="移除已进入保护期,等待确认;确认后规则彻底移除,回滚则恢复实例" placement="top">
+                  <el-tag size="small" type="warning" effect="dark">待确认移除</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="nodeInGuard && pendingConfirmIntents.get(inst.id)" :content="pendingConfirmIntents.get(inst.id) === 'remove' ? '该实例移除已进入保护期,待确认;确认后移除,回滚恢复实例' : '该实例新状态已下发,处于保护期待确认;确认后生效,回滚恢复原状'" placement="top">
+                  <el-tag size="small" type="warning" effect="dark">{{ pendingConfirmIntents.get(inst.id) === 'remove' ? '⏳ 移除待确认' : '⏳ 下发待确认' }}</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="nodeInGuard && !inst.enabled" content="节点保护期内:新动作已下发,未确认前处于保护期(节点规则未变),确认后新状态才生效" placement="top">
+                  <el-tag size="small" type="warning" effect="dark">⏳ 保护期接管中</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="inst.chain_unavailable" content="所属规则链已被禁用或删除,该实例暂无法下发" placement="top">
+                  <el-tag size="small" type="danger" effect="dark">⚠ 链不可用</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="inst.enabled && !inst.applied" content="实例已启用但规则尚未下发到节点(或下发中)" placement="top">
+                  <el-tag size="small" type="warning" effect="dark">未下发</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="inst.enabled && inst.applied" content="实例已成功下发,节点规则已生效" placement="top">
+                  <el-tag size="small" type="success" effect="plain">已下发</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="!inst.enabled && inst.applied" content="实例已禁用但节点规则仍存在,等待移除确认" placement="top">
+                  <el-tag size="small" type="danger" effect="dark">待移除</el-tag>
+                </el-tooltip>
+                <el-tooltip v-if="ruleHitsMap[inst.id]?.dead" content="死规则:创建3天没命中(启用+已采集+packets=0),建议移除" placement="top">
+                  <el-tag size="small" type="info" effect="dark">死规则</el-tag>
+                </el-tooltip>
+                <el-tooltip :content="nodeInGuard && pendingConfirmIntents.get(inst.id) ? '节点保护期内,新状态待确认,确认后生效' : (nodeInGuard && !inst.enabled ? '节点保护期内,新状态待确认,确认后生效' : '实例启用状态;禁用后规则将从节点移除(走保护期)')" placement="top">
+                  <el-tag :type="inst.enabled ? 'success' : 'info'" size="small">{{ nodeInGuard && pendingConfirmIntents.get(inst.id) ? '待确认' : (nodeInGuard && !inst.enabled ? '保护期中' : (inst.enabled ? '启用' : '禁用')) }}</el-tag>
+                </el-tooltip>
               </div>
               <div class="inst-rule">
                 <span class="field"><span class="lbl">协议</span>{{ inst.protocol || 'ANY' }}</span>
@@ -78,14 +113,26 @@
               <div class="inst-foot">
                 <div class="foot-left">
                   <span class="prio">优先级 #{{ inst.priority }}</span>
-                  <span class="hits">命中 {{ formatHits(ruleHitsMap[inst.id]) }}</span>
-                  <el-switch :model-value="inst.enabled" size="small" @change="(v) => toggleEnabled(inst, v)" />
+                  <el-tooltip content="该实例规则最近采集的命中包数(pkts)/流量(bytes);0 且超 3 天判为死规则" placement="top">
+                    <span class="hits">命中 {{ formatHits(ruleHitsMap[inst.id]) }}</span>
+                  </el-tooltip>
+                  <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '启用/禁用实例;禁用后规则将从节点移除并进入保护期;保护期内新动作将接管旧任务并重置保护期'" placement="top">
+                    <el-switch :model-value="inst.enabled" size="small" :disabled="nodeBusy" @change="(v) => toggleEnabled(inst, v)" />
+                  </el-tooltip>
                 </div>
                 <div class="actions">
-                  <el-button size="small" text type="primary" @click="openInstSimulate(inst)"><el-icon><VideoPlay /></el-icon>预演</el-button>
-                  <el-button size="small" text type="warning" @click="openEditInst(inst)">编辑参数</el-button>
-                  <el-button v-if="inst.drift" size="small" text type="primary" @click="handleSync(inst)">同步模板</el-button>
-                  <el-button size="small" text type="danger" :disabled="inst.pending_delete" @click="handleDeleteInst(inst)">移除</el-button>
+                  <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '流量预演:按该实例五元组仿真命中路径、iptables 命令与最终判定'" placement="top">
+                    <el-button size="small" text type="primary" :disabled="nodeBusy" @click="openInstSimulate(inst)"><el-icon><VideoPlay /></el-icon>预演</el-button>
+                  </el-tooltip>
+                  <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '编辑该实例的策略参数(源/目的/端口/动作等),不影响模板'" placement="top">
+                    <el-button size="small" text type="warning" :disabled="nodeBusy" @click="openEditInst(inst)">编辑参数</el-button>
+                  </el-tooltip>
+                  <el-tooltip v-if="inst.drift" :content="nodeBusy ? '节点有任务执行中,请稍候' : '同步为模板最新参数;模板空值字段保留实例当前特化值'" placement="top">
+                    <el-button size="small" text type="primary" :disabled="nodeBusy" @click="handleSync(inst)">同步模板</el-button>
+                  </el-tooltip>
+                  <el-tooltip :content="nodeBusy ? '节点有任务执行中,请稍候' : '移除该实例;已下发时走保护期(确认后删除/可回滚),未下发直接删除;保护期内新动作将接管旧任务'" placement="top">
+                    <el-button size="small" text type="danger" :disabled="inst.pending_delete || nodeBusy" @click="handleDeleteInst(inst)">移除</el-button>
+                  </el-tooltip>
                 </div>
               </div>
               <div class="inst-cmd">
@@ -97,31 +144,47 @@
       </el-col>
     </el-row>
 
-    <!-- 单条策略流量预演(计划二):预期目标 vs 实际模拟通道 -->
-    <el-drawer v-model="simVisible" :title="'流量预演 - ' + (simInst?.name || '')" size="68%" direction="rtl" destroy-on-close>
+    <!-- 单条策略流量预演(计划二):预期目标 vs 实际模拟通道 + 自然语言结论 + iptables 命令预览 -->
+    <el-drawer v-model="simVisible" :title="'流量预演 - ' + (simInst?.name || '')" size="72%" direction="rtl" destroy-on-close>
       <div class="sim-layout">
         <div class="sim-form-bar">
           <div class="sim-fields">
-            <el-select v-model="simForm.direction" style="width: 112px">
+            <el-select v-model="simForm.direction" style="width: 118px">
               <el-option label="入站 INPUT" value="INPUT" />
               <el-option label="转发 FORWARD" value="FORWARD" />
               <el-option label="出站 OUTPUT" value="OUTPUT" />
             </el-select>
-            <el-input v-model="simForm.source_ip" placeholder="源 IP,空=任意" clearable style="width: 132px" />
-            <el-input v-model="simForm.dest_ip" placeholder="目的 IP,空=任意" clearable style="width: 132px" />
-            <el-select v-model="simForm.protocol" style="width: 96px">
+            <el-input v-model="simForm.source_ip" placeholder="源 IP,空=任意" clearable style="width: 136px" />
+            <el-input v-model="simForm.dest_ip" placeholder="目的 IP,空=任意" clearable style="width: 136px" />
+            <el-select v-model="simForm.protocol" style="width: 100px">
               <el-option label="TCP" value="tcp" />
               <el-option label="UDP" value="udp" />
               <el-option label="ICMP" value="icmp" />
               <el-option label="任意" value="" />
             </el-select>
-            <el-input-number v-model="simForm.dst_port" :min="0" :max="65535" controls-position="right" style="width: 110px" placeholder="目的端口" />
-            <el-button type="primary" @click="handleSimulate" :loading="simLoading">预演</el-button>
+            <el-input-number v-model="simForm.dst_port" :min="0" :max="65535" controls-position="right" style="width: 112px" placeholder="目的端口" />
+            <el-button type="primary" @click="handleSimulate" :loading="simLoading">
+              <el-icon style="margin-right: 4px"><VideoPlay /></el-icon>预演
+            </el-button>
           </div>
           <div class="sim-form-hint">按该节点当前期望规则集做 filter 表无状态匹配;方向已按策略所在链推断,可改;NAT/mangle 仅提示不模拟。</div>
         </div>
+
+        <!-- 判定横幅:最终判定 + 自然语言结论 -->
+        <div v-if="simResult" class="sim-verdict-banner" :class="'verdict-' + simResult.verdict.toLowerCase()">
+          <div class="verdict-icon">{{ verdictMeta.icon }}</div>
+          <div class="verdict-main">
+            <div class="verdict-title">
+              <span class="verdict-tag">{{ simResult.verdict }}</span>
+              <span class="verdict-label">{{ verdictMeta.label }}</span>
+            </div>
+            <div class="verdict-conclusion">{{ simResult.conclusion || simResult.note || '未生成结论' }}</div>
+          </div>
+        </div>
+
         <el-row :gutter="16" class="sim-body">
-          <el-col :span="9">
+          <!-- 左:预期目标 -->
+          <el-col :span="8">
             <div class="sim-panel sim-expected">
               <div class="sim-panel-title">你的预期目标</div>
               <div v-if="simInst" class="expected-detail">
@@ -135,30 +198,31 @@
               </div>
             </div>
           </el-col>
-          <el-col :span="15">
+
+          <!-- 右:实际模拟步骤流(垂直时间轴 + 命中高亮 + 命令代码块) -->
+          <el-col :span="16">
             <div class="sim-panel sim-actual">
               <div class="sim-panel-title">实际模拟过程和结果</div>
-              <div v-if="simResult" :class="['sim-channel', 'channel-' + simResult.verdict.toLowerCase()]" :style="{ '--hit-x': hitX }">
-                <div class="channel-track">
-                  <div class="channel-enter">入口</div>
-                  <template v-for="(s, i) in simResult.steps" :key="i">
-                    <div class="channel-arrow">→</div>
-                    <div class="sim-node" :class="{ matched: s.matched, terminal: isTerminalStep(i) }">
-                      <div class="node-chain">{{ s.chain }}</div>
-                      <div class="node-action" :class="s.action.toLowerCase()">{{ s.action }}</div>
-                      <div class="node-rule">{{ s.rule_id }}</div>
-                      <el-tag v-if="s.matched" size="small" :type="nodeTagType(s)">{{ s.action === 'MARK' ? '打标' : '命中' }}</el-tag>
+              <div v-if="simResult" class="sim-steps">
+                <div class="sim-step-entry">入口 · {{ simForm.direction }}</div>
+                <template v-for="(s, i) in simResult.steps" :key="i">
+                  <div class="sim-step" :class="{ hit: s.matched, term: isTerminalStep(i) }">
+                    <div class="step-rail"><span class="step-dot" /></div>
+                    <div class="step-body">
+                      <div class="step-head">
+                        <span class="step-chain">{{ s.chain }}</span>
+                        <span class="step-action" :class="s.action.toLowerCase()">{{ s.action }}</span>
+                        <span class="step-rule">{{ s.rule_id }}</span>
+                        <el-tag v-if="s.matched" size="small" :type="nodeTagType(s)" class="step-tag">{{ s.action === 'MARK' ? '打标' : '命中' }}</el-tag>
+                        <span v-if="isTerminalStep(i)" class="step-term-badge">终止</span>
+                      </div>
+                      <code class="step-cmd">{{ s.command }}</code>
                       <div v-if="s.note" class="node-note">{{ s.note }}</div>
                     </div>
-                  </template>
-                  <div class="channel-arrow">→</div>
-                  <div class="sim-node terminal end" :class="'end-' + simResult.verdict.toLowerCase()">
-                    <div class="node-verdict">{{ simResult.verdict }}</div>
                   </div>
-                </div>
-                <div v-if="simResult.steps.length" class="sim-pulse" />
+                </template>
+                <div class="sim-step-entry sim-step-end" :class="'end-' + simResult.verdict.toLowerCase()">终点 · {{ simResult.verdict }}</div>
                 <div v-if="!simResult.steps.length" class="sim-empty">无规则参与匹配</div>
-                <div v-if="simResult.note" class="sim-note-line">{{ simResult.note }}</div>
               </div>
               <div v-else class="sim-actual-empty">预填了该策略的五元组,点击"预演"查看流量在节点规则集内的实际走向</div>
             </div>
@@ -278,11 +342,60 @@ import { Plus, VideoPlay } from '@element-plus/icons-vue'
 import ExpertMode from './ExpertMode.vue'
 import { getNodes, getNodeInstances, createInstance, updateInstance, deleteInstance, syncInstance, syncInstancePreview, syncAllNode, dispatchNode, getTemplates, getCustomChains, getAddressGroups, getMarks, getTasks, getTask, simulateFlow, getNodeRuleHits } from '@/api'
 import { buildCommandPreview } from '@/composables/useCommandPreview'
+import { usePolling } from '@/composables/usePolling'
 import { useGuardStore } from '@/stores/guard'
 
 const route = useRoute()
 const guard = useGuardStore()
 const guardTask = ref(null) // 该节点保护期待确认任务(跳转来时高亮提示)
+const inflightTasks = ref([]) // 该节点在途任务:confirm_wait(可接管)/dispatching/applying(执行中)
+const recentSuperseded = ref(null) // 该节点最近被接管(合并)的旧任务(保护期动作合并接管)
+
+// 节点是否有保护期待确认任务(新动作已下发,未确认前处于保护期)
+const nodeInGuard = computed(() => inflightTasks.value.some((t) => t.status === 'confirm_wait'))
+// 节点是否有执行中任务(Agent 正在 Apply,不可接管,操作按钮禁用)
+const nodeBusy = computed(() => inflightTasks.value.some((t) => t.status === 'dispatching' || t.status === 'applying'))
+
+// 刷新该节点在途任务与最近被接管任务。保护期动作合并接管:操作后旧任务被 superseded、
+// 新任务进 confirm_wait,banner/状态标签据此提示"动作已接管/保护期内"。
+const refreshInflight = async () => {
+  if (!selectedNodeId.value) return
+  try {
+    const [cw, disp, app, sup] = await Promise.all([
+      getTasks({ status: 'confirm_wait' }),
+      getTasks({ status: 'dispatching' }),
+      getTasks({ status: 'applying' }),
+      getTasks({ status: 'superseded' }),
+    ])
+    const nid = selectedNodeId.value
+    inflightTasks.value = [...(cw.tasks || []), ...(disp.tasks || []), ...(app.tasks || [])].filter((t) => t.node_id === nid)
+    // recentSuperseded 仅取最近 10 分钟内被接管的任务(updated_at = 置 superseded 时刻),
+    // 接管提示完成后自动消失,避免历史 superseded 残留致 banner 永久显示。
+    const tenMinAgo = Date.now() - 10 * 60 * 1000
+    recentSuperseded.value = (sup.tasks || []).find((t) => t.node_id === nid && new Date(t.updated_at).getTime() >= tenMinAgo) || null
+    guardTask.value = (cw.tasks || []).find((t) => t.node_id === nid) || null
+  } catch {
+    // 在途任务刷新失败不阻塞实例展示
+  }
+}
+
+// 本次操作涉及、需保护期确认的实例意图 Map(id -> 'dispatch'|'remove'):
+// 操作后记录,实例条目显示"⏳ 下发待确认/移除待确认"标签,把接管/待确认提示定位到
+// 具体策略条目。基于操作意图而非 inst.enabled 可变值——toggleEnabled 乐观翻转后
+// loadInstances 会刷新实例,若用 enabled 判断,标签可能与被执行操作错位
+// (如禁用后 enabled 被并发刷新覆盖为 true,标签误显"下发待确认")。保护期结束后清空。
+const pendingConfirmIntents = ref(new Map())
+const markPendingConfirm = (id, intent) => {
+  const m = new Map(pendingConfirmIntents.value)
+  m.set(id, intent)
+  pendingConfirmIntents.value = m
+}
+watch(nodeInGuard, (g) => { if (!g) pendingConfirmIntents.value = new Map() })
+
+// 在途任务存在时轮询(Bug1 修复):任务执行(dispatching/applying)完成后自动解除
+// nodeBusy 按钮禁用(无需手动刷新),保护期(confirm_wait)确认/回滚后自动收敛;
+// 无任务时停止轮询,避免 4 个 getTasks 空转请求。
+usePolling(refreshInflight, 5000, () => inflightTasks.value.length > 0)
 
 const nodesLoading = ref(false)
 const instLoading = ref(false)
@@ -337,25 +450,27 @@ const pollTaskDone = async (taskID) => {
   return null
 }
 
-// 一键启停:切换实例 enabled 后自动下发,轮询终态再刷新
+// 一键启停:切换实例 enabled 后自动下发。
+// 乐观更新(F2):先翻转 UI 即时反馈,后台写库+下发+收敛;失败回滚乐观值。
+// 原实现串行等待 pollTaskDone(15s),高频启停无即时反馈。保护期提示由
+// refreshInflight 刷新 inflightTasks 后顶部 banner 呈现,不再阻塞等待终态。
 const toggleEnabled = async (inst, v) => {
+  const prev = inst.enabled
+  inst.enabled = v // 乐观翻转:UI 立即响应,后台收敛
   try {
     await updateInstance(inst.id, { ...inst, enabled: v })
-    const d = await dispatchNode(selectedNodeId.value, { auto_approve: true })
-    const taskID = d.tasks?.[0]?.id
-    if (!taskID) { ElMessage.success(v ? '已启用' : '已禁用'); loadInstances(); return }
-    const t = await pollTaskDone(taskID)
-    if (!t) { ElMessage.warning(v ? '已启用,下发超时,请稍后查看' : '已禁用,下发超时,请稍后查看'); loadInstances(); guard.refresh(); return }
-    if (t.status === 'confirm_wait' || t.status === 'confirmed') {
-      ElMessage.success(v ? '已启用并下发,请到顶部确认' : '已禁用并下发,请到顶部确认')
-    } else {
-      ElMessage.error((v ? '启用' : '禁用') + '下发失败: ' + (t.message || t.status))
-    }
+    await dispatchNode(selectedNodeId.value, { auto_approve: true })
+    ElMessage.success((v ? '启用' : '禁用') + '动作已下发,保护期确认见顶部')
+    markPendingConfirm(inst.id, v ? 'dispatch' : 'remove') // 该实例下发/移除待确认,条目上打标定位
     loadInstances()
-    guard.refresh()
+    refreshInflight()
+    guard.refresh() // 待确认区立即刷新(不等 5s 轮询)
   } catch (e) {
+    inst.enabled = prev // 失败回滚乐观值
+    // 409:节点有任务执行中,不可接管(执行中任务不可作废)。实例已改 DB 但未下发,提示稍候重试
     ElMessage.error(e?.response?.data?.error || '切换失败')
     loadInstances()
+    refreshInflight()
   }
 }
 
@@ -427,6 +542,7 @@ const loadDeps = async () => {
 const selectNode = (n) => {
   selectedNodeId.value = n.id
   loadInstances()
+  refreshInflight()
 }
 
 // 单条策略流量预演(计划二):五元组仿真,预期目标 vs 实际命中路径
@@ -481,26 +597,30 @@ const expectedText = (inst) => {
   return a || '—'
 }
 
-// 命中终止的 step 索引(DROP/REJECT 光点停止位置)
+// 命中终止的 step 索引(DROP/REJECT 终止位置)
 const hitStopIndex = computed(() => {
   if (!simResult.value?.steps?.length) return -1
   let idx = -1
   simResult.value.steps.forEach((s, i) => { if (s.matched) idx = i })
   return idx
 })
-const hitX = computed(() => {
-  const v = simResult.value?.verdict
-  if ((v === 'DROP' || v === 'REJECT') && hitStopIndex.value >= 0) {
-    const n = simResult.value.steps.length
-    return `${Math.min(100, Math.round(((hitStopIndex.value + 1) / n) * 100))}%`
-  }
-  return '92%' // ACCEPT/PASS 光点走到底
-})
 const isTerminalStep = (i) => {
   const v = simResult.value?.verdict
   return (v === 'DROP' || v === 'REJECT') && i === hitStopIndex.value
 }
 const nodeTagType = (s) => ({ MARK: 'info', ACCEPT: 'success', DROP: 'danger', REJECT: 'warning' }[s.action] || 'info')
+
+// 判定横幅元信息:图标 + 中文标签
+const verdictMeta = computed(() => {
+  const v = simResult.value?.verdict || ''
+  const map = {
+    ACCEPT: { icon: '✓', label: '流量将被放行' },
+    DROP: { icon: '✕', label: '流量将被拦截' },
+    REJECT: { icon: '⚠', label: '流量将被拒绝' },
+    PASS: { icon: '→', label: '未命中任何规则,默认策略放行' },
+  }
+  return map[v] || { icon: '?', label: '' }
+})
 
 const handleSimulate = async () => {
   if (!selectedNodeId.value) return
@@ -681,6 +801,7 @@ const handleDeleteInst = async (inst) => {
     if (data && data.task_id) {
       // 202:节点有规则,已下发移除并进保护期,轮询终态
       ElMessage.info('已移除并进入保护期,可在保护期面板确认或回滚')
+      markPendingConfirm(inst.id, 'remove') // 移除待确认,条目上打标定位
       const t = await pollTaskDone(data.task_id)
       if (t && t.status === 'failed') {
         ElMessage.error('移除下发失败,实例已恢复')
@@ -712,16 +833,24 @@ const handleDispatch = async () => {
     const taskID = d.tasks?.[0]?.id
     if (!taskID) { ElMessage.warning('未创建任务'); return }
     const t = await pollTaskDone(taskID)
-    if (!t) { ElMessage.warning('下发超时,请稍后查看'); loadInstances(); guard.refresh(); return }
-    if (t.status === 'confirm_wait' || t.status === 'confirmed') {
-      ElMessage.success('已下发,进入保护期,请到顶部确认')
+    if (!t) { ElMessage.warning('下发超时,请稍后查看'); loadInstances(); refreshInflight(); return }
+    if (t.status === 'confirm_wait') {
+      // 保护期动作合并接管:旧任务已被作废,新动作进保护期
+      ElMessage.success('已下发,动作接管保护期,请到顶部确认')
+      // 全量对齐:本次涉及全部启用实例统一标记"下发待确认"
+      for (const i of instances.value.filter((x) => x.enabled)) markPendingConfirm(i.id, 'dispatch')
+    } else if (t.status === 'confirmed') {
+      ElMessage.success('已下发并确认')
     } else {
       ElMessage.error('下发失败: ' + (t.message || t.status))
     }
     loadInstances()
-    guard.refresh()
+    refreshInflight()
+    guard.refresh() // 待确认区立即刷新(不等 5s 轮询)
   } catch (e) {
+    // 409:节点有任务执行中,不可接管
     ElMessage.error(e?.response?.data?.error || '下发失败')
+    refreshInflight()
   } finally {
     dispatching.value = false
   }
@@ -733,29 +862,31 @@ onMounted(async () => {
   if (route.query.node) {
     const n = nodes.value.find((x) => x.id === route.query.node)
     if (n) selectNode(n)
-    try {
-      const d = await getTasks({ status: 'confirm_wait' })
-      guardTask.value = (d.tasks || []).find((t) => t.node_id === route.query.node) || null
-    } catch {}
+    refreshInflight()
   }
 })
 
+// 保护期面板确认/回滚后(guard.refresh)刷新在途任务:banner/状态标签据此更新接管提示
+watch(() => guard.refreshTick, refreshInflight)
+
 // 页面已加载时从保护期跳转也能选中节点 + 显示 banner
 watch(() => route.query.node, async (nodeId) => {
-  if (!nodeId) { guardTask.value = null; return }
+  if (!nodeId) { guardTask.value = null; inflightTasks.value = []; recentSuperseded.value = null; return }
   if (!nodes.value.length) return
   const n = nodes.value.find((x) => x.id === nodeId)
   if (n) selectNode(n)
-  try {
-    const d = await getTasks({ status: 'confirm_wait' })
-    guardTask.value = (d.tasks || []).find((t) => t.node_id === nodeId) || null
-  } catch {}
+  refreshInflight()
 })
+
+// 暴露供单测/编程式调用(乐观更新行为验证)
+defineExpose({ toggleEnabled, loadInstances, refreshInflight })
 </script>
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .guard-banner { margin-bottom: 12px; cursor: pointer; font-weight: 500; }
+.guard-banner-main { margin-bottom: 4px; }
+.guard-banner-diff { margin: 0; padding: 8px; background: rgba(0,0,0,.04); border-radius: 6px; font-size: 11px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow: auto; color: #7a5a00; }
 .header-left { display: flex; align-items: center; gap: 12px; }
 .page-title { font-size: 18px; font-weight: 600; color: var(--c-text-1, #1e293b); margin: 0; }
 .np-body { min-height: 480px; }
@@ -801,7 +932,7 @@ watch(() => route.query.node, async (nodeId) => {
 .form-col { flex: 1; }
 .form-hint { display: block; margin-top: -8px; padding-left: 90px; font-size: 12px; color: var(--c-text-3); }
 
-/* 单条策略流量预演:抽屉布局 + 通道流程图 */
+/* 单条策略流量预演:抽屉布局 + 判定横幅 + 垂直步骤流(命令代码块) */
 .sim-layout { display: flex; flex-direction: column; gap: 14px; height: 100%; }
 .sim-form-bar { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--c-surface); }
 .sim-fields { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -809,6 +940,34 @@ watch(() => route.query.node, async (nodeId) => {
 .sim-body { flex: 1; min-height: 0; margin-top: 0 !important; }
 .sim-panel { height: 100%; border: 1px solid var(--el-border-color-light); border-radius: 8px; padding: 14px; background: var(--c-surface); }
 .sim-panel-title { font-size: 13px; font-weight: 600; color: var(--c-text-1); margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--el-border-color-lighter); }
+
+/* 判定横幅:大图标 + verdict + 自然语言结论 */
+.sim-verdict-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px; border-radius: 10px; border: 1px solid var(--el-border-color);
+}
+.verdict-accept { background: linear-gradient(135deg, #f0fdf4, #ecfdf5); border-color: rgba(22, 163, 74, .4); }
+.verdict-drop { background: linear-gradient(135deg, #fef2f2, #fff1f2); border-color: rgba(220, 38, 38, .4); }
+.verdict-reject { background: linear-gradient(135deg, #fffbeb, #fef3c7); border-color: rgba(217, 119, 6, .4); }
+.verdict-pass { background: linear-gradient(135deg, #f8fafc, #f1f5f9); border-color: var(--el-border-color); }
+.verdict-icon {
+  width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 800; color: #fff;
+}
+.verdict-accept .verdict-icon { background: #16a34a; }
+.verdict-drop .verdict-icon { background: #dc2626; }
+.verdict-reject .verdict-icon { background: #d97706; }
+.verdict-pass .verdict-icon { background: #94a3b8; }
+.verdict-main { flex: 1; min-width: 0; }
+.verdict-title { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.verdict-tag { font-family: 'Courier New', monospace; font-weight: 800; font-size: 18px; letter-spacing: 1px; }
+.verdict-accept .verdict-tag { color: #16a34a; }
+.verdict-drop .verdict-tag { color: #dc2626; }
+.verdict-reject .verdict-tag { color: #d97706; }
+.verdict-pass .verdict-tag { color: #64748b; }
+.verdict-label { font-size: 13px; color: var(--c-text-2); }
+.verdict-conclusion { font-size: 13px; color: var(--c-text-1); line-height: 1.7; }
 
 /* 左侧:预期目标 */
 .expected-detail { font-size: 13px; color: var(--c-text-2); }
@@ -821,82 +980,62 @@ watch(() => route.query.node, async (nodeId) => {
 .exp-action.mark { color: #2563eb; }
 .expected-verdict { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: var(--c-bg); font-size: 12px; color: var(--c-text-2); line-height: 1.6; }
 
-/* 右侧:实际模拟通道(浅灰网格底纹 + 光点动画) */
+/* 右侧:垂直步骤流(时间轴 + 命中高亮 + 命令代码块) */
 .sim-actual-empty { font-size: 13px; color: var(--c-text-3); text-align: center; padding: 40px 0; }
-.sim-channel {
-  position: relative;
-  background: #f5f7fa;
-  background-image:
-    repeating-linear-gradient(0deg, rgba(0,0,0,.045) 0 1px, transparent 1px 26px),
-    repeating-linear-gradient(90deg, rgba(0,0,0,.045) 0 1px, transparent 1px 26px);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
-  padding: 22px 14px 16px;
-  overflow: hidden;
-  --stop-x: 92%;
-  --pulse-color: #909399;
+.sim-steps { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.sim-step-entry {
+  align-self: flex-start; font-size: 11px; color: var(--c-text-3);
+  border: 1px dashed var(--el-border-color); border-radius: 999px; padding: 3px 12px;
 }
-.channel-accept { --pulse-color: #67c23a; border-color: rgba(103,194,58,.55); }
-.channel-drop { --stop-x: var(--hit-x); --pulse-color: #f56c6c; border-color: rgba(245,108,108,.55); }
-.channel-reject { --stop-x: var(--hit-x); --pulse-color: #e6a23c; border-color: rgba(230,162,60,.55); }
+.sim-step-end { font-weight: 700; border-style: solid; }
+.end-accept { color: #16a34a; border-color: rgba(22, 163, 74, .5); background: #f0fdf4; }
+.end-drop { color: #dc2626; border-color: rgba(220, 38, 38, .5); background: #fef2f2; }
+.end-reject { color: #d97706; border-color: rgba(217, 119, 6, .5); background: #fffbeb; }
+.end-pass { color: #64748b; }
 
-.channel-track { display: flex; align-items: stretch; gap: 6px; min-height: 96px; }
-.channel-enter { align-self: center; font-size: 11px; color: var(--c-text-3); border: 1px dashed var(--el-border-color); border-radius: 10px; padding: 10px 5px; writing-mode: vertical-lr; letter-spacing: 2px; flex-shrink: 0; }
-.channel-arrow { align-self: center; color: var(--c-text-3); font-size: 14px; flex-shrink: 0; }
-
-.sim-node {
-  flex: 1;
-  min-width: 84px;
-  display: flex; flex-direction: column; gap: 3px;
-  padding: 8px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  background: #fff;
-  font-size: 11px;
-  color: var(--c-text-3);
-  opacity: .82;
-  justify-content: center;
-  transition: all .25s;
+.sim-step { display: flex; gap: 10px; }
+.step-rail { position: relative; width: 14px; flex-shrink: 0; }
+.step-rail::before {
+  content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px;
+  background: var(--el-border-color-lighter);
 }
-.sim-node .node-chain { color: #94a3b8; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'Courier New', monospace; }
-.sim-node .node-action { font-weight: 700; font-size: 12px; }
-.sim-node .node-rule { font-family: 'Courier New', monospace; }
-.sim-node .node-note { font-size: 10px; color: #f59e0b; }
-.sim-node.matched { opacity: 1; border-color: #60a5fa; background: #eff6ff; box-shadow: 0 0 0 1px #60a5fa inset; }
-.sim-node.matched .node-action.accept { color: #16a34a; }
-.sim-node.matched .node-action.drop { color: #dc2626; }
-.sim-node.matched .node-action.reject { color: #d97706; }
-.sim-node.matched .node-action.mark { color: #2563eb; }
-.sim-node.terminal { border-width: 2px; }
-
-.sim-node.end { background: #fff; text-align: center; }
-.sim-node.end .node-verdict { font-weight: 800; font-size: 15px; }
-.end-accept { border-color: #67c23a; background: #f0f9eb !important; }
-.end-accept .node-verdict { color: #16a34a; }
-.end-drop { border-color: #f56c6c; background: #fef0f0 !important; }
-.end-drop .node-verdict { color: #dc2626; }
-.end-reject { border-color: #e6a23c; background: #fdf6ec !important; }
-.end-reject .node-verdict { color: #d97706; }
-.end-pass { border-color: var(--el-border-color); }
-.end-pass .node-verdict { color: var(--c-text-3); }
-
-/* 光点:从左到右穿过通道;遇拦截(DROP/REJECT)停在命中位置,遇放行到终点 */
-.sim-pulse {
-  position: absolute;
-  top: 50%; left: 0;
-  width: 13px; height: 13px;
-  margin-top: -6px;
-  border-radius: 50%;
-  background: var(--pulse-color);
-  box-shadow: 0 0 12px 4px var(--pulse-color);
-  animation: flow-run 2.2s cubic-bezier(.4,0,.2,1) forwards;
-  pointer-events: none;
+.sim-step:first-of-type .step-rail::before { top: 12px; }
+.sim-step:last-of-type .step-rail::before { bottom: auto; }
+.step-dot {
+  position: absolute; left: 2px; top: 12px; width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--el-border-color); z-index: 1;
 }
-@keyframes flow-run {
-  from { left: 6px; }
-  to   { left: var(--stop-x); }
+.sim-step.hit .step-dot { background: #3b82f6; border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(59, 130, 246, .18); }
+.sim-step.term .step-dot { background: #dc2626; border-color: #dc2626; box-shadow: 0 0 0 4px rgba(220, 38, 38, .18); }
+
+.step-body {
+  flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--el-border-color-light);
+  border-radius: 8px; background: #fff; opacity: .55; transition: all .25s;
 }
+.sim-step.hit .step-body { opacity: 1; border-color: #93c5fd; background: #f5f9ff; box-shadow: 0 0 0 1px #93c5fd inset; }
+.sim-step.term .step-body { border-color: #fca5a5; background: #fff5f5; box-shadow: 0 0 0 1px #fca5a5 inset; }
+.step-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.step-chain { font-family: 'Courier New', monospace; font-size: 11px; color: #94a3b8; }
+.step-action { font-weight: 700; font-size: 12px; }
+.step-action.accept { color: #16a34a; }
+.step-action.drop { color: #dc2626; }
+.step-action.reject { color: #d97706; }
+.step-action.mark { color: #2563eb; }
+.step-action.dnat, .step-action.snat { color: #7c3aed; }
+.step-rule { font-family: 'Courier New', monospace; font-size: 11px; color: var(--c-text-3); }
+.step-term-badge {
+  font-size: 10px; font-weight: 600; color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, .5); border-radius: 4px; padding: 0 5px;
+}
+/* 命令代码块(深色主题,命中步左边框高亮) */
+.step-cmd {
+  display: block; margin-top: 6px; padding: 7px 10px; border-radius: 6px;
+  background: #1e1e2e; color: #cdd6f4; font-family: 'Courier New', monospace;
+  font-size: 11px; line-height: 1.7; word-break: break-all; white-space: pre-wrap;
+}
+.sim-step.hit .step-cmd { border-left: 3px solid #34d399; }
+.sim-step.term .step-cmd { border-left: 3px solid #f87171; }
+.node-note { margin-top: 6px; font-size: 11px; color: #f59e0b; }
 
 .sim-empty { font-size: 12px; color: var(--c-text-3); margin-top: 10px; }
-.sim-note-line { margin-top: 10px; font-size: 12px; color: var(--c-text-3); line-height: 1.6; }
 </style>

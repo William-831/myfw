@@ -102,6 +102,16 @@ func TestRuleHitsQueryDeadJudgment(t *testing.T) {
 		Update("created_at", time.Now().Add(-1*24*time.Hour))
 	gdb.Create(&model.RuleHitStat{NodeID: "n1", InstanceID: instNew.ID, Packets: 0, Bytes: 0, LastSeen: time.Now()})
 
+	// 实例 5:启用 + packets=0 + 4 天前创建(阈值 3 天边界内,旧 7 天逻辑下 dead=false)
+	instBoundary := model.NodePolicyInstance{
+		NodeID: "n1", Name: "boundary-rule", GroupID: chain.ID,
+		Protocol: "TCP", PortRange: "9090", Action: "ACCEPT", Priority: 50, Enabled: true,
+	}
+	gdb.Create(&instBoundary)
+	gdb.Model(&model.NodePolicyInstance{}).Where("id = ?", instBoundary.ID).
+		Update("created_at", time.Now().Add(-4*24*time.Hour))
+	gdb.Create(&model.RuleHitStat{NodeID: "n1", InstanceID: instBoundary.ID, Packets: 0, Bytes: 0, LastSeen: time.Now()})
+
 	h := BuildWebHandler(gdb, time.Minute)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/iptables/rule-hits/n1", nil)
 	w := httptest.NewRecorder()
@@ -121,8 +131,8 @@ func TestRuleHitsQueryDeadJudgment(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v, body=%s", err, w.Body.String())
 	}
-	if len(resp.Hits) != 4 {
-		t.Fatalf("want 4 hits, got %d: %+v", len(resp.Hits), resp.Hits)
+	if len(resp.Hits) != 5 {
+		t.Fatalf("want 5 hits, got %d: %+v", len(resp.Hits), resp.Hits)
 	}
 	deadByName := map[string]bool{}
 	for _, hi := range resp.Hits {
@@ -139,5 +149,8 @@ func TestRuleHitsQueryDeadJudgment(t *testing.T) {
 	}
 	if deadByName["new-rule"] {
 		t.Errorf("new-rule(未超阈值)应为 dead=false, got %+v", resp.Hits)
+	}
+	if !deadByName["boundary-rule"] {
+		t.Errorf("boundary-rule(4天,超3天阈值)应为 dead=true, got %+v", resp.Hits)
 	}
 }

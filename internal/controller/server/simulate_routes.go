@@ -51,6 +51,6 @@ func registerSimulateRoutes(r gin.IRouter, comp *compiler.Compiler, db *gorm.DB)
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"verdict": res.Verdict, "steps": res.Steps, "note": res.Note})
+		c.JSON(http.StatusOK, gin.H{"verdict": res.Verdict, "steps": res.Steps, "note": res.Note, "conclusion": res.Conclusion})
 	})
 }

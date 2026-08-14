@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -451,6 +453,11 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			AutoApprove: true,
 		})
 		if err != nil {
+			// 节点有任务执行中(不可接管) -> 409,明确提示而非内部错误
+			if errors.Is(err, task.ErrNodeBusy) {
+				c.JSON(http.StatusConflict, gin.H{"error": "节点有任务执行中,请稍候再试"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "移除下发失败: " + err.Error()})
 			return
 		}
@@ -525,6 +532,12 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 	// 配置侧漂移治理 1.3:一键同步全部,避免逐个手动 sync 的认知负担。
 	g.POST("/nodes/:id/sync-all", func(c *gin.Context) {
 		nodeID := c.Param("id")
+		// B3:同节点 sync-all 防重入(并发重复下发同一批实例会重复写库+审计)
+		if !nodeSyncLock.TryLock(nodeID) {
+			c.JSON(http.StatusConflict, gin.H{"error": "该节点正在同步中,请稍候再试"})
+			return
+		}
+		defer nodeSyncLock.Unlock(nodeID)
 		var instances []model.NodePolicyInstance
 		if err := db.Where("node_id = ? AND template_id > 0", nodeID).Find(&instances).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -579,6 +592,11 @@ func registerTemplateRoutes(r gin.IRouter, db *gorm.DB, co *task.Coordinator, au
 			ConfirmDeadline: time.Duration(body.ConfirmDeadlineSeconds) * time.Second,
 		})
 		if err != nil {
+			// 节点有任务执行中(不可接管) -> 409,明确提示而非内部错误(保护期动作合并接管)
+			if errors.Is(err, task.ErrNodeBusy) {
+				c.JSON(http.StatusConflict, gin.H{"error": "节点有任务执行中,请稍候再试"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -985,6 +1003,31 @@ func auditTpl(auditSink *audit.Sink, c *gin.Context, op string, id uint, name st
 		Detail: string(detail),
 	})
 }
+
+// nodeSyncLock 按节点 sync-all 防重入互斥(B3):同节点并发批量同步时只允许一个执行,
+// 其余返回 409 由前端提示稍候重试,避免重复写库+审计。
+type nodeSyncLockT struct {
+	mu    sync.Mutex
+	locks map[string]bool
+}
+
+func (l *nodeSyncLockT) TryLock(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.locks[key] {
+		return false
+	}
+	l.locks[key] = true
+	return true
+}
+
+func (l *nodeSyncLockT) Unlock(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.locks, key)
+}
+
+var nodeSyncLock = &nodeSyncLockT{locks: make(map[string]bool)}
 
 func auditInst(auditSink *audit.Sink, c *gin.Context, op string, id uint, name, nodeID string) {
 	if auditSink == nil {

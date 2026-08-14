@@ -15,16 +15,22 @@ const (
 	TaskConfirmed       TaskStatus = "confirmed"
 	TaskRolledBack      TaskStatus = "rolled_back"
 	TaskFailed          TaskStatus = "failed"
+	// TaskSuperseded 保护期动作合并接管:节点在新任务下发前存在旧保护期任务时,
+	// 旧任务被置为 superseded 终态(不再回滚,Agent 快照经 Confirm 语义释放)。
+	// 由 Coordinator.SupersedeInFlight 设置。
+	TaskSuperseded TaskStatus = "superseded"
 )
 
 // Task is a unit of firewall change dispatched to a single node.
 type Task struct {
 	ID           string     `gorm:"primaryKey;size:64" json:"id"`
-	NodeID       string     `gorm:"size:64;index" json:"node_id"`
+	NodeID       string     `gorm:"size:64;index;index:idx_task_node_status,priority:1" json:"node_id"` // 复合索引(node_id,status)见 Status 注释
 	PolicyID     uint       `gorm:"index" json:"policy_id"`
 	PolicyName   string     `gorm:"size:255" json:"policy_name"` // 策略名快照,审批展示用(避免 policy 改/删后丢失)
 	ChangeType   string     `gorm:"size:16" json:"change_type"`  // 变更类型:dispatch(下发)/disable(禁用)/mixed(混合),节点级 dispatch 填充,前端据此标注
-	Status       TaskStatus `gorm:"size:24;index" json:"status"`
+	// 复合索引 idx_task_node_status(node_id, status):保护期接管(SupersedeInFlight)、
+	// 前端 4 状态刷新、HasInFlight 去重均按"节点+状态"过滤,单列索引不足(B1 优化)。
+	Status       TaskStatus `gorm:"size:24;index;index:idx_task_node_status,priority:2" json:"status"`
 	Version      int64      `json:"version"`
 	DiffBefore   string     `gorm:"type:text" json:"diff_before"`
 	DiffAfter    string     `gorm:"type:text" json:"diff_after"`
@@ -78,11 +84,12 @@ type AuditLog struct {
 	Action           string    `gorm:"size:64;index" json:"action"`
 	Scene            string    `gorm:"size:24;index" json:"scene"`  // normal/expert_bypass/auto_rollback/recovery
 	Result           string    `gorm:"size:16;index" json:"result"` // success/failed/rolled_back/pending
-	NodeID           string    `gorm:"size:64;index" json:"node_id"`
+	NodeID           string    `gorm:"size:64;index;index:idx_audit_node_created,priority:1" json:"node_id"`
 	TaskID           string    `gorm:"size:64;index" json:"task_id"`
 	Detail           string    `gorm:"type:text" json:"detail"`
 	ProtectionWindow int       `json:"protection_window,omitempty"` // 保护期剩余秒数(仅 applying_ok 填)
-	CreatedAt        time.Time `gorm:"index" json:"created_at"`
+	// 复合索引 idx_audit_node_created(node_id, created_at):审计按节点过滤+时间倒序分页,避免 filesort(B1 优化)。
+	CreatedAt        time.Time `gorm:"index;index:idx_audit_node_created,priority:2" json:"created_at"`
 }
 
 // 审计场景与结果常量

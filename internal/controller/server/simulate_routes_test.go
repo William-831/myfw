@@ -72,8 +72,8 @@ func TestSimulateAPI_NodeMatch(t *testing.T) {
 	}
 	matched := false
 	for _, s := range res.Steps {
-		// 编译产物动作是 proto 枚举名(ACTION_ACCEPT)
-		if s.Matched && s.Action == "ACTION_ACCEPT" {
+		// 动作名已简化为 ACCEPT(去 ACTION_ 枚举前缀),供结论/前端使用
+		if s.Matched && s.Action == "ACCEPT" {
 			matched = true
 		}
 	}
