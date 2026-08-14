@@ -167,6 +167,71 @@ func TestSimulateAPI_MissingInput(t *testing.T) {
 	}
 }
 
+// seedSimGroupNode 构造引用源地址组的实例:INPUT 链 + allow-ops(源组 ops-net, 8080 ACCEPT)。
+// 地址组成员 = 范围 130-180 展开后的 7 条 CIDR(rangeToCIDRs 闭环)。
+func seedSimGroupNode(t *testing.T, gdb *gorm.DB, nodeID string) {
+	t.Helper()
+	if err := gdb.Create(&model.Node{ID: nodeID, Status: model.NodeStatusActive}).Error; err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	chain := model.CustomChain{Name: "sim-input", Parent: "MYFW-INPUT", Table: "filter", Priority: 50, Enabled: true}
+	if err := gdb.Create(&chain).Error; err != nil {
+		t.Fatalf("create chain: %v", err)
+	}
+	if err := gdb.Create(&model.AddressGroup{
+		Name: "ops-net", Kind: "custom",
+		Members: `["192.168.80.130/31","192.168.80.132/30","192.168.80.136/29","192.168.80.144/28","192.168.80.160/28","192.168.80.176/30","192.168.80.180/32"]`,
+	}).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := gdb.Create(&model.NodePolicyInstance{
+		NodeID: nodeID, Name: "allow-ops", GroupID: chain.ID,
+		SourceGroup: "ops-net", Protocol: "TCP", PortRange: "8080", Action: "ACCEPT", Priority: 10, Enabled: true,
+	}).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+}
+
+// TestSimulateAPI_AddressGroup: 引用地址组的实例端到端黑盒——组内源 IP 放行、组外 PASS。
+// 不依赖真实流量/Agent,纯期望态推演验证 DB 地址组 -> 编译 AddressSet -> 仿真匹配全链路。
+func TestSimulateAPI_AddressGroup(t *testing.T) {
+	gdb := openSimTestDB(t)
+	seedSimGroupNode(t, gdb, "n1")
+	h := BuildWebHandler(gdb, time.Minute)
+
+	run := func(srcIP string) string {
+		body, _ := json.Marshal(map[string]any{
+			"node_id": "n1",
+			"flow": map[string]any{
+				"direction": "INPUT", "source_ip": srcIP, "dest_ip": "10.0.0.1",
+				"protocol": "tcp", "src_port": 12345, "dst_port": 8080,
+			},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/simulate", bytesReader(body))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status: got %d, body=%s", w.Code, w.Body.String())
+		}
+		var res struct {
+			Verdict string `json:"verdict"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		return res.Verdict
+	}
+	// 范围起点/终点命中,范围外相邻地址不命中
+	for _, ip := range []string{"192.168.80.130", "192.168.80.180"} {
+		if v := run(ip); v != "ACCEPT" {
+			t.Fatalf("组内 %s: got %q, want ACCEPT", ip, v)
+		}
+	}
+	for _, ip := range []string{"192.168.80.129", "192.168.80.181"} {
+		if v := run(ip); v != "PASS" {
+			t.Fatalf("组外 %s: got %q, want PASS", ip, v)
+		}
+	}
+}
+
 // openSimTestDB 打开内存 SQLite 并迁移。
 func openSimTestDB(t *testing.T) *gorm.DB {
 	t.Helper()

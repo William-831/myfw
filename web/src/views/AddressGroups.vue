@@ -11,7 +11,7 @@
     </div>
 
     <el-alert type="info" :closable="false" class="tip">
-      地址组是白/黑名单 IP 段集合,编译期绑定到节点 ipset / nft set。策略通过「源地址组 / 目的地址组」引用其名称,即可用一条规则批量匹配多 CIDR。
+      地址组是白/黑名单 IP 段集合,编译期绑定到节点 ipset / nft set。策略通过「源地址组 / 目的地址组」引用其名称,即可用一条规则批量匹配多 IP。成员支持单个 IP、CIDR 或 IP 范围(如 192.168.80.130-192.168.80.180,保存时展开为每个 IP)。
     </el-alert>
 
     <el-table :data="groups" v-loading="loading" stripe>
@@ -55,14 +55,17 @@
           </el-select>
         </el-form-item>
         <el-form-item label="成员 CIDR" prop="members">
-          <el-select
-            v-model="form.members"
-            multiple filterable allow-create
-            default-first-option
-            :reserve-keyword="false"
-            placeholder="输入 CIDR 后回车,如 10.0.0.0/8"
-            style="width: 100%"
-          />
+          <div class="member-field">
+            <el-select
+              v-model="form.members"
+              multiple filterable allow-create
+              default-first-option
+              :reserve-keyword="false"
+              placeholder="输入成员后回车"
+              style="width: 100%"
+            />
+            <div class="member-tip">支持单个 IP / CIDR / IP 范围(如 192.168.80.130-192.168.80.180),范围保存时展开为每个 IP,上限 1024 个,超限请改用 CIDR。</div>
+          </div>
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" />
@@ -103,16 +106,18 @@ const rules = {
 const kindLabel = (k) => ({ whitelist: '白名单', blacklist: '黑名单', custom: '自定义' }[k] || k)
 const kindType = (k) => ({ whitelist: 'success', blacklist: 'danger', custom: 'info' }[k] || 'info')
 
-// 命令预览:复刻后端 iptables driver 的 ipset 编译逻辑,让用户直观看到将生成的底层命令
+// 命令预览:复刻后端 iptables driver 的 ipset 编译逻辑,让用户直观看到将生成的底层命令。
+// IP 范围成员(含 '-')后端会在保存时展开为每个 IP,此处标注提示,不重复实现展开算法。
 const previewCmd = computed(() => {
   const set = `MYFW-${form.name || '<name>'}`
   const members = (form.members || []).length ? form.members : ['<cidr>...']
+  const rangeNote = (m) => (m && m.includes('-') ? '   # IP 范围,保存时展开为每个 IP' : '')
   return [
     '# 创建集合 (hash:net)',
     `ipset create ${set} hash:net -exist`,
     '',
     '# 灌入成员',
-    ...members.map(m => `ipset add ${set} ${m} -exist`),
+    ...members.map(m => `ipset add ${set} ${m} -exist${rangeNote(m)}`),
     '',
     '# 策略引用 (在 MYFW-INPUT 内)',
     `iptables -t filter -A MYFW-INPUT -m set --match-set ${set} src -j ${form.kind === 'blacklist' ? 'DROP' : 'ACCEPT'}`
@@ -190,6 +195,8 @@ onMounted(loadData)
 .mono { font-family: 'JetBrains Mono', monospace; }
 .members { display: flex; flex-wrap: wrap; gap: 4px; }
 .cidr { font-family: 'JetBrains Mono', monospace; }
+.member-field { width: 100%; }
+.member-tip { margin-top: 4px; font-size: 12px; color: #909399; line-height: 1.5; }
 .cmd-preview { margin-top: 12px; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; }
 .cmd-preview-head { padding: 8px 12px; background: var(--c-surface-2); border-bottom: 1px solid var(--c-border); font-size: 12px; font-weight: 600; color: var(--c-text-1); }
 .cmd-preview-code { margin: 0; padding: 12px; background: #1E293B; color: #E2E8F0; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }

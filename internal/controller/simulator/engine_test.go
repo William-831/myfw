@@ -701,3 +701,156 @@ func TestBuildConclusion(t *testing.T) {
 		})
 	}
 }
+
+// --- 地址组黑盒测试(需求:测试机 IP 少,仿真引擎做 ipset 无状态语义黑盒验证) ---
+
+// TestEvaluate_SourceGroup_BoundaryIP: 组成员 CIDR 边界 IP(网络地址/广播地址)命中。
+// 地址组 [192.168.80.128/28] 覆盖 128-143,首尾必须命中,相邻外部地址不命中。
+func TestEvaluate_SourceGroup_BoundaryIP(t *testing.T) {
+	sets := []*myfwv1.AddressSet{set("seg", "192.168.80.128/28")}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-seg", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.SourceGroup = "seg"
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	// 组内边界与中间 IP 全部命中
+	for _, ip := range []string{"192.168.80.128", "192.168.80.143", "192.168.80.135"} {
+		got, err := Evaluate(tcpFlow("INPUT", ip, "10.0.0.1", 30000, 8080), rules, chains, sets)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", ip, err)
+		}
+		assertVerdict(t, got, VerdictAccept)
+	}
+	// 组外相邻 IP 不命中 -> PASS
+	for _, ip := range []string{"192.168.80.127", "192.168.80.144"} {
+		got, err := Evaluate(tcpFlow("INPUT", ip, "10.0.0.1", 30000, 8080), rules, chains, sets)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", ip, err)
+		}
+		assertVerdict(t, got, VerdictPass)
+	}
+}
+
+// TestEvaluate_SourceGroup_MultiCIDR_Partial: 多 CIDR 成员(跨段展开场景),部分命中。
+// 成员 = 范围 130-131(/31) + 180(/32),验证跨成员边界地址判定。
+func TestEvaluate_SourceGroup_MultiCIDR_Partial(t *testing.T) {
+	sets := []*myfwv1.AddressSet{set("seg", "192.168.80.130/31", "192.168.80.180/32")}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-seg", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.SourceGroup = "seg"
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	for _, ip := range []string{"192.168.80.130", "192.168.80.131", "192.168.80.180"} {
+		got, err := Evaluate(tcpFlow("INPUT", ip, "10.0.0.1", 30000, 8080), rules, chains, sets)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", ip, err)
+		}
+		assertVerdict(t, got, VerdictAccept)
+	}
+	// 成员间隙(132-179)与成员外均不命中
+	for _, ip := range []string{"192.168.80.132", "192.168.80.179", "192.168.80.181"} {
+		got, err := Evaluate(tcpFlow("INPUT", ip, "10.0.0.1", 30000, 8080), rules, chains, sets)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", ip, err)
+		}
+		assertVerdict(t, got, VerdictPass)
+	}
+}
+
+// TestEvaluate_SourceAndDestGroup: 源组 + 目的组同时约束,任一不命中则整条不命中。
+func TestEvaluate_SourceAndDestGroup(t *testing.T) {
+	sets := []*myfwv1.AddressSet{
+		set("internal", "10.0.0.0/8"),
+		set("web-servers", "172.16.0.0/16"),
+	}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-both", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.SourceGroup = "internal"
+			r.DestinationGroup = "web-servers"
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	// 源在组 + 目的在组 -> 命中
+	got, err := Evaluate(tcpFlow("INPUT", "10.1.2.3", "172.16.9.9", 30000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	// 源在组 + 目的不在组 -> 不命中
+	got, err = Evaluate(tcpFlow("INPUT", "10.1.2.3", "8.8.8.8", 30000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+	// 源不在组 -> 不命中
+	got, err = Evaluate(tcpFlow("INPUT", "8.8.8.8", "172.16.9.9", 30000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_GroupMixedWithCIDR: 地址组 + 单 CIDR 混合约束(源组 AND 目的单 CIDR)。
+func TestEvaluate_GroupMixedWithCIDR(t *testing.T) {
+	sets := []*myfwv1.AddressSet{set("internal", "10.0.0.0/8")}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-mixed", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.SourceGroup = "internal"
+			r.Destination = "172.16.0.0/16"
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	got, err := Evaluate(tcpFlow("INPUT", "10.1.2.3", "172.16.9.9", 30000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictAccept)
+	// 源在组但目的不在单 CIDR -> 不命中
+	got, err = Evaluate(tcpFlow("INPUT", "10.1.2.3", "8.8.8.8", 30000, 8080), rules, chains, sets)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	assertVerdict(t, got, VerdictPass)
+}
+
+// TestEvaluate_RangeExpandedGroup: 与范围语法闭环——成员即 rangeToCIDRs(130-180)展开
+// 的 7 条 CIDR,仿真验证展开集合边界命中正确(130/180 命中,129/181 不命中)。
+func TestEvaluate_RangeExpandedGroup(t *testing.T) {
+	sets := []*myfwv1.AddressSet{set("seg",
+		"192.168.80.130/31", "192.168.80.132/30", "192.168.80.136/29",
+		"192.168.80.144/28", "192.168.80.160/28", "192.168.80.176/30",
+		"192.168.80.180/32",
+	)}
+	rules := []*myfwv1.CompiledRule{
+		rule("i-seg", "business-input", myfwv1.Action_ACTION_ACCEPT, func(r *myfwv1.CompiledRule) {
+			r.SourceGroup = "seg"
+			r.PortRange = "8080"
+		}),
+	}
+	chains := []*myfwv1.CustomChainDef{chain("business-input", "MYFW-INPUT", "filter")}
+
+	for _, ip := range []string{"192.168.80.130", "192.168.80.155", "192.168.80.180"} {
+		got, err := Evaluate(tcpFlow("INPUT", ip, "10.0.0.1", 30000, 8080), rules, chains, sets)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", ip, err)
+		}
+		assertVerdict(t, got, VerdictAccept)
+	}
+	for _, ip := range []string{"192.168.80.129", "192.168.80.181"} {
+		got, err := Evaluate(tcpFlow("INPUT", ip, "10.0.0.1", 30000, 8080), rules, chains, sets)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", ip, err)
+		}
+		assertVerdict(t, got, VerdictPass)
+	}
+}

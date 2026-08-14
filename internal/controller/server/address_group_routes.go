@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -167,7 +168,8 @@ func addressGroupToMap(g model.AddressGroup) map[string]any {
 	}
 }
 
-// validateAddressGroupInput 校验名称、类型与每个 IP/CIDR。兼容无前缀 IP(视为 /32)。
+// validateAddressGroupInput 校验名称、类型与每个 IP/CIDR。兼容无前缀 IP(视为 /32)
+// 与 IP 范围语法 IP1-IP2(如 192.168.80.130-192.168.80.180,写入时展开为 CIDR)。
 func validateAddressGroupInput(in addressGroupInput) error {
 	if strings.TrimSpace(in.Name) == "" {
 		return errors.New("address group: name is required")
@@ -180,6 +182,13 @@ func validateAddressGroupInput(in addressGroupInput) error {
 	for _, m := range in.Members {
 		m = strings.TrimSpace(m)
 		if m == "" {
+			continue
+		}
+		// IP 范围语法:两端须合法、同族、start <= end
+		if strings.Contains(m, "-") {
+			if err := validateIPRange(m); err != nil {
+				return err
+			}
 			continue
 		}
 		if !strings.Contains(m, "/") {
@@ -195,13 +204,45 @@ func validateAddressGroupInput(in addressGroupInput) error {
 	return nil
 }
 
-// normalizeMembers 规范化成员:无前缀 IP 补 /32(IPv4)/128(IPv6),去空白与空项。
-// ipset hash:net 要求 CIDR,裸 IP 需补前缀,否则 syncSets 下发 ipset add 失败。
+// validateIPRange 校验 IP 范围语法 "IP1-IP2":两端合法、同族(同 v4/v6)、start <= end、
+// 范围大小不超上限。简写(如 192.168.80.130-180)不支持:段归属有歧义,须写完整两端。
+func validateIPRange(m string) error {
+	parts := strings.Split(m, "-")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return errors.New("address group: invalid IP range: " + m + "(期望格式 IP1-IP2,如 192.168.80.130-192.168.80.180)")
+	}
+	start, err1 := netip.ParseAddr(strings.TrimSpace(parts[0]))
+	end, err2 := netip.ParseAddr(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil {
+		return errors.New("address group: invalid IP range: " + m)
+	}
+	start, end = start.Unmap(), end.Unmap()
+	if start.Is4() != end.Is4() {
+		return errors.New("address group: IP range must be same family: " + m)
+	}
+	if end.Less(start) {
+		return errors.New("address group: IP range start must be <= end: " + m)
+	}
+	if n := ipRangeSize(start, end); n > ipRangeMaxIPs {
+		return errors.New(fmt.Sprintf("address group: IP range 过大(%d 个 IP,上限 %d),请改用 CIDR 表示", n, ipRangeMaxIPs))
+	}
+	return nil
+}
+
+// normalizeMembers 规范化成员:IP 范围展开为每个 IP 的 /32 列表,无前缀 IP 补 /32(IPv4)/128(IPv6),
+// 去空白与空项。ipset hash:net 要求 CIDR,裸 IP 需补前缀,否则 syncSets 下发 ipset add 失败。
 func normalizeMembers(ms []string) []string {
 	out := make([]string, 0, len(ms))
 	for _, m := range ms {
 		m = strings.TrimSpace(m)
 		if m == "" {
+			continue
+		}
+		// IP 范围语法:展开为每个具体 IP(validate 已保证合法且不超上限,失败防御性跳过)。
+		if strings.Contains(m, "-") {
+			if ips := expandIPRange(m); len(ips) > 0 {
+				out = append(out, ips...)
+			}
 			continue
 		}
 		if !strings.Contains(m, "/") {
@@ -216,4 +257,21 @@ func normalizeMembers(ms []string) []string {
 		out = append(out, m)
 	}
 	return out
+}
+
+// expandIPRange 解析 "IP1-IP2" 并展开为每个具体 IP 的 /32 列表;解析失败返回 nil(防御)。
+func expandIPRange(m string) []string {
+	parts := strings.Split(m, "-")
+	if len(parts) != 2 {
+		return nil
+	}
+	start, err := netip.ParseAddr(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return nil
+	}
+	end, err := netip.ParseAddr(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return nil
+	}
+	return rangeToIPs(start, end)
 }
