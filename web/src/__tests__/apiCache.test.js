@@ -66,4 +66,18 @@ describe('createGetCache 只读 GET 缓存', () => {
     expect(await cache.get('k1')).toBe('ok')
     expect(fetcher).toHaveBeenCalledTimes(2) // 错误未缓存,重试成功
   })
+
+  it('clear 全清缓存(写操作后整体刷新,不依赖前缀匹配)', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce('a1')
+      .mockResolvedValueOnce('a2')
+    const cache = createGetCache({ fetcher, ttl: 5000 })
+    await cache.get('nodes:list')
+    await cache.get('nodes:other')
+    cache.clear()
+    fetcher.mockResolvedValue('new')
+    expect(await cache.get('nodes:list')).toBe('new')
+    expect(await cache.get('nodes:other')).toBe('new')
+    expect(fetcher).toHaveBeenCalledTimes(4) // clear 后两条 key 都重拉
+  })
 })

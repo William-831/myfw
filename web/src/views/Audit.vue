@@ -176,6 +176,7 @@ import { ElMessage } from 'element-plus'
 import { Close } from '@element-plus/icons-vue'
 import { getAuditLogs, exportAuditLogs, getAuditDashboard, getAuditConfidence, getNodes } from '@/api'
 import { useEcharts } from '@/composables/useEcharts'
+import { usePolling } from '@/composables/usePolling'
 
 // --- 数据 ---
 const loading = ref(false)
@@ -363,8 +364,9 @@ const loadDashboard = async () => {
 const loadConfidence = async () => {
   try { confidence.value = await getAuditConfidence(30) } catch {}
 }
-const loadLogs = async () => {
-  loading.value = true
+// silent=true 轮询刷新不置表格 loading(避免每 10s 闪烁)
+const loadLogs = async (silent = false) => {
+  if (!silent) loading.value = true
   try {
     const params = { limit: pageSize.value, offset: (currentPage.value - 1) * pageSize.value }
     if (filter.action) params.action = filter.action
@@ -373,8 +375,10 @@ const loadLogs = async () => {
     const data = await getAuditLogs(params)
     logs.value = data.data || []
     total.value = data.total || 0
-  } catch { logs.value = []; total.value = 0 } finally { loading.value = false }
+  } catch { logs.value = []; total.value = 0 } finally { if (!silent) loading.value = false }
 }
+// 审计日志实时滚动,10s 轮询自动刷新当前页,免手动刷新页面
+usePolling(() => loadLogs(true), 10000)
 const handleSearch = () => { currentPage.value = 1; loadLogs() }
 const handleReset = () => { filter.action = ''; filter.nodeID = ''; filter.scene = ''; currentPage.value = 1; loadLogs() }
 const handleExport = async () => {

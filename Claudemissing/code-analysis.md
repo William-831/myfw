@@ -63,8 +63,8 @@
 │   ├── router/index.js     # 路由配置
 │   ├── views/              # 12 个页面组件
 │   ├── components/         # 4 个通用组件
-│   ├── composables/        # 6 个 composable（usePolling 轮询防重入/useNodeList 节点复用/useStatusLabels 状态映射 + 图表/格式化/iptables 解析/命令预览）
-│   ├── api/cache.js        # createGetCache 只读 GET TTL 缓存(单飞+前缀失效);api/index.js 包装 getNodes(5s)/静态字典(30s),写后失效
+│   ├── composables/        # 6 个 composable（usePolling 轮询防重入/useNodeList 节点复用/useStatusLabels 状态映射 + 图表/格式化/iptables 解析/命令预览）;2026-08-12 Dashboard(10s)/Audit(10s)/Nodes(15s 在线状态)/Approve(5s 任务流转)接 usePolling 免手动刷新
+│   ├── api/cache.js        # createGetCache 只读 GET TTL 缓存(单飞+前缀失效+clear 全清);api/index.js 包装 getNodes(5s)/静态字典(30s),写后失效;2026-08-12 修复失效前缀 bug('nodes'/'dicts' 与缓存键不匹配→改 '/v1/nodes' 前缀 + dicts clear,五页写后不再需 F5)
 │   ├── __tests__/          # Vitest 测试(vitest+@vue/test-utils+jsdom,23 用例:usePolling/toggleEnabled/apiCache/useNodeList)
 │   ├── stores/             # Pinia 状态管理
 │   └── layout/             # 布局组件
@@ -128,7 +128,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 - `New()`（第 57 行）：构建所有依赖并组装 gRPC + HTTP 服务器
 - `newWebHandler()`（第 328 行）：注册 12 组 Gin 路由 + 静态文件服务;2026-08-13 增加 readCache(B2)、requestLogger 挂载(B4)、cfg 注入设置 policyCfg(B5)
 - `Run()`（第 390 行）：启动 gRPC + HTTP 双服务器
-- **B2 readcache.go**：`ReadCache` TTL 内存缓存(GetOrCompute 单飞/DeletePrefix 前缀失效/错误不缓存);dashboard/stats 与 nodes/list 接 5s 缓存(nodes/list online 实时覆盖不进缓存,节点 PUT/DELETE 失效);`computeDashboardStats`/`computeNodesList` 为缓存计算函数
+- **B2 readcache.go**：`ReadCache` TTL 内存缓存(GetOrCompute 单飞/DeletePrefix 前缀失效/错误不缓存);dashboard/stats、config-drift(2026-08-12)与 nodes/list 接 5s 缓存(nodes/list online 实时覆盖不进缓存,节点 PUT/DELETE 失效);`computeDashboardStats`/`computeNodesList`/`computeConfigDrift` 为缓存计算函数
 - **B4 middleware.go**：`requestLogger(logger)` 结构化请求日志(method/path/status/ms/user,可注入便于测试),newWebHandler 挂载;`policyCfg` 包级只读策略阈值(newWebHandler 启动时从 cfg 写入)
 - **B5 配置化**：config.go 增 `PolicyConfig`(DeadRuleThresholdDays=3/ConfirmDeadlineDefault=5m/ApplyWaitTimeout=8s,默认=现状);三处硬编码改读 policyCfg:iptables_routes deadRuleThresholdDays、task_routes applyWaitTimeout、policy_routes ConfirmDeadline
 - **B3 异步降级**：applyNow 等待上限 policyCfg.ApplyWaitTimeout(默认 8s 超时返回 accepted);sync-all 按节点防重入(nodeSyncLock 互斥,并发返回 409)
@@ -143,7 +143,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | registerPolicyRoutes | policy_routes.go:24 | 策略 CRUD + 编译 + 下发 |
 | registerTemplateRoutes | template_routes.go:20 | 策略模板 CRUD + 导入导出 + checkMarkExists(MARK 值须存在于标记管理)+ 配置漂移治理(sync-preview 字段级 diff 预览 / sync-all 批量同步 / instanceDiffFields 偏离检测);v1.3 chain_unavailable 标记(P2 组生命周期显式化)+ chainTableFor(组链表 table,表一致性);v1.5 POST /templates 忽略前端 id(主键冲突修复)+ requireMarkSource(实例 MARK 源必填,模板可无源骨架)+ 实例化合并 body.source 覆盖;v1.6 同步保留实例非空定制(orKeepString 模板空值不清空实例有值字段,如源 IP)+ syncOverrideFields(sync-preview 只展示实际覆盖字段);v1.7 dispatch 与 DELETE 移除在节点有 dispatching/applying 任务时 errors.Is(task.ErrNodeBusy) 映射 409("节点有任务执行中,请稍候再试") |
 | registerAuditRoutes | audit_routes.go:15 | 审计日志查询/导出/dashboard/置信度 |
-| registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数) |
+| registerDashboardRoutes | dashboard_routes.go:12 | 仪表盘统计 + config-drift(配置漂移统计:模板已更新但实例未跟的实例数;2026-08-12 接 5s 缓存,computeConfigDrift 为计算函数,与 stats 同 TTL 策略不额外失效) |
 | registerIptablesRoutes | iptables_routes.go:20 | 节点 iptables 规则实时拉取/漂移检查;v1.4 规则活性分析(计划一):POST /iptables/hits/:node_id(Agent 上报命中率,同实例 max 聚合 upsert RuleHitStat)+ GET /iptables/rule-hits/:node_id(命中率列表+死规则判定,dead=enabled+有统计+packets=0+超 3 天,阈值 deadRuleThresholdDays 2026-08-13 由 7 改 3) |
 | registerAddressGroupRoutes | address_group_routes.go:19 | 地址组 CRUD;2026-08-14 members 支持 IP 范围语法(IP1-IP2,写入时 rangeToCIDRs 展开为 CIDR 存储,validate 校验同族/start<=end;cidr_range.go 新增 rangeToCIDRs 纯算法) |
 | registerCustomChainRoutes | custom_chain_routes.go:18 | 自定义链 CRUD;v1.3 多挂载(mounts 权威+Parent/Priority 镜像回退,返回 mount_list)+ 禁用链审计 chain.disabled(含 affected_instances) |
@@ -274,7 +274,7 @@ mark-mangle/nat-prerouting/nat-postrouting)。`SeedCustomChains` 由 db.Migrate(
 | /nodes | Nodes.vue | 节点管理（列表/添加/编辑/删除/审批/规则查看） |
 | /policies | NodePolicies.vue | 策略管理 |
 | /templates | TemplateLibrary.vue | 策略模板库 |
-| /node-policies | NodePolicies.vue | 节点策略实例(含单条策略预演抽屉:预期目标 vs 实际模拟通道流程图,五元组仿真命中路径,计划二);v1.7 保护期动作合并接管 UI:inflightTasks 轮询(confirm_wait/dispatching/applying/superseded)+ nodeInGuard(有 confirm_wait)/nodeBusy(有执行中)计算属性 + 状态标签"⏳ 保护期接管中"(未确认前不显示已禁用)+ banner 接管提示(旧任务已被新动作接管,保护期已重置)+ nodeBusy 时全部操作按钮禁用;2026-08-14 保护期待确认意图化:实例条目标签由 pendingConfirmIntents(Map<id,dispatch|remove>)驱动(启动→"⏳ 下发待确认"/禁用/移除→"⏳ 移除待确认"),不再依赖可变 enabled 值;顶部 guardTask banner 显示策略名+diff_after 命令预览 |
+| /node-policies | NodePolicies.vue | 节点策略实例(含单条策略预演抽屉:预期目标 vs 实际模拟通道流程图,五元组仿真命中路径,计划二);v1.7 保护期动作合并接管 UI:inflightTasks 轮询(confirm_wait/dispatching/applying/superseded)+ nodeInGuard(有 confirm_wait)/nodeBusy(有执行中)计算属性 + 状态标签"⏳ 保护期接管中"(未确认前不显示已禁用)+ banner 接管提示(旧任务已被新动作接管,保护期已重置)+ nodeBusy 时全部操作按钮禁用;2026-08-14 保护期待确认意图化:实例条目标签由 pendingConfirmIntents(Map<id,dispatch|remove>)驱动(启动→"⏳ 下发待确认"/禁用/移除→"⏳ 移除待确认"),不再依赖可变 enabled 值;顶部 guardTask banner 显示策略名+diff_after 命令预览;2026-08-17 修复 toggleEnabled 两 bug:①dispatch 异步致待确认区没状态(操作后 fire-and-forget pollTaskDone 等 confirm_wait 再 refreshInflight+guard.refresh+loadInstances);②禁用未下发实例(applied=false)短路不 dispatch,避免后端误标 change_type='dispatch' 产生"节点策略下发待确认"假任务 |
 | /address-groups | AddressGroups.vue | 地址组 |
 | /custom-chains | CustomChains.vue | 自定义链 |
 | /approve | Approve.vue | 审批任务 |

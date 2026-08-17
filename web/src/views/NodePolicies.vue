@@ -459,12 +459,35 @@ const toggleEnabled = async (inst, v) => {
   inst.enabled = v // 乐观翻转:UI 立即响应,后台收敛
   try {
     await updateInstance(inst.id, { ...inst, enabled: v })
-    await dispatchNode(selectedNodeId.value, { auto_approve: true })
+    // 禁用且节点无该实例规则(applied=false):无规则可移除,不应产生保护期任务。
+    // 原实现无条件 dispatchNode,后端 disabling 查询(applied=true)匹配不到 ->
+    // change_type 落 default 'dispatch'、policy_name 保留"节点策略下发",
+    // 待确认区误显示"节点策略下发待确认"(2026-08-17 修复)。
+    if (!v && !inst.applied) {
+      ElMessage.success('已禁用(未下发,无规则需移除)')
+      loadInstances()
+      return
+    }
+    const d = await dispatchNode(selectedNodeId.value, { auto_approve: true })
     ElMessage.success((v ? '启用' : '禁用') + '动作已下发,保护期确认见顶部')
     markPendingConfirm(inst.id, v ? 'dispatch' : 'remove') // 该实例下发/移除待确认,条目上打标定位
     loadInstances()
     refreshInflight()
     guard.refresh() // 待确认区立即刷新(不等 5s 轮询)
+    // dispatch 异步:任务此刻还在 applying,未到 confirm_wait,ConfirmGuard 查
+    // confirm_wait 为空 -> 待确认区没状态、NodePolicies nodeInGuard=false 无保护期
+    // 提示(须刷新页面+重选节点才见,2026-08-17 修复)。后台轮询等任务进 confirm_wait
+    // 再联动刷新三处,免手动刷新;不阻塞 UI(乐观翻转已即时反馈)。
+    const taskID = d.tasks?.[0]?.id
+    if (taskID) {
+      pollTaskDone(taskID).then((t) => {
+        if (t && t.status === 'confirm_wait') {
+          refreshInflight()
+          guard.refresh()
+          loadInstances()
+        }
+      })
+    }
   } catch (e) {
     inst.enabled = prev // 失败回滚乐观值
     // 409:节点有任务执行中,不可接管(执行中任务不可作废)。实例已改 DB 但未下发,提示稍候重试

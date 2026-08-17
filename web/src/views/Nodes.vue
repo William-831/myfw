@@ -432,6 +432,7 @@ import { Plus, Connection, Setting, ArrowDown, Search, CaretBottom, CircleCheck 
 import { getNode, updateNode, deleteNode, createBootstrapToken, renewNodeCert, getNodeIptablesRules, getNodeDrift, getTasks, approveNode, getNodeRevisions, rollbackRevision } from '@/api'
 import { useGuardStore } from '@/stores/guard'
 import { useNodeList } from '@/composables/useNodeList'
+import { usePolling } from '@/composables/usePolling'
 
 const loading = ref(false)
 const guard = useGuardStore()
@@ -1015,6 +1016,9 @@ const handleDelete = async (row) => {
   }
 }
 
+// 节点在线状态/最后活跃由 Agent 心跳更新,15s 轮询自动刷新,免手动刷新页面。
+// 静默刷新(loadNodes 不带 loading 包装),避免列表整体 loading 闪烁。
+usePolling(loadNodes, 15000)
 onMounted(loadNodesWithLoading)
 </script>
 

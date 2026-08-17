@@ -31,6 +31,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { Connection, CircleCheck, Lock, Clock, Warning } from '@element-plus/icons-vue'
 import { getDashboardStats, getAuditLogs, getConfigDrift } from '@/api'
+import { usePolling } from '@/composables/usePolling'
 import StatCard from '@/components/StatCard.vue'
 import StatusPanel from '@/components/StatusPanel.vue'
 import AuditFeed from '@/components/AuditFeed.vue'
@@ -62,7 +63,9 @@ const onlineSub = computed(() => stats.node_count ? `在线率 ${pct(stats.activ
 const policySub = computed(() => `生效 ${stats.active_policy_count}`)
 const pendingSub = computed(() => stats.pending_task_count ? '待处理' : '暂无待办')
 
-onMounted(async () => {
+// 仪表盘 KPI/配置漂移/最近审计统一加载。silent=true 轮询刷新不置 auditLoading,
+// 避免每 10s 时间线 loading 闪烁。
+const loadDashboard = async ({ silent = false } = {}) => {
   try {
     Object.assign(stats, await getDashboardStats())
   } catch {
@@ -73,7 +76,7 @@ onMounted(async () => {
     Object.assign(configDrift, await getConfigDrift())
   } catch { /* 配置漂移加载失败不阻塞 */ }
 
-  auditLoading.value = true
+  if (!silent) auditLoading.value = true
   try {
     const data = await getAuditLogs({ limit: 6, offset: 0 })
     recentAudits.value = data.data || []
@@ -81,9 +84,12 @@ onMounted(async () => {
   } catch {
     recentAudits.value = []
   } finally {
-    auditLoading.value = false
+    if (!silent) auditLoading.value = false
   }
-})
+}
+// 仪表盘状态实时性强(节点数/在线/待审批/漂移/最近审计),10s 轮询自动刷新,免手动刷新页面
+usePolling(() => loadDashboard({ silent: true }), 10000)
+onMounted(loadDashboard)
 </script>
 
 <style scoped>

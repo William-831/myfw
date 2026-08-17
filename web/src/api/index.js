@@ -8,14 +8,19 @@ const service = axios.create({
 
 // F3 只读 GET 缓存:无参只读接口(节点列表/静态字典)在 TTL 内复用,写操作后主动失效。
 // 节点列表 5s、静态字典 30s——低频变更数据,切换页面不重复拉取。
-const readCaches = {
+// 导出供测试(apiWriteInvalidate.test.js 用例间隔离)
+export const readCaches = {
   nodes: createGetCache({ ttl: 5000 }),
   dicts: createGetCache({ ttl: 30000 }),
 }
-// 写操作统一失效:任意节点/模板/组/地址组/标记变更后清空对应前缀缓存
-const invalidateAfterWrite = (type) => {
-  if (type === 'nodes') readCaches.nodes.invalidatePrefix('nodes')
-  else readCaches.dicts.invalidatePrefix('dicts')
+// 写操作统一失效:任意节点/模板/组/地址组/标记变更后清空对应缓存。
+// 修复(2026-08-12):原失效前缀 'nodes'/'dicts' 与缓存键(完整 URL)不匹配,
+// startsWith 恒 false -> 写后 TTL 内仍返回旧数据,必须 F5 刷新页面。
+// 现节点缓存按真实键前缀 '/v1/nodes' 失效;字典缓存 4 key(地址组/标记/链/模板)
+// 交叉引用,clear() 全清最稳。导出供测试。
+export const invalidateAfterWrite = (type) => {
+  if (type === 'nodes') readCaches.nodes.invalidatePrefix('/v1/nodes')
+  else readCaches.dicts.clear()
 }
 // 带 URL 的缓存 GET:同一 URL 在 TTL 内只发一次请求
 const cachedGet = (cache, url) => () => cache.get(url, () => service.get(url))

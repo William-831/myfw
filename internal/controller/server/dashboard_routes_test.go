@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,5 +69,38 @@ func TestDashboardConfigDrift(t *testing.T) {
 	}
 	if byNode["n1"] != 2 || byNode["n2"] != 1 {
 		t.Fatalf("节点 drift 计数应为 n1=2/n2=1, got %v", byNode)
+	}
+}
+
+// TestConfigDriftRouteCaches 验证 config-drift 走 5s TTL 缓存:改 DB 消除 drift 后,
+// TTL 内 GET 仍返回旧值(缓存命中,证明未重查 DB)。与 dashboard/stats 同缓存策略。
+func TestConfigDriftRouteCaches(t *testing.T) {
+	gdb := newRevisionTestDB(t)
+	tpl := model.PolicyTemplate{Name: "t1", SpecVersion: 1, Enabled: true}
+	if err := gdb.Create(&tpl).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Create(&model.NodePolicyInstance{NodeID: "n1", TemplateID: tpl.ID, Name: "i1", SyncedSpecVersion: 0}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := BuildWebHandler(gdb, time.Minute)
+	doGet := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/config-drift", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	w1 := doGet()
+	if !strings.Contains(w1.Body.String(), `"total":1`) {
+		t.Fatalf("首次应返回 total=1, got %s", w1.Body.String())
+	}
+	// 直接改 DB 同步实例消除 drift(绕过缓存失效点,验证 TTL 缓存命中)
+	if err := gdb.Model(&model.NodePolicyInstance{}).Where("name = ?", "i1").Update("synced_spec_version", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	// TTL 内命中缓存,仍返回旧值 total=1
+	w2 := doGet()
+	if !strings.Contains(w2.Body.String(), `"total":1`) {
+		t.Fatalf("TTL 内缓存应命中返回 total=1, got %s", w2.Body.String())
 	}
 }

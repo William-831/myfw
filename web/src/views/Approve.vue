@@ -84,6 +84,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getTasks, approveTask, rejectTask, confirmTask, rollbackTask } from '@/api'
 import { useNodeList } from '@/composables/useNodeList'
+import { usePolling } from '@/composables/usePolling'
 import { LABELS as STATUS_LABELS, TYPES as STATUS_TYPES } from '@/composables/useStatusLabels'
 
 const loading = ref(false)
@@ -103,18 +104,22 @@ const formatTime = (time) => {
   try { return new Date(time).toLocaleString() } catch { return time }
 }
 
-const loadTasks = async () => {
-  loading.value = true
+// silent=true 轮询刷新不置表格 loading(避免每 5s 闪烁)、不弹重复错误
+const loadTasks = async (silent = false) => {
+  if (!silent) loading.value = true
   try {
     const params = filterStatus.value ? { status: filterStatus.value } : {}
     const data = await getTasks(params)
     tasks.value = data.tasks || []
   } catch {
-    ElMessage.error('加载任务列表失败')
+    if (!silent) ElMessage.error('加载任务列表失败')
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
+// 任务状态会随时间推进(pending_approval->dispatching->applying->confirm_wait),
+// 5s 轮询自动刷新流转进度,免手动点刷新
+usePolling(() => loadTasks(true), 5000)
 
 const handleView = (row) => {
   Object.assign(viewTask, row)

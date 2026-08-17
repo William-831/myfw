@@ -21,6 +21,8 @@ export function createGetCache({ fetcher, ttl = 5000 } = {}) {
       if (k.startsWith(prefix)) store.delete(k)
     }
   }
+  // 全清(写操作后整体刷新):字典缓存多 key 交叉引用,按前缀逐条匹配易漏,clear 兜底。
+  const clear = () => { store.clear() }
 
-  return { get, invalidate, invalidatePrefix }
+  return { get, invalidate, invalidatePrefix, clear }
 }

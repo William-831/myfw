@@ -105,3 +105,8 @@ openssl.cnf
 
 # IDE workspace
 .vs/
+
+# ---- 交叉编译产物(部署用,勿提交) ----
+/myfw-controller.linux
+/myfw-controller.v*
+/myfw-agent.linux
