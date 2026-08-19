@@ -17,12 +17,11 @@ FROM docker.m.daocloud.io/library/golang:1.26.5-alpine3.24 AS ctrl
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
-COPY vendor/ ./vendor/
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY api/ ./api/
 COPY proto/ ./proto/
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+RUN -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /usr/local/bin/myfw-controller ./cmd/controller
 
 # ---- 阶段3：运行时 ----
