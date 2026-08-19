@@ -3,7 +3,7 @@
 # 构建：docker build -t myfw-controller:v0.3.0 -f deploy/docker/Dockerfile.compose .
 
 # ---- 阶段1：前端构建 ----
-FROM node:20-alpine AS web
+FROM  registry.cn-hangzhou.aliyuncs.com/acs/node:20-alpine AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -11,7 +11,7 @@ COPY web/ ./
 RUN npm run build                # 输出 /web/dist（index.html + assets/）
 
 # ---- 阶段2：Controller 编译（vendor 离线编译） ----
-FROM golang:1.26.5-alpine3.24 AS ctrl
+FROM registry.cn-hangzhou.aliyuncs.com/acs/golang:1.26.5-alpine3.24 AS ctrl
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version
     -o /usr/local/bin/myfw-controller ./cmd/controller
 
 # ---- 阶段3：运行时 ----
-FROM alpine:3.24
+FROM registry.cn-hangzhou.aliyuncs.com/acs/alpine:3.24
 COPY --from=ctrl /usr/local/bin/myfw-controller /usr/local/bin/myfw-controller
 # 前端静态资源（server.go 提供 /assets 与 index.html）
 COPY --from=web /web/dist /var/www/myfw
