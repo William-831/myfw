@@ -5,21 +5,21 @@
 # ---- 阶段1：前端构建 ----
 FROM  docker.m.daocloud.io/library/node:20-alpine AS web
 WORKDIR /web
-COPY web/package.json web/package-lock.json ./
+COPY /web/package.json web/package-lock.json ./
 RUN npm ci
-COPY web/ ./
+COPY /web/ ./
 RUN npm run build                # 输出 /web/dist（index.html + assets/）
 
 # ---- 阶段2：Controller 编译（vendor 离线编译） ----
 FROM docker.m.daocloud.io/library/golang:1.26.5-alpine3.24 AS ctrl
 WORKDIR /src
 ARG VERSION=dev
-COPY go.mod go.sum ./
-COPY vendor/ ./vendor/
-COPY cmd/ ./cmd/
-COPY internal/ ./internal/
-COPY api/ ./api/
-COPY proto/ ./proto/
+COPY /go.mod go.sum ./
+COPY /vendor/ ./vendor/
+COPY /cmd/ ./cmd/
+COPY /internal/ ./internal/
+COPY /api/ ./api/
+COPY /proto/ ./proto/
 RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /usr/local/bin/myfw-controller ./cmd/controller
 
