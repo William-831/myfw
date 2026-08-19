@@ -410,10 +410,22 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 
 	// Agent 二进制与 CA 证书下载(节点安装脚本 curl 拉取)
 	// 二进制挂载到 /var/www/agent/,CA 挂载到 /etc/myfw/ca/(与 controller.prod.example.yaml 的 ca.cert_file 一致)
-	r.StaticFile("/download/agent/linux-amd64", "/var/www/agent/myfw-agent-linux-amd64")
-	r.StaticFile("/download/ca.pem", "/etc/myfw/ca/ca.pem")
-	r.Static("/assets", "/var/www/myfw/assets")
+	// 缓存策略:二进制 no-cache,防节点缓存旧版 agent;index.html no-cache 防浏览器启发式缓存旧版
+	// 导致 SPA 引用残留旧资源白屏;assets 哈希文件名内容不可变,强缓存一年(immutable)零副作用。
+	r.GET("/download/agent/linux-amd64", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.File("/var/www/agent/myfw-agent-linux-amd64")
+	})
+	r.GET("/download/ca.pem", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.File("/etc/myfw/ca/ca.pem")
+	})
+	r.GET("/assets/*filepath", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		c.File("/var/www/myfw/assets" + c.Param("filepath"))
+	})
 	r.NoRoute(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
 		c.File("/var/www/myfw/index.html")
 	})
 
