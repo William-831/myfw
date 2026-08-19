@@ -420,6 +420,10 @@ func compileInstance(inst *model.NodePolicyInstance, groupChain, groupParent, ch
 				Id:          base + "-drop",
 				Direction:   aclDir,
 				PortRange:   inst.PortRange,
+				// 兜底 DROP 带端口必须配协议,否则 driver 组装 iptables 命令因
+				// "port range requires a protocol" 报错致整次 Apply 失败进入自愈回滚。
+				// MARK 白名单协议必为 TCP/UDP(rulespec 强制端口配具体协议),proto 可安全继承。
+				Protocol:    proto,
 				Action:      myfwv1.Action_ACTION_DROP,
 				Chain:       aclChain,
 				Priority:    int32(inst.Priority) + markAclDropOffset,

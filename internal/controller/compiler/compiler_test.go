@@ -3,6 +3,7 @@ package compiler
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"gorm.io/gorm/logger"
@@ -309,4 +310,42 @@ func countChainDef(chains []*myfwv1.CustomChainDef, name string) int {
 		}
 	}
 	return n
+}
+
+// TestCompileMarkWhitelistDropKeepsProtocol 回归:MARK 白名单拦截编译生成的
+// 兜底 DROP 规则(带端口)必须继承主规则的协议(TCP/UDP),否则 Agent 侧 driver
+// 组装 iptables 命令时因"端口缺协议"报 `port range requires a protocol`,
+// 导致整次 Apply 失败进入保护期自愈(用户将策略发起变更看到"下发失败+系统自愈")。
+func TestCompileMarkWhitelistDropKeepsProtocol(t *testing.T) {
+	c, _ := newTestCompiler(t)
+	ctx := context.Background()
+	mustCreateNode(t, c, "n_a")
+
+	// MARK 白名单拦截实例:必须有源 + 端口 + 协议(TCP/UDP),方向 FORWARD(容器转发)。
+	mustCreateInstance(t, c, model.NodePolicyInstance{
+		NodeID: "n_a", Name: "allow-svc", GroupID: 0, // 白名单落内置链,不消费组链
+		Direction: "FORWARD", Source: "10.0.0.0/24",
+		Protocol: "TCP", PortRange: "3306", Action: "MARK", Mark: 15,
+		Priority: 10, Enabled: true, SourceGroup: "db-clients",
+	})
+
+	got, _, _, err := c.CompileForNode(ctx, "n_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 应编译出 3 条:打标 + 放行 + 兜底 DROP
+	if len(got) != 3 {
+		t.Fatalf("MARK 白名单应编译 3 条规则, got %d: %+v", len(got), got)
+	}
+	// 兜底 DROP 规则(id 以 -drop 结尾)必须带具体协议,否则 driver 端口缺协议报错。
+	for _, r := range got {
+		if strings.HasSuffix(r.Id, "-drop") {
+			if r.Protocol != myfwv1.Protocol_PROTOCOL_TCP {
+				t.Fatalf("兜底 DROP %s 应继承协议 TCP, got %v (port_range=%q)", r.Id, r.Protocol, r.PortRange)
+			}
+			if r.PortRange != "3306" {
+				t.Fatalf("兜底 DROP 端口应保留 3306, got %q", r.PortRange)
+			}
+		}
+	}
 }
