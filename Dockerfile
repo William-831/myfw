@@ -19,6 +19,7 @@ ARG VERSION=dev
 COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY vendor/ ./vendor/
 COPY api/ ./api/
 COPY proto/ ./proto/
 RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
