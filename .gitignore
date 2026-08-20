@@ -13,8 +13,7 @@
 go.work
 go.work.sum
 
-# Vendored deps (we use go modules)
-/vendor/
+# Vendored deps: 纳入版本控制，供离线编译镜像使用 (go build -mod=vendor)
 
 # ---- Node / Frontend (web/) ----
 node_modules/
