@@ -21,7 +21,7 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY api/ ./api/
 COPY proto/ ./proto/
-RUN -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+RUN go mod download -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /usr/local/bin/myfw-controller ./cmd/controller
 
 # ---- 阶段3：运行时 ----
