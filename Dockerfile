@@ -12,7 +12,7 @@ COPY web/ ./
 RUN npm run build                # 输出 /web/dist（index.html + assets/）
 
 # ---- 阶段2：Controller 编译（vendor 离线编译） ----
-FROM ocker.m.daocloud.io/library/golang:1.26.5-alpine3.24 AS ctrl
+FROM docker.m.daocloud.io/library/golang:1.26.5-alpine3.24 AS ctrl
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
