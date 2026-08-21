@@ -28,6 +28,7 @@ web/.vite/
 *.db-journal
 *.sqlite
 *.sqlite3
+*.tmp
 
 # Dev CA & certificates (self-signed dev only)
 /dev-ca/
@@ -58,6 +59,7 @@ dev-agent.yaml
 
 # ---- Logs ----
 *.log
+*.bak
 logs/
 
 # ---- IDE / Editor ----
@@ -101,6 +103,16 @@ openssl.cnf
 
 # ---- 误建目录 ----
 /-p/
+
+# ---- 运行时数据目录(挂载进容器,不入版本库;仅保留占位 README) ----
+/deploy/docker/dev-ca/*
+!/deploy/docker/dev-ca/README.md
+/deploy/docker/data/*
+!/deploy/docker/data/README.md
+
+# ---- 本地验证/分析产物 ----
+.verify/
+*.tgz
 
 # IDE workspace
 .vs/

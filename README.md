@@ -33,29 +33,25 @@ Go 1.26（Gin + gRPC + GORM + slog）+ Vue 3（Element Plus + Pinia + Vite）+ S
 ### 1. 部署 Controller（Docker）
 
 ```bash
-# 准备配置
-cp deploy/docker/.env.example .env                          # 填入 DB DSN / HMAC 密钥
-cp configs/controller.prod.example.yaml config.yaml
+# 准备配置(.env 一次性配好:DB DSN / HMAC 密钥 / MYFW_SAN)
+cp deploy/docker/.env.example .env
+# MYFW_SAN:Agent 连接 Controller 的地址,如 IP:192.168.80.249 或 DNS:myfw.example.com
 
-# 生成 CA（Controller 与 Agent mTLS 信任根）
-mkdir -p dev-ca && cd dev-ca
-openssl genrsa -out ca.key 4096
-openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.pem -subj "/CN=MYFW CA"
-cd ..
-
-# 拉取镜像并启动（镜像仓库地址待定，替换 <registry>）
-docker pull <registry>/myfw-controller:v1.1
-docker compose -f docker-compose.prod.yml up -d
+# 构建并启动:首次 up 自动生成 CA 并持久化到 deploy/docker/dev-ca/,容器重建复用、Agent 不失效
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-> 镜像也可本地构建：`docker build -t myfw-controller:v1.1 -f deploy/docker/Dockerfile.compose .`
+> `docker-compose.prod.yml` 将 `deploy/docker/dev-ca` 挂载到容器 `/etc/myfw/ca`（可写持久化）；若目录为空，入口脚本 `gen-ca-entrypoint.sh` 在首次启动时自动生成全套证书（CA + server，SAN 取自 `.env` 的 `MYFW_SAN`）。也可选择预生成方式 `SAN=... ./scripts/gen-ca.sh`（输出到 `deploy/docker/dev-ca/`），效果等效。
+> 生产配置（`controller.prod.example.yaml`）随镜像内置为 `/etc/myfw/config.yaml`，不挂载；敏感值全部走 `.env` 注入。如需调整参数（端口/日志/TTL 等）：修改 `deploy/docker/configs/controller.prod.example.yaml` 后重建镜像。
+> Agent 二进制（amd64/arm64）随镜像内置，节点安装脚本自动按 `uname -m` 分流下载对应架构（`/download/agent/linux-<arch>`）；`scripts/build-agent.sh` 仅为独立分发工具（输出 `dist/`）。
 
 健康检查：`curl http://localhost:8080/healthz` 返回 `{"status":"ok"}`
 
 ### 2. 安装 Agent（被管节点）
 
 ```bash
-# 在 Controller Web UI 创建节点，获取 bootstrap token，然后在被管节点执行：
+# 在 Controller Web UI 创建节点，获取 bootstrap token，然后在被管节点执行
+# （脚本自动按 uname -m 识别架构，从 Controller 下载对应 Agent）：
 export MYFW_CONTROLLER=controller.example.com:9090
 export MYFW_BOOTSTRAP_TOKEN=<token>
 curl -fsSL https://controller.example.com:8080/download/agent/install-agent.sh | bash
@@ -76,7 +72,7 @@ curl -fsSL https://controller.example.com:8080/download/agent/install-agent.sh |
 | 文件 | 说明 |
 |------|------|
 | `deploy/docker/.env.example` | 环境变量模板（DB DSN、HMAC 密钥），复制为 `.env` |
-| `configs/controller.prod.example.yaml` | 生产配置（监听/TLS/连接池/审计保留），复制为 `config.yaml` |
+| `deploy/docker/configs/controller.prod.example.yaml` | 生产配置（监听/TLS/连接池/审计保留），compose 挂载为 `/etc/myfw/config.yaml` |
 | `docker-compose.prod.yml` | 生产编排（端口/卷挂载/重启策略） |
 | `/etc/myfw-agent/agent.yaml` | Agent 配置（Controller 地址/TLS/bootstrap token） |
 

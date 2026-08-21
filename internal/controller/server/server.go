@@ -416,6 +416,15 @@ func newWebHandler(db *gorm.DB, assets *asset.Handler, streamSvc *stream.Service
 		c.Header("Cache-Control", "no-cache")
 		c.File("/var/www/agent/myfw-agent-linux-amd64")
 	})
+	r.GET("/download/agent/linux-arm64", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.File("/var/www/agent/myfw-agent-linux-arm64")
+	})
+	// 安装脚本(随镜像内置,节点 curl | bash 在线安装,脚本内按 uname -m 自动分流架构)
+	r.GET("/download/agent/install-agent.sh", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.File("/var/www/agent/install-agent.sh")
+	})
 	r.GET("/download/ca.pem", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-cache")
 		c.File("/etc/myfw/ca/ca.pem")

@@ -2,7 +2,8 @@
 # deploy-remote.sh - 远程测试机一键部署（Docker 形式启动 Controller）。
 #
 # 在目标 Linux 机器上执行，前置条件：
-#   /home/myfw 下已放入 myfw-src.tar.gz（源码包）与 myfw-agent-linux-amd64（交叉编译产物）。
+#   /home/myfw 下已放入 myfw-src.tar.gz（源码包）。
+#   Agent 二进制随镜像内置,无需单独准备/上传。
 #
 # 用法（默认测试机 192.168.80.249）：
 #   WORKDIR=/home/myfw SAN=192.168.80.249 ./scripts/deploy-remote.sh
@@ -24,19 +25,14 @@ else
 fi
 echo "compose 命令: $DC"
 
-echo "=== [1/7] 解压源码 ==="
+echo "=== [1/6] 解压源码 ==="
 tar -xzf myfw-src.tar.gz -C "$WORKDIR"
 
-echo "=== [2/7] 生成 CA（SAN=$SAN）==="
-SAN="$SAN" ./scripts/gen-ca.sh
+echo "=== [2/6] 生成 CA（SAN=$SAN）==="
+CA_DIR=deploy/docker/dev-ca SAN="$SAN" ./scripts/gen-ca.sh
 
-echo "=== [3/7] 部署 Agent 二进制 ==="
-mkdir -p agent
-mv myfw-agent-linux-amd64 agent/myfw-agent-linux-amd64
-chmod +x agent/myfw-agent-linux-amd64
-
-echo "=== [4/7] 准备数据目录与 .env ==="
-mkdir -p data
+echo "=== [3/6] 准备数据目录与 .env ==="
+mkdir -p deploy/docker/data
 HMAC="$(openssl rand -hex 32)"
 cat > .env <<EOF
 MYFW_DB_DRIVER=sqlite
@@ -46,13 +42,13 @@ EOF
 chmod 600 .env
 echo "    HMAC 已生成，DB=sqlite(/data/myfw.db)"
 
-echo "=== [5/7] 构建镜像（多阶段：前端 + Controller）==="
+echo "=== [4/6] 构建镜像（多阶段：前端 + Controller + Agent）==="
 $DC -f docker-compose.prod.yml build
 
-echo "=== [6/7] 启动 ==="
+echo "=== [5/6] 启动 ==="
 $DC -f docker-compose.prod.yml up -d
 
-echo "=== [7/7] 验证 ==="
+echo "=== [6/6] 验证 ==="
 sleep 5
 $DC -f docker-compose.prod.yml ps
 echo "--- healthz ---"
@@ -60,4 +56,6 @@ curl -fsS http://localhost:8080/healthz && echo
 echo "--- 下载路由 ---"
 curl -fsS -o /dev/null -w "ca.pem:           %{http_code}\n" http://localhost:8080/download/ca.pem
 curl -fsS -o /dev/null -w "agent linux-amd64:%{http_code}\n" http://localhost:8080/download/agent/linux-amd64
+curl -fsS -o /dev/null -w "agent linux-arm64:%{http_code}\n" http://localhost:8080/download/agent/linux-arm64
+curl -fsS -o /dev/null -w "install-agent.sh: %{http_code}\n" http://localhost:8080/download/agent/install-agent.sh
 echo "=== 部署完成，Web 控制台：http://$SAN:8080 ==="

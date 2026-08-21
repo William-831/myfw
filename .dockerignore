@@ -1,14 +1,69 @@
 # 减小 docker build context，排除本地产物与敏感文件
-dist/
-dev-ca/
-data/
-.git/
+# 注意:以下均非 Dockerfile COPY 所需;vendor/ cmd/ internal/ api/ proto/ web/ go.mod
+# go.sum deploy/docker/ 必须保留(离线编译与运行时文件)
+
+# ---- 构建产物与缓存 ----
+/dist/
 web/node_modules/
 web/dist/
+web/.vite/
+*.tsbuildinfo
+
+# ---- 敏感文件(证书/密钥/env)绝不进 build context ----
+# 根级 .env(含 .env.remote 等),不入 context;deploy/docker/.env.example 模板保留
+/.env
+/.env.*
+*.pem
+*.crt
+*.key
+*.csr
+*.srl
+*.p12
+*.pfx
+openssl.cnf
+
+# ---- 运行时数据目录(挂载进容器,不入镜像) ----
+# Agent 二进制已随镜像内置,无挂载分发目录
+/dev-ca/
+/data/
+deploy/docker/dev-ca/
+deploy/docker/data/
+
+# ---- 构建用不到的仓库内容(仅锚定根级,不误伤 vendor/ 与内层目录) ----
+/.git/
+/.claude/
+/.claudeignore
+/CLAUDE.md
+/.idea/
+/.vscode/
+/.vs/
+/Claudemissing/
+/docs/
+/scripts/
+/configs/
+/Makefile
+/README.md
+/buf.gen.yaml
+/buf.yaml
+/.editorconfig
+
+# ---- 本地部署/验证/临时产物 ----
 deploy-package/
 deploy-cert/
+.verify/
 *.tar
 *.tar.gz
+*.tgz
+*.zip
 *.exe
 *.db
+*.db-journal
+*.sqlite
+*.sqlite3
 *.log
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db

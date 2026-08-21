@@ -10,8 +10,15 @@ services:
       - "8080:8080"
       - "9090:9090"
     env_file:
-      - .env  # 敏感配置(DB DSN / HMAC 密钥)从 .env 加载,不入镜像
+      - .env  # 敏感配置(DB DSN / HMAC 密钥 / MYFW_SAN)从 .env 加载,不入镜像
+    environment:
+      # server 证书 SAN(Agent 连接 Controller 的地址),仅供首次启动入口脚本签发证书时使用;
+      # 留空也能启动(仅 Agent 无法通过 ServerName 校验),建议在 .env 中配好再首次 up
+      MYFW_SAN: ${MYFW_SAN:-}
     volumes:
-      - ./deploy/docker/configs/controller.prod.example.yaml:/etc/myfw/config.yaml:ro  # 生产配置
-      - ./data:/data  # SQLite 数据
+      # CA 证书自动生成并持久化于宿主机 ./deploy/docker/dev-ca:
+      # 首次启动入口脚本 gen-ca-entrypoint.sh 自动生成 ca.pem/ca.key/server.crt/server.key,
+      # 之后容器重建复用同一套信任根,已注册 Agent 的证书不失效
+      - ./deploy/docker/dev-ca:/etc/myfw/ca
+      - ./deploy/docker/data:/data  # SQLite 数据
     restart: unless-stopped

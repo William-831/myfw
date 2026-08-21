@@ -1,5 +1,6 @@
 # MYFW Agent systemd 单元(裸机部署,需 root 操作 Netfilter/iptables)
-# 部署: scp 到 /etc/systemd/system/ 后 systemctl daemon-reload && systemctl enable --now myfw-agent
+# 部署: install-agent.sh 会自动安装;手动部署: scp 到 /etc/systemd/system/ 后
+# systemctl daemon-reload && systemctl enable --now myfw-agent
 # 日志: journalctl -u myfw-agent -f
 [Unit]
 Description=MYFW Agent(防火墙执行面)
@@ -8,8 +9,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/myFW
-ExecStart=/home/myFW/dist/myfw-agent --config /home/myFW/agent.yaml
+# 路径与 install-agent.sh 安装位置一致(二进制 /usr/local/bin/myfw-agent,配置 /etc/myfw-agent/)
+ExecStart=/usr/local/bin/myfw-agent --config /etc/myfw-agent/agent.yaml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
