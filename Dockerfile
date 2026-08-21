@@ -4,7 +4,7 @@
 # 构建：docker compose -f docker-compose.prod.yml build（或 docker build -f deploy/docker/Dockerfile .）
 
 # ---- 阶段1：前端构建 ----
-FROM node:20-alpine AS web
+FROM docker.m.daocloud.io/library/node:20-alpine AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ COPY web/ ./
 RUN npm run build                # 输出 /web/dist（index.html + assets/）
 
 # ---- 阶段2：Controller 编译（vendor 离线编译） ----
-FROM golang:1.26.5-alpine3.24 AS ctrl
+FROM ocker.m.daocloud.io/library/golang:1.26.5-alpine3.24 AS ctrl
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version
     -o /usr/local/bin/myfw-controller ./cmd/controller
 
 # ---- 阶段3：运行时 ----
-FROM alpine:3.24
+FROM docker.m.daocloud.io/library/alpine:3.24
 RUN apk add --no-cache openssl
 COPY --from=ctrl /usr/local/bin/myfw-controller /usr/local/bin/myfw-controller
 # 前端静态资源（server.go 提供 /assets 与 index.html）
