@@ -17,6 +17,7 @@ FROM docker.m.daocloud.io/library/golang:1.26.5-alpine3.24 AS ctrl
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
+COPY vendor/ ./vendor/
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY vendor/ ./vendor/
